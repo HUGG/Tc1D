@@ -13,6 +13,7 @@ from scipy.linalg import solve
 import shutil
 import subprocess
 import time
+from typing import Tuple
 import warnings
 
 # Batch mode libraries
@@ -53,14 +54,14 @@ class Intrusion:
 
 
 # Unit conversions
-def yr2sec(time: float) -> float:
+def yr2sec(time_yr: float) -> float:
     """Converts time from years to seconds."""
-    return time * 60.0 * 60.0 * 24.0 * 365.25
+    return time_yr * 60.0 * 60.0 * 24.0 * 365.25
 
 
-def myr2sec(time: float) -> float:
+def myr2sec(time_myr: float) -> float:
     """Converts time from million years to seconds."""
-    return yr2sec(time) * 1.0e6
+    return yr2sec(time_myr) * 1.0e6
 
 
 def kilo2base(value: float) -> float:
@@ -98,7 +99,13 @@ def calculate_eu(uranium: float, thorium: float) -> float:
     return uranium + 0.238 * thorium
 
 
-def calculate_heat_flow(temperature, conductivity, dx, nstart=0, nx=1):
+def calculate_heat_flow(
+    temperature: np.ndarray,
+    conductivity: np.ndarray,
+    dx: float,
+    nstart: int = 0,
+    nx: int = 1,
+) -> float:
     """Calculates heat flow in W/m2."""
     return kilo2base(
         (conductivity[nstart] + conductivity[nstart + nx])
@@ -109,18 +116,18 @@ def calculate_heat_flow(temperature, conductivity, dx, nstart=0, nx=1):
 
 
 def echo_model_info(
-    dx,
-    nt,
-    dt,
-    t_total,
-    implicit,
-    ero_type,
-    exhumation_magnitude,
-    cond_stab,
-    adv_stab,
-    cond_crit,
-    adv_crit,
-):
+    dx: float,
+    nt: int,
+    dt: float,
+    t_total: float,
+    implicit: bool,
+    ero_type: int,
+    exhumation_magnitude: float,
+    cond_stab: float,
+    adv_stab: float,
+    cond_crit: float,
+    adv_crit: float,
+) -> None:
     print("")
     print("--- General model information ---")
     print("")
@@ -158,19 +165,19 @@ def echo_model_info(
 
 # Explicit solution stability criteria calculation
 def calculate_explicit_stability(
-    vx,
-    k_crust,
-    rho_crust,
-    cp_crust,
-    k_mantle,
-    rho_mantle,
-    cp_mantle,
-    k_a,
-    dt,
-    dx,
-    cond_crit,
-    adv_crit,
-):
+    vx: float,
+    k_crust: float,
+    rho_crust: float,
+    cp_crust: float,
+    k_mantle: float,
+    rho_mantle: float,
+    cp_mantle: float,
+    k_a: float,
+    dt: float,
+    dx: float,
+    cond_crit: float,
+    adv_crit: float,
+) -> Tuple[float, float]:
     # Check stability conditions
     kappa_crust = k_crust / (rho_crust * cp_crust)
     kappa_mantle = k_mantle / (rho_mantle * cp_mantle)
@@ -191,14 +198,24 @@ def calculate_explicit_stability(
 
 
 # Mantle adiabat from Turcotte and Schubert (eqn 4.254)
-def adiabat(alphav, temp, cp):
+def adiabat(alphav: float, temp: float, cp: float) -> float:
     """Calculates a mantle adiabat in degress / m."""
     grav = 9.81
     return alphav * grav * temp / cp
 
 
 # Conductive steady-state heat transfer
-def temp_ss_implicit(nx, dx, temp_surf, temp_base, vx, rho, cp, k, heat_prod):
+def temp_ss_implicit(
+    nx: int,
+    dx: float,
+    temp_surf: float,
+    temp_base: float,
+    vx: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    k: np.ndarray,
+    heat_prod: np.ndarray,
+) -> np.ndarray:
     """Calculates a steady-state thermal solution."""
     # Create the empty (zero) coefficient and right hand side arrays
     a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
@@ -224,28 +241,28 @@ def temp_ss_implicit(nx, dx, temp_surf, temp_base, vx, rho, cp, k, heat_prod):
 
 
 def update_materials(
-    x,
-    xstag,
-    moho_depth,
-    rho_crust,
-    rho_mantle,
-    rho,
-    cp_crust,
-    cp_mantle,
-    cp,
-    k_crust,
-    k_mantle,
-    k,
-    heat_prod_crust,
-    heat_prod_decay_depth,
-    heat_prod_mantle,
-    heat_prod,
-    temp_adiabat,
-    temp_prev,
-    k_a,
-    delaminated,
-    removal_fraction,
-):
+    x: np.ndarray,
+    xstag: np.ndarray,
+    moho_depth: float,
+    rho_crust: float,
+    rho_mantle: float,
+    rho: np.ndarray,
+    cp_crust: float,
+    cp_mantle: float,
+    cp: np.ndarray,
+    k_crust: float,
+    k_mantle: float,
+    k: np.ndarray,
+    heat_prod_crust: float,
+    heat_prod_decay_depth: float,
+    heat_prod_mantle: float,
+    heat_prod: np.ndarray,
+    temp_adiabat: np.ndarray,
+    temp_prev: np.ndarray,
+    k_a: float,
+    delaminated: bool,
+    removal_fraction: float,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """Updates arrays of material properties."""
     rho[:] = rho_crust
     rho[x > moho_depth] = rho_mantle
@@ -270,7 +287,15 @@ def update_materials(
     return rho, cp, k, heat_prod, lab_depth
 
 
-def init_ero_types(params, x, xstag, temp_prev, moho_depth):
+def init_ero_types(
+    params: dict,
+    x: np.ndarray,
+    xstag: np.ndarray,
+    temp_prev: np.ndarray,
+    moho_depth: float,
+) -> Tuple[
+    np.ndarray, float, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray
+]:
     """Defines temperatures and material properties for ero_types 4 and 5."""
 
     # Find index where depth reaches or exceeds thrust sheet thickness
@@ -315,8 +340,19 @@ def init_ero_types(params, x, xstag, temp_prev, moho_depth):
 
 
 def temp_transient_explicit(
-    temp_prev, temp_new, temp_surf, temp_base, nx, dx, vx, dt, rho, cp, k, heat_prod
-):
+    temp_prev: np.ndarray,
+    temp_new: np.ndarray,
+    temp_surf: float,
+    temp_base: float,
+    nx: int,
+    dx: float,
+    vx: np.ndarray,
+    dt: float,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    k: np.ndarray,
+    heat_prod: np.ndarray,
+) -> np.ndarray:
     """Updates a transient thermal solution."""
     # Set boundary conditions
     temp_new[0] = temp_surf
@@ -354,8 +390,18 @@ def temp_transient_explicit(
 
 # Conductive steady-state heat transfer
 def temp_transient_implicit(
-    nx, dx, dt, temp_prev, temp_surf, temp_base, vx, rho, cp, k, heat_prod
-):
+    nx: int,
+    dx: float,
+    dt: float,
+    temp_prev: np.ndarray,
+    temp_surf: float,
+    temp_base: float,
+    vx: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    k: np.ndarray,
+    heat_prod: np.ndarray,
+) -> np.ndarray:
     """Calculates a steady-state thermal solution."""
     # Create the empty (zero) coefficient and right hand side arrays
     a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
@@ -380,13 +426,21 @@ def temp_transient_implicit(
     return temp
 
 
-def create_intrusion(temperature, start_time, base_depth, thickness, duration=0.0):
+def create_intrusion(
+    temperature: float,
+    start_time: float,
+    base_depth: float,
+    thickness: float,
+    duration: float = 0.0,
+) -> Intrusion:
     """Creates an instance of an intrusion."""
     intrusion = Intrusion(temperature, start_time, duration, base_depth, thickness)
     return intrusion
 
 
-def apply_intrusion(intrusion, x, model_temperatures):
+def apply_intrusion(
+    intrusion: Intrusion, x: np.ndarray, model_temperatures: np.ndarray
+) -> np.ndarray:
     """Applies intrusion temperatures to the intrusion depths."""
     intrusion_slice = (x >= intrusion.base_depth - intrusion.thickness) & (
         x <= intrusion.base_depth
@@ -395,7 +449,7 @@ def apply_intrusion(intrusion, x, model_temperatures):
     return model_temperatures
 
 
-def check_execs():
+def check_execs() -> None:
     """Checks whether all required executables exist."""
 
     # Check that executables are in $PATH
@@ -409,14 +463,15 @@ def check_execs():
     return None
 
 
+# TODO: Sort out why type hinting is problematic for this function
 def he_ages(
     file,
-    ap_rad=45.0,
-    ap_uranium=10.0,
-    ap_thorium=40.0,
-    zr_rad=60.0,
-    zr_uranium=100.0,
-    zr_thorium=40.0,
+    ap_rad,
+    ap_uranium,
+    ap_thorium,
+    zr_rad,
+    zr_uranium,
+    zr_thorium,
 ):
     """Calculates (U-Th)/He ages."""
 
@@ -445,10 +500,10 @@ def he_ages(
 
     stdout = p.stdout.readlines()
 
-    ahe_age = stdout[0].split()[3][:-1].decode("UTF-8")
-    corr_ahe_age = stdout[0].split()[7].decode("UTF-8")
-    zhe_age = stdout[1].split()[3][:-1].decode("UTF-8")
-    corr_zhe_age = stdout[1].split()[7].decode("UTF-8")
+    ahe_age = float(stdout[0].split()[3][:-1].decode("UTF-8"))
+    corr_ahe_age = float(stdout[0].split()[7].decode("UTF-8"))
+    zhe_age = float(stdout[1].split()[3][:-1].decode("UTF-8"))
+    corr_zhe_age = float(stdout[1].split()[7].decode("UTF-8"))
 
     retval = p.wait()
     if retval != 0:
@@ -457,6 +512,7 @@ def he_ages(
     return ahe_age, corr_ahe_age, zhe_age, corr_zhe_age
 
 
+# TODO: Sort out why type hinting is problematic for this function
 def ft_ages(file, write_track_lengths):
     """Calculates AFT ages."""
 
@@ -474,8 +530,8 @@ def ft_ages(file, write_track_lengths):
         raise RuntimeError(
             "Incompatible version of Tc_core. Must be >=0.2. See https://github.com/HUGG/Tc_core."
         )
-    aft_age = stdout[0].split()[4][:-1].decode("UTF-8")
-    mean_ft_length = stdout[0].split()[9][:-1].decode("UTF-8")
+    aft_age = float(stdout[0].split()[4][:-1].decode("UTF-8"))
+    mean_ft_length = float(stdout[0].split()[9][:-1].decode("UTF-8"))
 
     retval = p.wait()
     if retval != 0:
@@ -484,13 +540,15 @@ def ft_ages(file, write_track_lengths):
     return aft_age, mean_ft_length
 
 
-def calculate_closure_temp(age, time_history, temp_history):
+def calculate_closure_temp(
+    age: float, time_history: np.ndarray, temp_history: np.ndarray
+) -> float:
     """Calculates closure temperature from predicted age and cooling history."""
     closure_temp = np.interp(age, time_history, temp_history)
     return closure_temp
 
 
-def tt_hist_to_ma(time_history):
+def tt_hist_to_ma(time_history: np.ndarray) -> np.ndarray:
     """Converts a time-temperature history in Myr since model start to Ma."""
     current_max_time = time_history.max()
     time_ma = current_max_time - time_history
@@ -498,7 +556,7 @@ def tt_hist_to_ma(time_history):
     return time_ma
 
 
-def get_write_increment(params, time_ma):
+def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     """Determines frequency for output in tt and ttd histories."""
     if len(time_ma) > 1000.0:
         write_increment = int(round(len(time_ma) / 100, 0))
@@ -514,7 +572,9 @@ def get_write_increment(params, time_ma):
     return write_increment
 
 
-def write_tt_history(params, tt_filename, time_history, temp_history):
+def write_tt_history(
+    params: dict, tt_filename: str, time_history: np.ndarray, temp_history: np.ndarray
+) -> None:
     """Writes a time-temperature history to a file."""
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
@@ -543,8 +603,13 @@ def write_tt_history(params, tt_filename, time_history, temp_history):
 
 
 def write_ttdp_history(
-    params, ttdp_filename, time_history, temp_history, depth_history, pressure_history
-):
+    params: dict,
+    ttdp_filename: str,
+    time_history: np.ndarray,
+    temp_history: np.ndarray,
+    depth_history: np.ndarray,
+    pressure_history: np.ndarray,
+) -> None:
     """Writes a time-temperature-depth-pressure history to a file."""
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
@@ -631,17 +696,13 @@ def calculate_ages_and_tcs(
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
-        float(corr_ahe_age), np.flip(time_ma), np.flip(temp_history)
+        corr_ahe_age, np.flip(time_ma), np.flip(temp_history)
     )
-    aft_temp = calculate_closure_temp(
-        float(aft_age), np.flip(time_ma), np.flip(temp_history)
-    )
+    aft_temp = calculate_closure_temp(aft_age, np.flip(time_ma), np.flip(temp_history))
     zhe_temp = calculate_closure_temp(
-        float(corr_zhe_age), np.flip(time_ma), np.flip(temp_history)
+        corr_zhe_age, np.flip(time_ma), np.flip(temp_history)
     )
-    zft_temp = calculate_closure_temp(
-        float(zft_age), np.flip(time_ma), np.flip(temp_history)
-    )
+    zft_temp = calculate_closure_temp(zft_age, np.flip(time_ma), np.flip(temp_history))
 
     return (
         corr_ahe_age,
@@ -3715,14 +3776,14 @@ def run_model(params):
             print("--- Predicted thermochronometer ages ---")
             print("")
             print(
-                f"- AHe age: {float(corr_ahe_ages[-1]):.2f} Ma (uncorrected age: {float(ahe_age):.2f} Ma)"
+                f"- AHe age: {corr_ahe_ages[-1]:.2f} Ma (uncorrected age: {ahe_age:.2f} Ma)"
             )
             if params["madtrax_aft"]:
                 print(f"- AFT age: {aft_ages[-1] / 1e6:.2f} Ma (MadTrax)")
             if params["ketch_aft"]:
-                print(f"- AFT age: {float(aft_ages[-1]):.2f} Ma (Ketcham)")
+                print(f"- AFT age: {aft_ages[-1]:.2f} Ma (Ketcham)")
             print(
-                f"- ZHe age: {float(corr_zhe_ages[-1]):.2f} Ma (uncorrected age: {float(zhe_age):.2f} Ma)"
+                f"- ZHe age: {corr_zhe_ages[-1]:.2f} Ma (uncorrected age: {zhe_age:.2f} Ma)"
             )
             print(f"- ZFT age: {zft_ages[-1]:.2f} Ma (MadTrax)")
 
@@ -3785,9 +3846,9 @@ def run_model(params):
                         zr_uranium=params["zr_uranium"],
                         zr_thorium=params["zr_thorium"],
                     )
-                    pred_data_ages[i] = float(corr_ahe_age) + depo_age_now
+                    pred_data_ages[i] = corr_ahe_age + depo_age_now
                     pred_data_temps[i] = calculate_closure_temp(
-                        float(corr_ahe_age),
+                        corr_ahe_age,
                         np.flip(time_ma),
                         np.flip(temp_hists[tt_hist_index]),
                     )
@@ -3801,7 +3862,7 @@ def run_model(params):
 
                 elif obs_age_type_file[i] == "AFT":
                     # Calculate predicted AFT ages
-                    pred_data_ages[i] = float(aft_ages[tt_hist_index]) + depo_age_now
+                    pred_data_ages[i] = aft_ages[tt_hist_index] + depo_age_now
                     pred_data_temps[i] = aft_temps[tt_hist_index]
 
                 elif obs_age_type_file[i] == "ZHe":
@@ -3815,9 +3876,9 @@ def run_model(params):
                         zr_uranium=obs_u_file[i],
                         zr_thorium=obs_th_file[i],
                     )
-                    pred_data_ages[i] = float(corr_zhe_age) + depo_age_now
+                    pred_data_ages[i] = corr_zhe_age + depo_age_now
                     pred_data_temps[i] = calculate_closure_temp(
-                        float(corr_zhe_age),
+                        corr_zhe_age,
                         np.flip(time_ma),
                         np.flip(temp_hists[tt_hist_index]),
                     )
@@ -3831,7 +3892,7 @@ def run_model(params):
 
                 elif obs_age_type_file[i] == "ZFT":
                     # Calculate predicted ZFT ages
-                    pred_data_ages[i] = float(zft_ages[tt_hist_index]) + depo_age_now
+                    pred_data_ages[i] = zft_ages[tt_hist_index] + depo_age_now
                     pred_data_temps[i] = zft_temps[tt_hist_index]
 
             # Delete unneeded tt file
@@ -3872,25 +3933,25 @@ def run_model(params):
                 obs_eu = []
                 obs_radius = []
                 for i in range(n_obs_ahe):
-                    pred_ages.append(float(corr_ahe_ages[-1]))
+                    pred_ages.append(corr_ahe_ages[-1])
                     obs_ages.append(params["obs_ahe"][i])
                     obs_stdev.append(params["obs_ahe_stdev"][i])
                     obs_eu.append("")
                     obs_radius.append("")
                 for i in range(n_obs_aft):
-                    pred_ages.append(float(aft_ages[-1]))
+                    pred_ages.append(aft_ages[-1])
                     obs_ages.append(params["obs_aft"][i])
                     obs_stdev.append(params["obs_aft_stdev"][i])
                     obs_eu.append("")
                     obs_radius.append("")
                 for i in range(n_obs_zhe):
-                    pred_ages.append(float(corr_zhe_ages[-1]))
+                    pred_ages.append(corr_zhe_ages[-1])
                     obs_ages.append(params["obs_zhe"][i])
                     obs_stdev.append(params["obs_zhe_stdev"][i])
                     obs_eu.append("")
                     obs_radius.append("")
                 for i in range(n_obs_zft):
-                    pred_ages.append(float(zft_ages[-1]))
+                    pred_ages.append(zft_ages[-1])
                     obs_ages.append(params["obs_zft"][i])
                     obs_stdev.append(params["obs_zft_stdev"][i])
                     obs_eu.append("")
@@ -4249,20 +4310,20 @@ def run_model(params):
             zhe_uncert = 0.1
             zft_uncert = 0.2
             ahe_min, ahe_max = (
-                (1.0 - ahe_uncert) * float(corr_ahe_ages[-1]),
-                (1.0 + ahe_uncert) * float(corr_ahe_ages[-1]),
+                (1.0 - ahe_uncert) * corr_ahe_ages[-1],
+                (1.0 + ahe_uncert) * corr_ahe_ages[-1],
             )
             aft_min, aft_max = (
-                (1.0 - aft_uncert) * float(aft_ages[-1]),
-                (1.0 + aft_uncert) * float(aft_ages[-1]),
+                (1.0 - aft_uncert) * aft_ages[-1],
+                (1.0 + aft_uncert) * aft_ages[-1],
             )
             zhe_min, zhe_max = (
-                (1.0 - zhe_uncert) * float(corr_zhe_ages[-1]),
-                (1.0 + zhe_uncert) * float(corr_zhe_ages[-1]),
+                (1.0 - zhe_uncert) * corr_zhe_ages[-1],
+                (1.0 + zhe_uncert) * corr_zhe_ages[-1],
             )
             zft_min, zft_max = (
-                (1.0 - zft_uncert) * float(zft_ages[-1]),
-                (1.0 + zft_uncert) * float(zft_ages[-1]),
+                (1.0 - zft_uncert) * zft_ages[-1],
+                (1.0 + zft_uncert) * zft_ages[-1],
             )
             ax1.plot(time_ma, temp_hists[-1], color="dimgray", label="Thermal history")
             if params["plot_depth_history"]:
@@ -4307,13 +4368,13 @@ def run_model(params):
             # Plot uncertainty error bars and AHe age if no measured ages exist
             if n_obs_ahe == 0:
                 ax1 = plot_predictions_no_data(
-                    float(corr_ahe_ages[-1]),
+                    corr_ahe_ages[-1],
                     ahe_temps[-1],
-                    xerr=ahe_uncert * float(corr_ahe_ages[-1]),
+                    xerr=ahe_uncert * corr_ahe_ages[-1],
                     ax=ax1,
                     marker="o",
                     color="tab:blue",
-                    label=f"Predicted AHe age ({float(corr_ahe_ages[-1]):.2f} ± {ahe_uncert * float(corr_ahe_ages[-1]):.2f} Ma ({ahe_uncert * 100.0:.0f}% error); T$_c$ = {ahe_temps[-1]:.1f}°C)",
+                    label=f"Predicted AHe age ({corr_ahe_ages[-1]:.2f} ± {ahe_uncert * corr_ahe_ages[-1]:.2f} Ma ({ahe_uncert * 100.0:.0f}% error); T$_c$ = {ahe_temps[-1]:.1f}°C)",
                 )
             # Plot predicted age + observed AHe age(s)
             else:
@@ -4347,12 +4408,12 @@ def run_model(params):
                 else:
                     # Plot predicted and passed-in observed AHe age(s)
                     ax1 = plot_predictions_with_data(
-                        float(corr_ahe_ages[-1]),
+                        corr_ahe_ages[-1],
                         ahe_temps[-1],
                         ax=ax1,
                         marker="o",
                         color="tab:blue",
-                        label=f"Predicted AHe age ({float(corr_ahe_ages[-1]):.2f} Ma; T$_c$ = {ahe_temps[-1]:.1f}°C)",
+                        label=f"Predicted AHe age ({corr_ahe_ages[-1]:.2f} Ma; T$_c$ = {ahe_temps[-1]:.1f}°C)",
                     )
                     ahe_temps_obs = []
                     for i in range(len(params["obs_ahe"])):
@@ -4370,13 +4431,13 @@ def run_model(params):
             # Plot uncertainty error bars and AFT age if no measured ages exist
             if n_obs_aft == 0:
                 ax1 = plot_predictions_no_data(
-                    float(aft_ages[-1]),
+                    aft_ages[-1],
                     aft_temps[-1],
-                    xerr=aft_uncert * float(aft_ages[-1]),
+                    xerr=aft_uncert * aft_ages[-1],
                     ax=ax1,
                     marker="s",
                     color="tab:orange",
-                    label=f"Predicted AFT age ({float(aft_ages[-1]):.2f} ± {aft_uncert * float(aft_ages[-1]):.2f} Ma ({aft_uncert * 100.0:.0f}% error); T$_c$ = {aft_temps[-1]:.1f}°C)",
+                    label=f"Predicted AFT age ({aft_ages[-1]:.2f} ± {aft_uncert * aft_ages[-1]:.2f} Ma ({aft_uncert * 100.0:.0f}% error); T$_c$ = {aft_temps[-1]:.1f}°C)",
                 )
             # Plot predicted age + observed AFT age(s)
             else:
@@ -4400,12 +4461,12 @@ def run_model(params):
                     )
                 else:
                     ax1 = plot_predictions_with_data(
-                        float(aft_ages[-1]),
+                        aft_ages[-1],
                         aft_temps[-1],
                         ax=ax1,
                         marker="s",
                         color="tab:orange",
-                        label=f"Predicted AFT age ({float(aft_ages[-1]):.2f} Ma; T$_c$ = {aft_temps[-1]:.1f}°C)",
+                        label=f"Predicted AFT age ({aft_ages[-1]:.2f} Ma; T$_c$ = {aft_temps[-1]:.1f}°C)",
                     )
                     aft_temps_obs = []
                     for i in range(len(params["obs_aft"])):
@@ -4423,13 +4484,13 @@ def run_model(params):
             # Plot shaded uncertainty area and ZHe age if no measured ages exist
             if n_obs_zhe == 0:
                 ax1 = plot_predictions_no_data(
-                    float(corr_zhe_ages[-1]),
+                    corr_zhe_ages[-1],
                     zhe_temps[-1],
-                    xerr=zhe_uncert * float(corr_zhe_ages[-1]),
+                    xerr=zhe_uncert * corr_zhe_ages[-1],
                     ax=ax1,
                     marker="d",
                     color="tab:green",
-                    label=f"Predicted ZHe age ({float(corr_zhe_ages[-1]):.2f} ± {zhe_uncert * float(corr_zhe_ages[-1]):.2f} Ma ({zhe_uncert * 100.0:.0f}% error); T$_c$ = {zhe_temps[-1]:.1f}°C)",
+                    label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} ± {zhe_uncert * corr_zhe_ages[-1]:.2f} Ma ({zhe_uncert * 100.0:.0f}% error); T$_c$ = {zhe_temps[-1]:.1f}°C)",
                 )
             # Plot predicted age + observed ZHe age(s)
             else:
@@ -4463,12 +4524,12 @@ def run_model(params):
                 else:
                     # Plot predicted and passed-in observed AHe age(s)
                     ax1 = plot_predictions_with_data(
-                        float(corr_zhe_ages[-1]),
+                        corr_zhe_ages[-1],
                         zhe_temps[-1],
                         ax=ax1,
                         marker="d",
                         color="tab:green",
-                        label=f"Predicted ZHe age ({float(corr_zhe_ages[-1]):.2f} Ma; T$_c$ = {zhe_temps[-1]:.1f}°C)",
+                        label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} Ma; T$_c$ = {zhe_temps[-1]:.1f}°C)",
                     )
                     zhe_temps_obs = []
                     for i in range(len(params["obs_zhe"])):
@@ -4486,13 +4547,13 @@ def run_model(params):
             # Plot shaded uncertainty area and ZFT age if no measured ages exist
             if n_obs_zft == 0:
                 ax1 = plot_predictions_no_data(
-                    float(zft_ages[-1]),
+                    zft_ages[-1],
                     zft_temps[-1],
-                    xerr=zft_uncert * float(zft_ages[-1]),
+                    xerr=zft_uncert * zft_ages[-1],
                     ax=ax1,
                     marker="^",
                     color="tab:red",
-                    label=f"Predicted ZFT age ({float(zft_ages[-1]):.2f} ± {zft_uncert * float(zft_ages[-1]):.2f} Ma ({zft_uncert * 100.0:.0f}% error); T$_c$ = {zft_temps[-1]:.1f}°C)",
+                    label=f"Predicted ZFT age ({zft_ages[-1]:.2f} ± {zft_uncert * zft_ages[-1]:.2f} Ma ({zft_uncert * 100.0:.0f}% error); T$_c$ = {zft_temps[-1]:.1f}°C)",
                 )
             # Plot predicted age + observed ZFT age(s)
             else:
@@ -4516,12 +4577,12 @@ def run_model(params):
                     )
                 else:
                     ax1 = plot_predictions_with_data(
-                        float(zft_ages[-1]),
+                        zft_ages[-1],
                         zft_temps[-1],
                         ax=ax1,
                         marker="^",
                         color="tab:red",
-                        label=f"Predicted ZFT age ({float(zft_ages[-1]):.2f} Ma; T$_c$ = {zft_temps[-1]:.1f}°C)",
+                        label=f"Predicted ZFT age ({zft_ages[-1]:.2f} Ma; T$_c$ = {zft_temps[-1]:.1f}°C)",
                     )
                     zft_temps_obs = []
                     for i in range(len(params["obs_zft"])):
@@ -4964,13 +5025,13 @@ def run_model(params):
                 f"{final_moho_temp:.4f},{final_heat_flow:.4f},{elev_list[-1] / kilo2base(1):.4f},"
                 f"{exhumation_magnitude:.4f},{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
                 f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},"
-                f"{params['zr_thorium']:.4f},{float(corr_ahe_ages[-1]):.4f},"
+                f"{params['zr_thorium']:.4f},{corr_ahe_ages[-1]:.4f},"
                 f"{ahe_temps[-1]:.4f},{obs_ahe:.4f},"
-                f"{obs_ahe_stdev:.4f},{float(aft_ages[-1]):.4f},"
+                f"{obs_ahe_stdev:.4f},{aft_ages[-1]:.4f},"
                 f"{aft_temps[-1]:.4f},{obs_aft:.4f},"
-                f"{obs_aft_stdev:.4f},{float(corr_zhe_ages[-1]):.4f},"
+                f"{obs_aft_stdev:.4f},{corr_zhe_ages[-1]:.4f},"
                 f"{zhe_temps[-1]:.4f},{obs_zhe:.4f},"
-                f"{obs_zhe_stdev:.4f},{float(zft_ages[-1]):.4f},"
+                f"{obs_zhe_stdev:.4f},{zft_ages[-1]:.4f},"
                 f"{zft_temps[-1]:.4f},{obs_zft:.4f},"
                 f"{obs_zft_stdev:.4f},{misfit:.6f},{misfit_type},{misfit_ages}\n"
             )
