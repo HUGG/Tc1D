@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tc1d"
-version = "0.3.0"
+version = "0.3.1"
 authors = [
     {name = "Dave Whipp", email = "david.whipp@helsinki.fi"},
     {name= "Benjamin Gérard", email = "benjamin.gerard@helsinki.fi"},
@@ -126,3 +126,4 @@ ruff = ">=0.12.12,<0.13"
 hatchling = ">=1.27.0,<2"
 mypy = ">=1.17.1,<2"
 pip = ">=25.2,<26"
+pre-commit = ">=4.3.0,<5"

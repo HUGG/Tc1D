@@ -3209,6 +3209,9 @@ def run_model(params):
             # Loop over all times and use -dt to run erosion model backwards
             # TODO: Make this a function???
             while curtime > 0.0:
+                # Increment current time
+                curtime -= dt
+
                 # Find particle velocities and move incrementally to starting depths
                 vx_pts, vx, vx_max, fault_depth = calculate_erosion_rate(
                     params,
@@ -3228,8 +3231,7 @@ def run_model(params):
                 if params["plot_fault_depth_history"]:
                     fault_depth_history[idx] = fault_depth
 
-                # Increment current time and idx
-                curtime -= dt
+                # Increment idx
                 idx += 1
 
             # Reverse exhumation history for plotting
