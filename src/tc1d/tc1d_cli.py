@@ -2,6 +2,7 @@
 
 # Import libraries we need
 import argparse
+from importlib.metadata import version
 import sys
 import tc1d
 
@@ -15,6 +16,7 @@ def main():
         description="Calculates transient 1D temperatures and thermochronometer ages",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("-v", "--version", action="version", version=version("tc1d"))
     general = parser.add_argument_group(
         "General options", "Options for various general features"
     )
