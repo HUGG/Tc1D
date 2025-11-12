@@ -4385,9 +4385,9 @@ def run_model(params):
                     else:
                         min_file_ahe_age = min(pred_ages[obs_ahe_indices])
                         max_file_ahe_age = max(pred_ages[obs_ahe_indices])
-                        min_file_ahe_temp = min(pred_ages[obs_ahe_indices])
-                        max_file_ahe_temp = max(pred_ages[obs_ahe_indices])
-                        ahe_label = f"Predicted AHe ages ({min_file_ahe_age:.2f}–{max_file_ahe_age:.2f} Ma; T$_c$ = {min_file_ahe_temp:.1f}–{max_file_ahe_temp:.1f}°C)"
+                        min_file_ahe_temp = min(pred_data_temps[obs_ahe_indices])
+                        max_file_ahe_temp = max(pred_data_temps[obs_ahe_indices])
+                        ahe_label = f"Predicted AHe ages ({min_file_ahe_age:.2f}–{max_file_ahe_age:.2f} Ma; T$_c$ = {min_file_ahe_temp:.1f}–{max_file_ahe_temp:.1f}° C)"
                     ax1 = plot_predictions_with_data(
                         pred_ages[obs_ahe_indices],
                         pred_data_temps[obs_ahe_indices],
@@ -4413,7 +4413,7 @@ def run_model(params):
                         ax=ax1,
                         marker="o",
                         color="tab:blue",
-                        label=f"Predicted AHe age ({corr_ahe_ages[-1]:.2f} Ma; T$_c$ = {ahe_temps[-1]:.1f}°C)",
+                        label=f"Predicted AHe age ({corr_ahe_ages[-1]:.2f} Ma; T$_c$ = {ahe_temps[-1]:.1f}° C)",
                     )
                     ahe_temps_obs = []
                     for i in range(len(params["obs_ahe"])):
@@ -4437,7 +4437,7 @@ def run_model(params):
                     ax=ax1,
                     marker="s",
                     color="tab:orange",
-                    label=f"Predicted AFT age ({aft_ages[-1]:.2f} ± {aft_uncert * aft_ages[-1]:.2f} Ma ({aft_uncert * 100.0:.0f}% error); T$_c$ = {aft_temps[-1]:.1f}°C)",
+                    label=f"Predicted AFT age ({aft_ages[-1]:.2f} ± {aft_uncert * aft_ages[-1]:.2f} Ma ({aft_uncert * 100.0:.0f}% error); T$_c$ = {aft_temps[-1]:.1f}° C)",
                 )
             # Plot predicted age + observed AFT age(s)
             else:
@@ -4448,7 +4448,7 @@ def run_model(params):
                         ax=ax1,
                         marker="s",
                         color="tab:orange",
-                        label=f"Predicted AFT age ({pred_ages[obs_aft_indices[0]]:.2f} Ma; T$_c$ = {pred_data_temps[obs_aft_indices[0]]:.1f}°C)",
+                        label=f"Predicted AFT age ({pred_ages[obs_aft_indices[0]]:.2f} Ma; T$_c$ = {pred_data_temps[obs_aft_indices[0]]:.1f}° C)",
                     )
                     ax1 = plot_measurements(
                         obs_ages[obs_aft_indices],
@@ -4466,7 +4466,7 @@ def run_model(params):
                         ax=ax1,
                         marker="s",
                         color="tab:orange",
-                        label=f"Predicted AFT age ({aft_ages[-1]:.2f} Ma; T$_c$ = {aft_temps[-1]:.1f}°C)",
+                        label=f"Predicted AFT age ({aft_ages[-1]:.2f} Ma; T$_c$ = {aft_temps[-1]:.1f}° C)",
                     )
                     aft_temps_obs = []
                     for i in range(len(params["obs_aft"])):
@@ -4490,19 +4490,19 @@ def run_model(params):
                     ax=ax1,
                     marker="d",
                     color="tab:green",
-                    label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} ± {zhe_uncert * corr_zhe_ages[-1]:.2f} Ma ({zhe_uncert * 100.0:.0f}% error); T$_c$ = {zhe_temps[-1]:.1f}°C)",
+                    label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} ± {zhe_uncert * corr_zhe_ages[-1]:.2f} Ma ({zhe_uncert * 100.0:.0f}% error); T$_c$ = {zhe_temps[-1]:.1f}° C)",
                 )
             # Plot predicted age + observed ZHe age(s)
             else:
                 if ages_from_data_file:
                     if n_obs_zhe == 1:
-                        zhe_label = f"Predicted ZHe age ({float(pred_ages[obs_zhe_indices[0]]):.2f} Ma; T$_c$ = {pred_data_temps[obs_zhe_indices[0]]:.1f}°C)"
+                        zhe_label = f"Predicted ZHe age ({float(pred_ages[obs_zhe_indices[0]]):.2f} Ma; T$_c$ = {pred_data_temps[obs_zhe_indices[0]]:.1f}° C)"
                     else:
                         min_file_zhe_age = min(pred_ages[obs_zhe_indices])
                         max_file_zhe_age = max(pred_ages[obs_zhe_indices])
-                        min_file_zhe_temp = min(pred_ages[obs_zhe_indices])
-                        max_file_zhe_temp = max(pred_ages[obs_zhe_indices])
-                        zhe_label = f"Predicted ZHe ages ({min_file_zhe_age:.2f}–{max_file_zhe_age:.2f} Ma; T$_c$ = {min_file_zhe_temp:.1f}–{max_file_zhe_temp:.1f}°C)"
+                        min_file_zhe_temp = min(pred_data_temps[obs_zhe_indices])
+                        max_file_zhe_temp = max(pred_data_temps[obs_zhe_indices])
+                        zhe_label = f"Predicted ZHe ages ({min_file_zhe_age:.2f}–{max_file_zhe_age:.2f} Ma; T$_c$ = {min_file_zhe_temp:.1f}–{max_file_zhe_temp:.1f}° C)"
                     # Plot predicted and observed ZHe age(s) from file
                     ax1 = plot_predictions_with_data(
                         pred_ages[obs_zhe_indices],
@@ -4529,7 +4529,7 @@ def run_model(params):
                         ax=ax1,
                         marker="d",
                         color="tab:green",
-                        label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} Ma; T$_c$ = {zhe_temps[-1]:.1f}°C)",
+                        label=f"Predicted ZHe age ({corr_zhe_ages[-1]:.2f} Ma; T$_c$ = {zhe_temps[-1]:.1f}° C)",
                     )
                     zhe_temps_obs = []
                     for i in range(len(params["obs_zhe"])):
@@ -4553,7 +4553,7 @@ def run_model(params):
                     ax=ax1,
                     marker="^",
                     color="tab:red",
-                    label=f"Predicted ZFT age ({zft_ages[-1]:.2f} ± {zft_uncert * zft_ages[-1]:.2f} Ma ({zft_uncert * 100.0:.0f}% error); T$_c$ = {zft_temps[-1]:.1f}°C)",
+                    label=f"Predicted ZFT age ({zft_ages[-1]:.2f} ± {zft_uncert * zft_ages[-1]:.2f} Ma ({zft_uncert * 100.0:.0f}% error); T$_c$ = {zft_temps[-1]:.1f}° C)",
                 )
             # Plot predicted age + observed ZFT age(s)
             else:
@@ -4564,7 +4564,7 @@ def run_model(params):
                         ax=ax1,
                         marker="^",
                         color="tab:red",
-                        label=f"Predicted ZFT age ({pred_ages[obs_zft_indices[0]]:.2f} Ma; T$_c$ = {pred_data_temps[obs_zft_indices[0]]:.1f}°C)",
+                        label=f"Predicted ZFT age ({pred_ages[obs_zft_indices[0]]:.2f} Ma; T$_c$ = {pred_data_temps[obs_zft_indices[0]]:.1f}° C)",
                     )
                     ax1 = plot_measurements(
                         obs_ages[obs_zft_indices],
@@ -4582,7 +4582,7 @@ def run_model(params):
                         ax=ax1,
                         marker="^",
                         color="tab:red",
-                        label=f"Predicted ZFT age ({zft_ages[-1]:.2f} Ma; T$_c$ = {zft_temps[-1]:.1f}°C)",
+                        label=f"Predicted ZFT age ({zft_ages[-1]:.2f} Ma; T$_c$ = {zft_temps[-1]:.1f}° C)",
                     )
                     zft_temps_obs = []
                     for i in range(len(params["obs_zft"])):
@@ -4602,10 +4602,10 @@ def run_model(params):
             if params["invert_tt_plot"]:
                 ax1.set_ylim(1.05 * temp_hists[-1].max(), params["temp_surf"])
             ax1.set_xlabel("Time (Ma)")
-            ax1.set_ylabel("Temperature (°C)")
+            ax1.set_ylabel("Temperature (° C)")
             if params["plot_depth_history"] or params["plot_fault_depth_history"]:
                 # Make left y-axis dimgray
-                ax1.set_ylabel("Temperature (°C)", color="dimgray")
+                ax1.set_ylabel("Temperature (° C)", color="dimgray")
                 ax1.tick_params(axis="y", colors="dimgray")
 
                 ax1b.set_xlim(t_total / myr2sec(1), 0.0)
