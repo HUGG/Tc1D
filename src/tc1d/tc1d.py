@@ -1326,6 +1326,7 @@ def read_age_data_file(file, params):
                 depo_age[np_index] = 0.0
 
         # Sort arrays in reverse order using depositional ages (if there are nonzero depo ages)
+        # TODO: Make this a function?
         if depo_age.any() > 0.0:
             rev_depo_indices = np.argsort(depo_age)[::-1]
             age_type = age_type[rev_depo_indices]
@@ -1700,7 +1701,7 @@ def init_params(
         "plot_fault_depth_history": plot_fault_depth_history,
         "invert_tt_plot": invert_tt_plot,
         "run_type": run_type,
-        # Batch mode not supported when called as a function
+        # Batch mode defaults to false and will set itself true if batch parameters exist
         "batch_mode": False,
         # Inverse mode not supported when called as a function
         "inverse_mode": False,
@@ -5042,17 +5043,24 @@ def run_model(params):
         # Use sample IDs from data file, or None otherwise
         if ages_from_data_file:
             # Fill in age types
-            obs_age_types = (
-                ["AHe"] * n_obs_ahe
-                + ["AFT"] * n_obs_aft
-                + ["ZHe"] * n_obs_zhe
-                + ["ZFT"] * n_obs_zft
-            )
+            obs_age_types = obs_age_type_file
+            # Set eU and grain radii to None for FT ages
+            obs_eu[obs_age_types == "AFT"] = None
+            obs_eu[obs_age_types == "ZFT"] = None
+            obs_eu = obs_eu.astype("str")
+            obs_eu[obs_eu == "nan"] = ""
+            obs_radius[obs_age_types == "AFT"] = None
+            obs_radius[obs_age_types == "ZFT"] = None
+            obs_radius = obs_radius.astype("str")
+            obs_radius[obs_radius == "nan"] = ""
             # Use sample IDs from data file
             sample_id_out = obs_sample_id_file
+            # Use depo ages from file
+            depo_age_out = obs_depo_age_file
             # Store predicted age eU, grain radius
             pred_eu = obs_eu
             pred_radius = obs_radius
+
         else:
             # Fill in age types
             obs_age_types = (
@@ -5064,6 +5072,8 @@ def run_model(params):
             obs_age_types = np.array(obs_age_types)
             # Use empty sample IDs
             sample_id_out = np.array([""] * len(obs_ages))
+            # Use empty depositional ages
+            depo_age_out = np.array([""] * len(obs_ages))
             # Create array of predicted age eU values
             pred_eu = np.empty(len(obs_ages))
             if len(params["obs_ahe"]) > 0:
@@ -5102,6 +5112,7 @@ def run_model(params):
                 obs_eu,
                 obs_radius,
                 sample_id_out,
+                depo_age_out,
                 pred_ages.round(2),
                 pred_eu,
                 pred_radius,
@@ -5111,7 +5122,7 @@ def run_model(params):
             savefile,
             summary_ages,
             delimiter=",",
-            header="Age type, Observed age (Ma), Observed age stdev (Ma), Observed age eU (ppm), Observed age grain radius (um), Sample ID, Predicted age (Ma), Predicted age eU (ppm), Predicted age grain radius (um)",
+            header="Age type,Measured age (Ma),Measured age stdev (Ma),Measured age eU (ppm),Measured age grain radius (um),Sample ID,Depositional age (Ma),Predicted age (Ma),Predicted age eU (ppm),Predicted age grain radius (um)",
             comments="",
             fmt="%s",
         )
