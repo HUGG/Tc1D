@@ -2,3 +2,4 @@ myst-nb
 numpydoc
 sphinx-book-theme
 sphinxcontrib-bibtex
+tc1d
