@@ -262,9 +262,9 @@ def main():
     thermal.add_argument(
         "--explicit",
         help="Use explicit instead of implicit finite-difference calculation",
-        dest="implicit",
-        action="store_false",
-        default=True,
+        dest="explicit",
+        action="store_true",
+        default=False,
     )
     thermal.add_argument(
         "--temp-surf",
@@ -794,6 +794,7 @@ def main():
     # - plot_ma = True if plots should be in millions of years ago (Ma)
     echo_info = not args.no_echo_info
     echo_thermal_info = not args.no_echo_thermal_info
+    implicit = not args.explicit
     calc_ages = not args.no_calc_ages
     echo_ages = not args.no_echo_ages
     plot_results = not args.no_plot_results
@@ -818,7 +819,7 @@ def main():
         "batch_mode": args.batch_mode,
         "inverse_mode": args.inverse_mode,
         "mantle_adiabat": args.mantle_adiabat,
-        "implicit": args.implicit,
+        "implicit": implicit,
         "read_temps": args.read_temps,
         "compare_temps": args.compare_temps,
         "write_temps": args.write_temps,
