@@ -1463,6 +1463,13 @@ def init_params(
     obs_age_file="",
     misfit_num_params=0,
     misfit_type=1,
+    # BG: Neighbourhood Algorithm (NA) parameters
+    na_ns=24,  # BG: samples per iteration (default: 24)
+    na_nr=12,  # BG: number of Voronoi cells to resample (default: 12)
+    na_ni=50,  # BG: size of initial random search (default: 50)
+    na_n=6,  # BG: number of NA iterations (default: 6)
+    na_n_resample=2000,  # BG: NA appraiser - total new samples
+    na_n_walkers=5,  # BG: NA appraiser - parallel walkers
     plot_results=True,
     display_plots=True,
     plot_ma=True,
@@ -1779,6 +1786,13 @@ def init_params(
         "obs_age_file": obs_age_file,
         "misfit_num_params": misfit_num_params,
         "misfit_type": misfit_type,
+        # BG: Neighbourhood Algorithm (NA) hyper-parameters
+        "na_ns": na_ns,  # BG: NA - samples per iteration
+        "na_nr": na_nr,  # BG: NA - cells to resample
+        "na_ni": na_ni,  # BG: NA - initial random search size
+        "na_n": na_n,  # BG: NA - number of iterations
+        "na_n_resample": na_n_resample,  # BG: NA appraiser - total new samples
+        "na_n_walkers": na_n_walkers,  # BG: NA appraiser - parallel walkers
         "log_output": log_output,
         "log_file": log_file,
         "model_id": model_id,
@@ -2177,13 +2191,19 @@ def batch_run_na(params, batch_params):
     # Bounds of the parameter space
     bounds = list(filtered_params.values())
 
-    # Initialize NA searcher
+    # BG: Read Neighbourhood Algorithm (NA) parameters from params
+    na_ns = int(params["na_ns"])   # BG: NA - samples per iteration
+    na_nr = int(params["na_nr"])   # BG: NA - number of Voronoi cells to resample
+    na_ni = int(params["na_ni"])   # BG: NA - size of initial random search
+    na_n  = int(params["na_n"])    # BG: NA - number of NA iterations
+
+    # Initialize NA searcher (BG: controlled by CLI flags)
     searcher = NASearcher(
         objective,
-        ns=8,  # 16 #100, # number of samples per iteration #10
-        nr=4,  # 8 #10, # number of cells to resample #1
-        ni=20,  # 100, # size of initial random search #1
-        n=5,  # 20, # number of iterations #1
+        ns=na_ns,
+        nr=na_nr,
+        ni=na_ni,
+        n=na_n,
         bounds=bounds,
     )
 
@@ -2240,12 +2260,17 @@ def batch_run_na(params, batch_params):
 
         i[:] = [param_dict[k] for k in filtered_params.keys()]
 
+    # BG: Read NA appraiser settings from params (BG)
+    na_n_resample = int(params["na_n_resample"])  # BG: total new samples
+    na_n_walkers  = int(params["na_n_walkers"])   # BG: parallel walkers
+
+    # Initialize NA appraiser (BG: controlled by CLI flags)
     appraiser = NAAppraiser(
-        initial_ensemble=searcher.samples,  # points of parameter space already sampled
-        log_ppd=-searcher.objectives,  # objective function values
+        initial_ensemble=searcher.samples,   # points of parameter space already sampled
+        log_ppd=-searcher.objectives,        # objective function values
         bounds=bounds,
-        n_resample=2000,  # number of desired new samples #100
-        n_walkers=5,  # number of parallel walkers #1
+        n_resample=na_n_resample,            # BG: number of desired new samples
+        n_walkers=na_n_walkers,              # BG: number of parallel walkers
     )
 
     appraiser.run()  # Results stored in appraiser.samples
@@ -2661,9 +2686,9 @@ def batch_run_mcmc(params, batch_params):
     global_max_burial = max_burial
 
     # BG: MCMC setup - number of walkers and initial positions sampled from uniform priors
-    nwalkers = 16
-    nsteps = 200
-    discard = 30
+    nwalkers = 8
+    nsteps = 10
+    discard = 1
     thin = 3
 
     p0 = [

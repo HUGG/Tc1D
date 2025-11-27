@@ -623,6 +623,54 @@ def main():
         default=1,
         type=int,
     )
+    # BG: Neighbourhood Algorithm (NA) options
+    na_group = parser.add_argument_group(
+        "Neighbourhood Algorithm options",
+        "Options controlling the Neighbourhood Algorithm inverse search",
+    )
+
+    na_group.add_argument(
+        "--na-ns",
+        dest="na_ns",
+        type=int,
+        default=24,
+        help="NA: number of new samples per iteration",
+    )
+    na_group.add_argument(
+        "--na-nr",
+        dest="na_nr",
+        type=int,
+        default=12,
+        help="NA: number of Voronoi cells to resample per iteration",
+    )
+    na_group.add_argument(
+        "--na-ni",
+        dest="na_ni",
+        type=int,
+        default=50,
+        help="NA: size of initial random search",
+    )
+    na_group.add_argument(
+        "--na-n",
+        dest="na_n",
+        type=int,
+        default=6,
+        help="NA: number of NA iterations after the initial search",
+    )
+    na_group.add_argument(
+        "--na-n-resample",
+        dest="na_n_resample",
+        type=int,
+        default=2000,
+        help="NA appraiser: number of new samples to draw for PDF estimation",
+    )
+    na_group.add_argument(
+        "--na-n-walkers",
+        dest="na_n_walkers",
+        type=int,
+        default=5,
+        help="NA appraiser: number of parallel walkers",
+    )
     plotting = parser.add_argument_group("Plotting options", "Options for plotting")
     plotting.add_argument(
         "--no-plot-results",
@@ -891,6 +939,12 @@ def main():
         "obs_age_file": args.obs_age_file,
         "misfit_num_params": args.misfit_num_params,
         "misfit_type": args.misfit_type,
+        "na_ns": args.na_ns,  # BG: NA - samples per iteration
+        "na_nr": args.na_nr,  # BG: NA - number of cells to resample
+        "na_ni": args.na_ni,  # BG: NA - size of initial random search
+        "na_n": args.na_n,  # BG: NA - number of NA iterations
+        "na_n_resample": args.na_n_resample,  # BG: NAAppraiser - total new samples
+        "na_n_walkers": args.na_n_walkers,  # BG: NAAppraiser - parallel walkers
         "log_output": args.log_output,
         "log_file": args.log_file,
         "model_id": args.model_id,
