@@ -671,6 +671,38 @@ def main():
         default=5,
         help="NA appraiser: number of parallel walkers",
     )
+    # BG: MCMC options (emcee)
+    mcmc = parser.add_argument_group(
+        "MCMC options", "Options for MCMC inversion (emcee)"
+    )
+    mcmc.add_argument(
+        "--mcmc-nwalkers",
+        dest="mcmc_nwalkers",
+        help="MCMC: number of walkers in the ensemble",
+        type=int,
+        default=8,
+    )
+    mcmc.add_argument(
+        "--mcmc-nsteps",
+        dest="mcmc_nsteps",
+        help="MCMC: number of steps per walker",
+        type=int,
+        default=50,
+    )
+    mcmc.add_argument(
+        "--mcmc-discard",
+        dest="mcmc_discard",
+        help="MCMC: number of burn-in steps to discard",
+        type=int,
+        default=5,
+    )
+    mcmc.add_argument(
+        "--mcmc-thin",
+        dest="mcmc_thin",
+        help="MCMC: thinning factor for chains",
+        type=int,
+        default=3,
+    )
     plotting = parser.add_argument_group("Plotting options", "Options for plotting")
     plotting.add_argument(
         "--no-plot-results",
@@ -946,6 +978,10 @@ def main():
         "na_n": args.na_n,  # BG: NA - number of NA iterations
         "na_n_resample": args.na_n_resample,  # BG: NAAppraiser - total new samples
         "na_n_walkers": args.na_n_walkers,  # BG: NAAppraiser - parallel walkers
+        "mcmc_nwalkers": args.mcmc_nwalkers,  # BG: MCMC - number of walkers in the ensemble
+        "mcmc_nsteps": args.mcmc_nsteps,  # BG: MCMC - number of steps per walker
+        "mcmc_discard": args.mcmc_discard,  # BG: MCMC - number of burn-in steps to discard
+        "mcmc_thin": args.mcmc_thin,  # BG: MCMC - thinning factor for chains
         "log_output": args.log_output,
         "log_file": args.log_file,
         "model_id": args.model_id,

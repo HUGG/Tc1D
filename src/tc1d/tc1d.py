@@ -1470,6 +1470,11 @@ def init_params(
     na_n=6,  # BG: number of NA iterations (default: 6)
     na_n_resample=2000,  # BG: NA appraiser - total new samples
     na_n_walkers=5,  # BG: NA appraiser - parallel walkers
+    # BG: MCMC (emcee) parameters
+    mcmc_nwalkers=30,  # BG: number of walkers in the ensemble (default: 30)
+    mcmc_nsteps=150,  # BG: number of steps per walker (default: 150)
+    mcmc_discard=50,  # BG: burn-in steps to discard (default: 50)
+    mcmc_thin=3,  # BG: thinning factor (default: 3)
     plot_results=True,
     display_plots=True,
     plot_ma=True,
@@ -1793,6 +1798,11 @@ def init_params(
         "na_n": na_n,  # BG: NA - number of iterations
         "na_n_resample": na_n_resample,  # BG: NA appraiser - total new samples
         "na_n_walkers": na_n_walkers,  # BG: NA appraiser - parallel walkers
+        # BG: MCMC (emcee) hyper-parameters
+        "mcmc_nwalkers": mcmc_nwalkers,  # BG: MCMC - number of walkers
+        "mcmc_nsteps": mcmc_nsteps,  # BG: MCMC - steps per walker
+        "mcmc_discard": mcmc_discard,  # BG: MCMC - burn-in steps to discard
+        "mcmc_thin": mcmc_thin,  # BG: MCMC - thinning factor
         "log_output": log_output,
         "log_file": log_file,
         "model_id": model_id,
@@ -2686,10 +2696,15 @@ def batch_run_mcmc(params, batch_params):
     global_max_burial = max_burial
 
     # BG: MCMC setup - number of walkers and initial positions sampled from uniform priors
-    nwalkers = 8
-    nsteps = 10
-    discard = 1
-    thin = 3
+    mcmc_nwalkers = int(params["mcmc_nwalkers"])  # BG: number of walkers
+    mcmc_nsteps   = int(params["mcmc_nsteps"])    # BG: steps per walker
+    mcmc_discard  = int(params["mcmc_discard"])   # BG: burn-in steps
+    mcmc_thin     = int(params["mcmc_thin"])      # BG: thinning factor
+
+    nwalkers = mcmc_nwalkers
+    nsteps   = mcmc_nsteps
+    discard  = mcmc_discard
+    thin     = mcmc_thin
 
     p0 = [
         [np.random.uniform(low, high) for (low, high) in bounds]
