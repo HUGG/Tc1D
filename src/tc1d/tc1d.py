@@ -13,6 +13,7 @@ from scipy.linalg import solve
 import shutil
 import subprocess
 import time
+import math
 from typing import Tuple
 import warnings
 
@@ -151,6 +152,7 @@ def echo_model_info(
 
     # Output erosion model
     ero_models = {
+        0: "Multi-stage erosion from file (CSV)",
         1: "Constant",
         2: "Step-function",
         3: "Exponential decay",
@@ -718,6 +720,412 @@ def calculate_ages_and_tcs(
         zft_temp,
     )
 
+def read_ero_file(ero_file_path):
+    """
+    BG: Read a multi-stage erosion definition file for ero_type = 0.
+
+        type,unit,duration_myr,parameter1,parameter2,parameter3
+
+    where:
+        type  = "constant", "linear", "exponential"
+        unit  = "erosion_rate" or "thickness"
+        duration_myr = stage duration (float > 0)
+
+    Parameter conventions (CSV)
+    ---------------------------
+    - constant + erosion_rate : p1 = r_const
+    - constant + thickness    : p1 = M_total   (converted internally to rate)
+
+    - linear + erosion_rate   : p1 = r_start, p2 = r_end
+    - linear + thickness      : p1 = M_total, p2 = s (dimensionless in [-1, 1])
+
+    - exponential + erosion_rate : p1 = r_start, p2 = tau, p3 = r_target
+    - exponential + thickness    : p1 = M_total, p2 = tau, p3 = M_base
+                                   (baseline thickness; internal rates are reconstructed)
+
+    Notes
+    -----
+    In "thickness" mode, no erosion rates are prescribed directly in the CSV file.
+    All internal erosion rates are reconstructed automatically so that the total
+    eroded thickness over the stage duration is conserved exactly.
+
+    Sign convention
+    ---------------
+    Erosion rates are defined as:
+    - positive values: surface erosion / exhumation
+    - negative values: burial / subsidence
+
+    A burial phase that progressively stabilizes corresponds to an erosion rate
+    that increases towards zero (i.e. becomes less negative).
+
+    Returns
+    -------
+    stages : list of dict
+        Each stage has:
+            "type" : str
+            "unit" : str
+            "duration_myr" : float
+            "params" : np.ndarray
+                Internal rate-based parameterization used by the forward model.
+                This representation is independent of the CSV parameterization mode
+                (erosion_rate or thickness):
+                - constant:    [r_const]
+                - linear:      [r_start, r_end]
+                - exponential: [r_start, r_target, tau]
+            "dt_sec" : float
+                Stage duration in seconds.
+            "csv_params" : list
+                Raw CSV input parameters [p1, p2, p3] as provided by the user.
+                Entries may be None if the corresponding CSV field is empty.
+                These values are used only for user-facing display.
+    """
+
+    path = Path(ero_file_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Cannot find erosion file: {ero_file_path}")
+
+    stages = []
+
+    with path.open("r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+
+        required_cols = ["type", "unit", "duration_myr",
+                         "parameter1", "parameter2", "parameter3"]
+        for col in required_cols:
+            if col not in reader.fieldnames:
+                raise ValueError(f"Erosion file missing required column: {col}")
+
+        # --- Parse numeric parameters ---
+        def parse_param(v, line_idx, colname):
+            if v is None:
+                return None
+            v = str(v).strip()
+            if v == "":
+                return None
+            try:
+                return float(v)
+            except ValueError:
+                raise ValueError(
+                    f"Line {line_idx}: {colname} must be a float (got {v!r})."
+                )
+
+        for line_idx, row in enumerate(reader, start=2):
+            # Skip rows fully empty
+            if all((str(v).strip() == "" for v in row.values())):
+                continue
+
+            # --- Parse type ---
+            stage_type = row["type"].strip().lower()
+            if stage_type not in ("constant", "linear", "exponential"):
+                raise ValueError(
+                    f"Line {line_idx}: invalid 'type'={row['type']!r}. "
+                    "Valid: constant, linear, exponential."
+                )
+
+            # --- Parse unit ---
+            unit = row["unit"].strip().lower()
+            if unit not in ("erosion_rate", "thickness"):
+                raise ValueError(
+                    f"Line {line_idx}: invalid 'unit'={row['unit']!r}. "
+                    "Valid: erosion_rate, thickness."
+                )
+
+            # --- Parse duration ---
+            try:
+                duration_myr = float(row["duration_myr"])
+            except ValueError:
+                raise ValueError(
+                    f"Line {line_idx}: duration_myr must be a float, got {row['duration_myr']!r}"
+                )
+            if duration_myr <= 0:
+                raise ValueError(
+                    f"Line {line_idx}: duration_myr must be > 0 (got {duration_myr})"
+                )
+
+            dt_stage_myr = duration_myr
+
+            p1 = parse_param(row["parameter1"], line_idx, "parameter1")
+            p2 = parse_param(row["parameter2"], line_idx, "parameter2")
+            p3 = parse_param(row["parameter3"], line_idx, "parameter3")
+
+            csv_params = [p1, p2, p3]  # keep raw CSV parameters (may contain None)
+
+            # ============================
+            # BUILD PARAMETERS BY TYPE
+            # ============================
+
+            # --- CONSTANT ---
+            if stage_type == "constant":
+                if unit == "erosion_rate":
+                    if p1 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: constant + erosion_rate requires parameter1 = r_const."
+                        )
+                    r_const = p1
+                else:  # thickness
+                    if p1 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: constant + thickness requires parameter1 = total thickness."
+                        )
+                    r_const = p1 / dt_stage_myr  # convert total thickness over the stage to a mean erosion rate [km/Myr]
+
+                params = np.array([r_const], dtype=float)
+
+            # --- LINEAR ---
+            elif stage_type == "linear":
+                if unit == "erosion_rate":
+                    if p1 is None or p2 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: linear + erosion_rate requires parameter1=r_start, parameter2=r_end."
+                        )
+                    r_start = p1
+                    r_end = p2
+
+                else:  # thickness
+                    # Reconstruction (thickness mode):
+                    #   p1 = M_total [km]
+                    #   p2 = s (dimensionless slope/shape factor in [-1, 1])
+                    # The linear rate is reconstructed so that:
+                    #   mean rate r_mean = M_total / dt
+                    #   r_start = r_mean * (1 - s)
+                    #   r_end   = r_mean * (1 + s)
+                    # This guarantees strict area conservation: integral(rate dt) == M_total.
+
+                    if p1 is None or p2 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: linear + thickness requires parameter1=M_total, parameter2=s (in [-1,1])."
+                        )
+
+                    M_total = p1
+                    s = p2
+
+                    if s < -1.0 or s > 1.0:
+                        raise ValueError(
+                            f"Line {line_idx}: linear + thickness requires parameter2=s in [-1,1] (got {s})."
+                        )
+
+                    r_mean = M_total / dt_stage_myr  # km/Myr (dt is duration_myr here)
+                    r_start = r_mean * (1.0 - s)
+                    r_end = r_mean * (1.0 + s)
+
+                params = np.array([r_start, r_end], dtype=float)
+
+            # --- EXPONENTIAL ---
+            elif stage_type == "exponential":
+                # CSV parameter conventions:
+                # - erosion_rate mode: p1 = r_start, p2 = tau, p3 = r_target
+                # - thickness mode:    p1 = M_total, p2 = tau, p3 = M_base
+                #   (M_base is a baseline thickness over the stage; internal rates are reconstructed)
+
+                if p2 is None or p2 <= 0:
+                    raise ValueError(
+                        f"Line {line_idx}: exponential law requires parameter2 = tau > 0."
+                    )
+                tau = p2
+
+                if unit == "erosion_rate":
+                    if p1 is None or p3 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: exponential + erosion_rate requires "
+                            "parameter1=r_start, parameter2=tau, parameter3=r_target."
+                        )
+                    r_start = p1
+                    r_target = p3
+
+                else:  # thickness
+                    # Reconstruction (thickness mode):
+                    #   Inputs:
+                    #     p1 = M_total [km]  : total thickness over the stage
+                    #     p2 = tau [Myr]     : characteristic timescale
+                    #     p3 = M_base [km]   : baseline thickness over the stage
+                    #
+                    #   We define the asymptotic (target) erosion rate as:
+                    #       r_target = r_base = M_base / dt
+                    #
+                    #   The initial erosion rate r_start is solved so that strict
+                    #   area conservation holds:
+                    #
+                    #       r(t) = r_target + (r_start - r_target) * exp(-t/tau)
+                    #       ∫ r(t) dt (0 → dt) = M_total
+
+                    if p1 is None or p3 is None:
+                        raise ValueError(
+                            f"Line {line_idx}: exponential + thickness requires "
+                            "parameter1=M_total, parameter2=tau, parameter3=M_base."
+                        )
+
+                    M_total = p1
+                    M_base = p3
+                    # If M_total == M_base, the exponential collapses to a constant rate
+
+                    # Baseline rate (asymptote)
+                    r_base = M_base / dt_stage_myr  # km/Myr
+                    r_target = r_base
+
+                    A = tau * (1.0 - math.exp(-dt_stage_myr / tau))  # Myr
+                    if abs(A) < 1e-12:
+                        raise ValueError(
+                            f"Line {line_idx}: cannot compute r_start (tau too small or duration too small). "
+                            f"tau={tau}, duration={dt_stage_myr}."
+                        )
+
+                    r_start = r_target + (M_total - r_target * dt_stage_myr) / A
+
+                params = np.array([r_start, r_target, tau], dtype=float)
+
+            # --- Store stage ---
+            stages.append(
+                {
+                    "type": stage_type,
+                    "unit": unit,
+                    "duration_myr": dt_stage_myr,
+                    "dt_sec": myr2sec(dt_stage_myr),
+                    "params": params,
+                    "csv_params": csv_params,  # raw CSV input (for display only)
+                }
+            )
+
+    return stages
+
+def format_ero_stages_table(stages):
+    """
+    BG: Build a compact CLI table describing CSV input for multi-stage erosion (ero_type=0).
+
+    This table is intended to echo the *user-provided CSV parameters* (p1/p2/p3) with
+    their meaning depending on (type, unit).
+    """
+    headers = ["Stage", "Type", "Unit", "Duration [Myr]", "p1", "p2", "p3", "CSV convention"]
+
+    def csv_convention(stage_type: str, unit: str) -> str:
+        if unit == "erosion_rate":
+            if stage_type == "constant":
+                return "p1=r_const [km/Myr]"
+            if stage_type == "linear":
+                return "p1=r_start, p2=r_end [km/Myr]"
+            if stage_type == "exponential":
+                return "p1=r_start [km/Myr], p2=tau [Myr], p3=r_target [km/Myr]"
+        elif unit == "thickness":
+            if stage_type == "constant":
+                return "p1=M_total [km]"
+            if stage_type == "linear":
+                return "p1=M_total [km], p2=s (unitless)"
+            if stage_type == "exponential":
+                return "p1=M_total [km], p2=tau [Myr], p3=M_base [km]"
+        return "--"
+
+    rows = []
+    for i, st in enumerate(stages, start=1):
+        stage_type = st.get("type", "—")
+        unit = st.get("unit", "—")
+        dur = st.get("duration_myr", float("nan"))
+
+        # Raw CSV params: keep blanks as "--"
+        csvp = st.get("csv_params", [None, None, None])
+        if not isinstance(csvp, (list, tuple)) or len(csvp) != 3:
+            csvp = [None, None, None]
+
+        p1 = "--" if csvp[0] is None else f"{csvp[0]:.4g}"
+        p2 = "--" if csvp[1] is None else f"{csvp[1]:.4g}"
+        p3 = "--" if csvp[2] is None else f"{csvp[2]:.4g}"
+
+        conv = csv_convention(stage_type, unit)
+
+        rows.append([str(i), stage_type, unit, f"{dur:.4g}", p1, p2, p3, conv])
+
+    # Compute column widths
+    col_widths = [len(h) for h in headers]
+    for row in rows:
+        for j, cell in enumerate(row):
+            col_widths[j] = max(col_widths[j], len(cell))
+
+    def fmt_row(items):
+        return "  ".join(items[j].ljust(col_widths[j]) for j in range(len(headers)))
+
+    lines = [fmt_row(headers), fmt_row(["-" * w for w in col_widths])]
+    for row in rows:
+        lines.append(fmt_row(row))
+
+    return "\n".join(lines)
+
+def erosion_constant(t_local_myr: float, r_const: float) -> float:
+    """
+    BG: Constant erosion rate over a stage.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage, in Myr.
+    r_const : float
+        Constant erosion rate [km/Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr (always r_const).
+    """
+    return r_const
+
+
+def erosion_linear(
+    t_local_myr: float, r_start: float, r_end: float, dt_stage_myr: float
+) -> float:
+    """
+    BG: Linear change in erosion rate over a stage.
+
+    Rate evolves linearly from r_start (at t_local=0) to r_end
+    (at t_local = dt_stage_myr).
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Erosion rate at the start of the stage [km/Myr].
+    r_end : float
+        Erosion rate at the end of the stage [km/Myr].
+    dt_stage_myr : float
+        Duration of the stage [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if dt_stage_myr <= 0.0:
+        return r_start
+    t = min(max(t_local_myr, 0.0), dt_stage_myr)
+    return r_start + (r_end - r_start) * (t / dt_stage_myr)
+
+
+def erosion_exponential(
+    t_local_myr: float, r_start: float, r_target: float, tau_myr: float
+) -> float:
+    """
+    BG: Exponential change in erosion rate over a stage.
+
+    Rate follows an exponential relaxation from r_start towards r_target
+    with timescale tau_myr.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Initial erosion rate at stage start [km/Myr].
+    r_target : float
+        Target erosion rate [km/Myr].
+    tau_myr : float
+        Characteristic timescale [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if tau_myr <= 0.0:
+        return r_start
+    t = max(t_local_myr, 0.0)
+    return r_target + (r_start - r_target) * math.exp(-t / tau_myr)
 
 def calculate_erosion_rate(
     params,
@@ -734,6 +1142,7 @@ def calculate_erosion_rate(
 
     Erosion model types:
 
+    0. Multi-stage erosion defined from external csv file (BG)
     1. Constant erosion rate
     2. Constant rate with a step-function change at a specified time
     3. Exponential decay
@@ -778,9 +1187,74 @@ def calculate_erosion_rate(
     # Split the code below into separate functions?
     # Could have tests integrated more easily that way.
 
+    # BG: Multi-stage erosion model read from file (ero_type = 0)
+    if params["ero_type"] == 0:
+
+        # 1) Retrieve stages (prefer preloaded in params to avoid re-reading file)
+        stages = params.get("ero_stages", None)
+        if stages is None:
+            ero_file = params.get("ero_file", "")
+            if ero_file == "":
+                raise ValueError("ero_type=0 requires --ero-file.")
+            stages = read_ero_file(ero_file)
+
+        # 2) Find which stage we are currently in, using current_time [s]
+        t = current_time  # current model time [s] since start
+        t0 = 0.0
+        found = False
+
+        for i, st in enumerate(stages):
+            t1 = t0 + st["dt_sec"]
+            is_last = (i == len(stages) - 1)
+
+            if (t >= t0) and (t < t1 or (is_last and t <= t1)):
+                # Local time since stage start in Myr
+                t_local_myr = (t - t0) / myr2sec(1.0)
+
+                stage_type = st["type"]
+                dt_stage_myr = st["duration_myr"]
+                p = st["params"]
+
+                # 3) Compute instantaneous erosion rate [km/Myr] for this stage
+                if stage_type == "constant":
+                    rate_km_myr = erosion_constant(t_local_myr, p[0])
+
+                elif stage_type == "linear":
+                    rate_km_myr = erosion_linear(t_local_myr, p[0], p[1], dt_stage_myr)
+
+                elif stage_type == "exponential":
+                    rate_km_myr = erosion_exponential(t_local_myr, p[0], p[1], p[2])
+
+                else:
+                    raise ValueError(f"Unknown erosion stage type: {stage_type}")
+
+                found = True
+                break
+
+            t0 = t1
+
+        if not found:
+            # BG: If stages end before t_total, set erosion rate to zero after the last stage.
+            # Use a tolerance of ~2 time steps to avoid floating-point / rounding issues at run end.
+            total_stage_sec = params.get("ero_total_stage_sec", sum(st["dt_sec"] for st in stages))
+            eps_sec = max(1.0e-6, 2.0 * dt)  # dt here is the model timestep in seconds (as passed from run_model)
+
+            if t >= total_stage_sec - eps_sec:
+                rate_km_myr = 0.0
+            else:
+                raise ValueError(
+                    "current_time is outside erosion stages (unexpected). "
+                    "Check erosion file durations and time handling."
+                )
+
+        # 4) Convert rate [km/Myr] to velocity [m/s]
+        vx_array[:] = mmyr2ms(rate_km_myr)
+        vx_surf = vx_array[0]
+        vx_max = abs(vx_surf)
+
     # Constant erosion rate
     # Convert to inputting rate directly?
-    if params["ero_type"] == 1:
+    elif params["ero_type"] == 1:
         vx_array[:] = kilo2base(params["ero_option1"]) / t_total
         vx_surf = vx_array[0]
         vx_max = vx_surf
@@ -942,7 +1416,7 @@ def calculate_erosion_rate(
     # Catch bad cases
     else:
         raise ValueError(
-            f"Bad erosion type: {params['ero_type']}. Must be between 1 and 7."
+            f"Bad erosion type: {params['ero_type']}. Must be 0 (multi-stage) or between 1 and 7."
         )
 
     # Set velocities below Moho to 0.0 if using crustal uplift only
@@ -965,14 +1439,73 @@ def calculate_exhumation_magnitude(
     ero_option9,
     ero_option10,
     t_total,
+    ero_file=None,
 ):
-    """Calculates erosion magnitude in kilometers."""
+    """
+    Calculates total erosion / exhumation magnitude over the full model run.
+
+    For ero_type = 0 (CSV-driven multi-stage erosion), the magnitude is computed
+    by analytically integrating the erosion rate over each stage, using the
+    internal rate-based parameterization reconstructed by read_ero_file().
+
+    If the total duration of erosion stages exceeds t_total, only the portion
+    within t_total is integrated. If stages are shorter than t_total, no erosion
+    is applied beyond the last stage.
+
+    Returns erosion magnitude in kilometers.
+    """
 
     # Initialize fw_ref_frame Boolean for ero types != 7
     fw_ref_frame = False
 
+    # BG: Multi-stage erosion from file (ero_type = 0)
+    if ero_type == 0:
+        if not ero_file:
+            raise ValueError("ero_type=0 requires ero_file to compute exhumation magnitude.")
+
+        stages = read_ero_file(ero_file)
+        thickness_km = 0.0
+        # Convert total model time from seconds to Myr
+        t_total_myr = t_total / myr2sec(1.0)
+        remaining_myr = t_total_myr
+        total_stage_myr = sum(st["duration_myr"] for st in stages)
+
+        for st in stages:
+            dt_stage = st["duration_myr"]  # Myr
+            dt = min(dt_stage, remaining_myr)
+            if dt <= 0.0:
+                break
+            p = st["params"]
+            stage_type = st["type"]
+
+            if stage_type == "constant":
+                r_const = p[0]
+                thickness_km += r_const * dt
+
+            elif stage_type == "linear":
+                r_start, r_end = p[0], p[1]
+                # Integral of a linear erosion rate from r_start to r_end over dt
+                thickness_km += r_start * dt + 0.5 * (r_end - r_start) * (dt ** 2) / dt_stage
+
+            elif stage_type == "exponential":
+                r_start, r_target, tau = p[0], p[1], p[2]
+                # Integral of r(t) = r_target + (r_start - r_target)*exp(-t/tau)
+                thickness_km += r_target * dt + (r_start - r_target) * tau * (1.0 - math.exp(-dt / tau))
+
+            else:
+                raise ValueError(f"Unknown stage erosion type: {stage_type}")
+            
+            remaining_myr -= dt
+
+        if total_stage_myr < t_total_myr - 1.0e-12:
+            # BG: If stages are shorter than t_total, erosion is set to zero afterwards
+            # (no additional exhumation beyond what is prescribed in the file).
+            pass
+
+        magnitude = thickness_km
+
     # Constant erosion rate
-    if ero_type == 1:
+    elif ero_type == 1:
         magnitude = ero_option1
 
     elif ero_type == 2:
@@ -1055,7 +1588,7 @@ def calculate_exhumation_magnitude(
         magnitude /= kilo2base(1.0)
 
     else:
-        raise ValueError(f"Bad erosion type: {ero_type}. Must be between 1 and 7.")
+        raise ValueError(f"Bad erosion type: {ero_type}. Must be 0 (multi-stage) or between 1 and 7.")
 
     # Return values in km
     return magnitude, fw_ref_frame
@@ -1439,6 +1972,7 @@ def init_params(
     ero_option8=0.0,
     ero_option9=0.0,
     ero_option10=0.0,
+    ero_file="",
     calc_ages=True,
     ketch_aft=True,
     madtrax_aft=False,
@@ -1602,6 +2136,8 @@ def init_params(
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option10 : float or int, default=0.0
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+    ero_file : str, default=""
+        Path to a multi-stage erosion definition file used when ero_type = 0.
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
@@ -1748,6 +2284,7 @@ def init_params(
         "ero_option8": ero_option8,
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
+        "ero_file": ero_file,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
         "t_total": time,
@@ -2762,7 +3299,7 @@ def batch_run_mcmc(params, batch_params):
     # BG: Identify and print the best parameter set (lowest misfit)
     best_idx = np.argmax(flat_log_probs)
     best = flat_samples[best_idx]
-    best_dict = dict(zip(param_names, best))  # Manquait ici
+    best_dict = dict(zip(param_names, best))
     print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
 
     # Stop timer before displaying plots if plots are to be displayed
@@ -2911,6 +3448,37 @@ def run_model(params):
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
 
+    # BG: Preload multi-stage erosion file (ero_type = 0)
+    if params["ero_type"] == 0:
+        if not params.get("ero_file", ""):
+            raise ValueError("ero_type=0 requires --ero-file.")
+
+        params["ero_stages"] = read_ero_file(params["ero_file"])
+
+        if (not params["batch_mode"]) and params.get("echo_inputs", False):
+            print("\n--- Erosion stages (from CSV) ---")
+            print(format_ero_stages_table(params["ero_stages"]))
+            print("")
+
+        # BG: Validate total duration vs t_total (seconds)
+        total_stage_sec = sum(st["dt_sec"] for st in params["ero_stages"])
+        eps_sec = max(1.0e-6, 2.0 * dt)  # dt is model timestep [s] (already converted in run_model)
+
+        if total_stage_sec > t_total + eps_sec:
+            total_stage_myr = total_stage_sec / myr2sec(1.0)
+            t_total_myr = t_total / myr2sec(1.0)
+
+            warnings.warn(
+                f"The cumulative erosion duration ({total_stage_myr:.2f} Myr) "
+                f"exceeds the model time ({t_total_myr:.2f} Myr).\n"
+                "Tc1D will apply erosion stages only until the model end time. "
+                "Any erosion defined after this time will be ignored "
+                "and will not influence the results.",
+                RuntimeWarning,
+            )
+        # Total duration of all erosion stages (seconds), used for tail handling
+        params["ero_total_stage_sec"] = total_stage_sec
+
     # Calculate exhumation magnitude
     exhumation_magnitude, fw_reference_frame = calculate_exhumation_magnitude(
         params["ero_type"],
@@ -2925,6 +3493,7 @@ def run_model(params):
         params["ero_option9"],
         params["ero_option10"],
         t_total,
+        params.get("ero_file", None),
     )
 
     # Create velocity arrays for heat transfer

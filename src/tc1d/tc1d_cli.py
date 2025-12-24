@@ -347,7 +347,7 @@ def main():
     erosion.add_argument(
         "--ero-type",
         dest="ero_type",
-        help="Type of erosion model (1-7 - see GitHub docs)",
+        help="Type of erosion model (0-7 - see GitHub docs). Use 0 with --ero-file.",
         nargs="+",
         default=[1],
         type=int,
@@ -431,6 +431,16 @@ def main():
         nargs="+",
         default=[0.0],
         type=float,
+    )
+    erosion.add_argument(
+        "--ero-file",
+        dest="ero_file",
+        help=(
+            "CSV file defining multi-stage erosion (used only when --ero-type 0). "
+            "Example: data/ero_file.csv"
+        ),
+        default="",
+        type=str,
     )
     prediction = parser.add_argument_group(
         "Age prediction options", "Options for age prediction"
@@ -858,6 +868,10 @@ def main():
 
     args = parser.parse_args()
 
+    # BG: CLI validation for multi-stage erosion
+    if (0 in args.ero_type) and (args.ero_file == ""):
+        parser.error("--ero-type 0 requires --ero-file <path/to/file.csv>")
+
     # Display help and exit if no flags are set
     if len(sys.argv) == 1:
         parser.print_help()
@@ -929,6 +943,7 @@ def main():
         "ero_option8": args.ero_option8,
         "ero_option9": args.ero_option9,
         "ero_option10": args.ero_option10,
+        "ero_file": args.ero_file,
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
         "t_total": args.time,
