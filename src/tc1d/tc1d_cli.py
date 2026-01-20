@@ -3,12 +3,404 @@
 # Import libraries we need
 import argparse
 from importlib.metadata import version
+from pathlib import Path
 import sys
 import tc1d
 
 # import cProfile
 # from gooey import Gooey
 
+def _load_yaml_dict(path: str) -> dict:
+    """
+    Load a YAML input file and return a dictionary.
+
+    Notes
+    -----
+    - Requires PyYAML (pip install pyyaml).
+    - Top-level YAML structure must be a mapping/dict.
+    """
+    try:
+        import yaml  # PyYAML
+    except ImportError as e:
+        raise ImportError(
+            "Missing dependency: PyYAML. Install it with:\n"
+            "  pip install pyyaml\n"
+            "or add it to your environment/requirements."
+        ) from e
+
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"Cannot find input YAML file: {path}")
+
+    with p.open("r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+
+    if data is None:
+        return {}
+
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Top-level YAML structure must be a mapping/dict, got {type(data)}"
+        )
+
+    return data
+
+
+def _as_list(x):
+    """Keep argparse nargs='+' behaviour: store scalars as one-element lists."""
+    return x if isinstance(x, list) else [x]
+
+def _as_float_list(x):
+    """Return a list[float] from a YAML scalar or list."""
+    if isinstance(x, list):
+        return [float(v) for v in x]
+    return [float(x)]
+
+def _as_bool(x) -> bool:
+    """
+    Parse booleans robustly from YAML.
+    Accepts: bool, 0/1, 'true'/'false' strings (case-insensitive).
+    """
+    if isinstance(x, bool):
+        return x
+    if isinstance(x, (int, float)) and x in (0, 1):
+        return bool(x)
+    if isinstance(x, str):
+        s = x.strip().lower()
+        if s in ("true", "yes", "y", "1", "on"):
+            return True
+        if s in ("false", "no", "n", "0", "off"):
+            return False
+    raise ValueError(f"Cannot parse boolean from value: {x!r}")
+
+
+def _apply_yaml_to_args(args, y: dict) -> None:
+    """
+    Apply YAML overrides to the argparse Namespace.
+
+    Rules:
+    - Only keys present in YAML are applied.
+    - YAML values override values provided on the CLI.
+    """
+    # ---- general
+    g = y.get("general", {})
+    if isinstance(g, dict):
+        for k in (
+            "run_type",
+            "batch_mode",
+            "inverse_mode",
+            "debug",
+            "echo_inputs",
+            "no_echo_info",
+            "no_echo_thermal_info",
+            "no_echo_ages",
+        ):
+            if k in g:
+                # booleans:
+                if k in (
+                    "batch_mode",
+                    "inverse_mode",
+                    "debug",
+                    "echo_inputs",
+                    "no_echo_info",
+                    "no_echo_thermal_info",
+                    "no_echo_ages",
+                ):
+                    setattr(args, k, _as_bool(g[k]))
+                else:
+                    setattr(args, k, g[k])
+
+    # ---- geometry_time
+    gt = y.get("geometry_time", {})
+    if isinstance(gt, dict):
+        if "length" in gt:
+            args.length = _as_list(float(gt["length"]))
+        if "nx" in gt:
+            args.nx = _as_list(int(gt["nx"]))
+        if "time" in gt:
+            args.time = _as_list(float(gt["time"]))
+        if "dt" in gt:
+            args.dt = _as_list(float(gt["dt"]))
+
+        for k in ("init_moho_depth", "removal_fraction", "removal_start_time", "removal_end_time"):
+            if k in gt:
+                setattr(args, k, _as_list(float(gt[k])))
+
+        for k in ("crustal_uplift", "fixed_moho"):
+            if k in gt:
+                setattr(args, k, _as_bool(gt[k]))
+
+    # ---- materials
+    m = y.get("materials", {})
+    if isinstance(m, dict):
+        list_float_keys = (
+            "rho_crust", "cp_crust", "k_crust", "heat_prod_crust", "heat_prod_decay_depth", "alphav_crust",
+            "rho_mantle", "cp_mantle", "k_mantle", "heat_prod_mantle", "alphav_mantle",
+            "rho_a", "k_a",
+        )
+        for k in list_float_keys:
+            if k in m:
+                setattr(args, k, _as_list(float(m[k])))
+
+    # ---- thermal_model
+    th = y.get("thermal_model", {})
+    if isinstance(th, dict):
+        if "explicit" in th:
+            args.explicit = _as_bool(th["explicit"])
+        if "mantle_adiabat" in th:
+            # CLI stores this as a list (nargs='+'), keep that storage but parse the boolean safely.
+            args.mantle_adiabat = _as_list(_as_bool(th["mantle_adiabat"]))
+        if "temp_surf" in th:
+            args.temp_surf = _as_list(float(th["temp_surf"]))
+        if "temp_base" in th:
+            args.temp_base = _as_list(float(th["temp_base"]))
+
+    # ---- intrusion_model
+    intr = y.get("intrusion_model", {})
+    if isinstance(intr, dict):
+        list_float_keys = (
+            "intrusion_temperature",
+            "intrusion_start_time",
+            "intrusion_duration",
+            "intrusion_thickness",
+            "intrusion_base_depth",
+        )
+        for k in list_float_keys:
+            if k in intr:
+                setattr(args, k, _as_list(float(intr[k])))
+
+    # ---- erosion_model
+    e = y.get("erosion_model", {})
+    if isinstance(e, dict):
+        if "vx_init" in e:
+            args.vx_init = _as_list(float(e["vx_init"]))
+        if "ero_type" in e:
+            args.ero_type = _as_list(int(e["ero_type"]))
+        if "ero_file" in e:
+            args.ero_file = str(e["ero_file"])
+
+        for i in range(1, 11):
+            key = f"ero_option{i}"
+            if key in e:
+                setattr(args, key, _as_float_list(e[key]))
+
+    # ---- age_prediction
+    ap = y.get("age_prediction", {})
+    if isinstance(ap, dict):
+        for k in ("no_calc_ages", "ketch_aft", "madtrax_aft"):
+            if k in ap:
+                setattr(args, k, _as_bool(ap[k]))
+
+        for k in ("madtrax_aft_kinetic_model", "madtrax_zft_kinetic_model"):
+            if k in ap:
+                setattr(args, k, int(ap[k]))
+
+        for k in ("ap_rad", "ap_uranium", "ap_thorium", "zr_rad", "zr_uranium", "zr_thorium", "pad_time"):
+            if k in ap:
+                setattr(args, k, _as_list(float(ap[k])))
+
+        if "past_age_increment" in ap:
+            args.past_age_increment = float(ap["past_age_increment"])
+
+    # ---- observations
+    obs = y.get("observations", {})
+    if isinstance(obs, dict):
+        if "obs_age_file" in obs:
+            args.obs_age_file = str(obs["obs_age_file"])
+
+        list_float_list_keys = (
+            "obs_ahe", "obs_ahe_stdev", "obs_aft", "obs_aft_stdev",
+            "obs_zhe", "obs_zhe_stdev", "obs_zft", "obs_zft_stdev",
+        )
+        for k in list_float_list_keys:
+            if k in obs:
+                args_list = obs[k] if isinstance(obs[k], list) else [obs[k]]
+                setattr(args, k, [float(v) for v in args_list])
+
+        if "misfit_num_params" in obs:
+            args.misfit_num_params = int(obs["misfit_num_params"])
+        if "misfit_type" in obs:
+            args.misfit_type = int(obs["misfit_type"])
+
+    # ---- plotting
+    pl = y.get("plotting", {})
+    if isinstance(pl, dict):
+        for k in (
+            "no_plot_results", "no_display_plots", "plot_myr",
+            "plot_depth_history", "plot_fault_depth_history", "invert_tt_plot",
+            "crust_solidus", "mantle_solidus", "solidus_ranges",
+        ):
+            if k in pl:
+                setattr(args, k, _as_bool(pl[k]))
+
+        if "crust_solidus_comp" in pl:
+            args.crust_solidus_comp = str(pl["crust_solidus_comp"])
+        if "mantle_solidus_xoh" in pl:
+            args.mantle_solidus_xoh = float(pl["mantle_solidus_xoh"])
+        if "t_plots" in pl:
+            args.t_plots = list(pl["t_plots"])
+
+    # ---- output
+    out = y.get("output", {})
+    if isinstance(out, dict):
+        for k in ("log_output", "write_temps", "write_past_ages", "write_age_output", "save_plots"):
+            if k in out:
+                setattr(args, k, _as_bool(out[k]))
+        for k in ("log_file", "model_id"):
+            if k in out:
+                setattr(args, k, str(out[k]))
+
+    # ---- advanced
+    adv = y.get("advanced", {})
+    if isinstance(adv, dict):
+        for k in ("read_temps", "compare_temps"):
+            if k in adv:
+                setattr(args, k, _as_bool(adv[k]))
+
+    # ---- inversion hyperparameters
+    inv = y.get("inversion", {})
+    if isinstance(inv, dict):
+        na = inv.get("neighbourhood_algorithm", {})
+        if isinstance(na, dict):
+            for k in ("na_ns", "na_nr", "na_ni", "na_n", "na_n_resample", "na_n_walkers"):
+                if k in na:
+                    setattr(args, k, int(na[k]))
+
+        mc = inv.get("mcmc", {})
+        if isinstance(mc, dict):
+            for k in ("mcmc_nwalkers", "mcmc_nsteps", "mcmc_discard", "mcmc_thin"):
+                if k in mc:
+                    setattr(args, k, int(mc[k]))
+
+def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
+    """
+    Warn if user provided CLI options that are also set in YAML.
+    In Tc1D, YAML has priority => those CLI options will be ignored.
+    """
+    if not isinstance(y, dict):
+        return
+
+    # Map: (yaml_section, yaml_key) -> argparse dest
+    mapping = {
+        ("general", "run_type"): "run_type",
+        ("general", "batch_mode"): "batch_mode",
+        ("general", "inverse_mode"): "inverse_mode",
+        ("general", "debug"): "debug",
+        ("general", "echo_inputs"): "echo_inputs",
+        ("general", "no_echo_info"): "no_echo_info",
+        ("general", "no_echo_thermal_info"): "no_echo_thermal_info",
+        ("general", "no_echo_ages"): "no_echo_ages",
+
+        ("erosion_model", "ero_type"): "ero_type",
+        ("erosion_model", "ero_file"): "ero_file",
+
+        ("plotting", "no_plot_results"): "no_plot_results",
+        ("plotting", "no_display_plots"): "no_display_plots",
+        ("plotting", "plot_myr"): "plot_myr",
+        ("plotting", "plot_depth_history"): "plot_depth_history",
+        ("plotting", "plot_fault_depth_history"): "plot_fault_depth_history",
+        ("plotting", "invert_tt_plot"): "invert_tt_plot",
+        ("plotting", "t_plots"): "t_plots",
+        ("plotting", "crust_solidus"): "crust_solidus",
+        ("plotting", "crust_solidus_comp"): "crust_solidus_comp",
+        ("plotting", "mantle_solidus"): "mantle_solidus",
+        ("plotting", "mantle_solidus_xoh"): "mantle_solidus_xoh",
+        ("plotting", "solidus_ranges"): "solidus_ranges",
+
+        ("output", "log_output"): "log_output",
+        ("output", "log_file"): "log_file",
+        ("output", "model_id"): "model_id",
+        ("output", "write_temps"): "write_temps",
+        ("output", "write_past_ages"): "write_past_ages",
+        ("output", "write_age_output"): "write_age_output",
+        ("output", "save_plots"): "save_plots",
+
+        ("advanced", "read_temps"): "read_temps",
+        ("advanced", "compare_temps"): "compare_temps",
+    }
+
+    # Add ero_option1..10
+    for i in range(1, 11):
+        mapping[("erosion_model", f"ero_option{i}")] = f"ero_option{i}"
+
+    conflicts = []
+
+    for (section, key), dest in mapping.items():
+        sec = y.get(section, {})
+        if not isinstance(sec, dict):
+            continue
+        if key not in sec:
+            continue
+
+        cli_val = getattr(cli_args, dest, None)
+        def_val = getattr(default_args, dest, None)
+
+        # If CLI differs from default, user likely set it explicitly on CLI.
+        if cli_val != def_val:
+            conflicts.append((dest, cli_val, sec[key]))
+
+    if not conflicts:
+        return
+
+    msg_lines = [
+        "YAML input file is active: YAML values override CLI flags for the same keys.",
+        "Ignored CLI flags (also defined in YAML):",
+    ]
+    for dest, cli_val, y_val in conflicts:
+        msg_lines.append(f"  - {dest}: CLI={cli_val!r} ignored, YAML={y_val!r} used")
+
+    msg_lines.append(
+        "Tip: remove the key from YAML if you want to control it from the command line."
+    )
+
+    print("tc1d-cli: warning: " + msg_lines[0], file=sys.stderr)
+    for line in msg_lines[1:]:
+        print(line, file=sys.stderr)
+
+def validate_args(args, parser, y=None) -> None:
+    """
+    Validate logical consistency of final args (after YAML overrides).
+    Use parser.error(...) for user-facing CLI/YAML config errors.
+    """
+
+    # -------------------------
+    # 1) run_type / inverse_mode / batch_mode
+    # -------------------------
+    run_type = str(args.run_type).strip().lower()
+    valid_run_types = {"forward", "batch", "na", "mcmc"}
+    if run_type not in valid_run_types:
+        parser.error(f"--run-type must be one of {sorted(valid_run_types)}, got: {args.run_type!r}")
+
+    # Define "truth" from run_type
+    # - forward/batch => inverse_mode should be False
+    # - na/mcmc       => inverse_mode should be True
+    if run_type in {"na", "mcmc"} and not args.inverse_mode:
+        parser.error(f"Inconsistent config: run_type='{run_type}' requires inverse_mode=true")
+    if run_type in {"forward", "batch"} and args.inverse_mode:
+        parser.error(f"Inconsistent config: run_type='{run_type}' is not compatible with inverse_mode=true")
+
+    # batch_mode: batch_mode only meaningful for batch runs
+    if args.batch_mode and run_type != "batch":
+        parser.error("Inconsistent config: batch_mode=true is only valid when run_type='batch'")
+
+    # -------------------------
+    # 2) Erosion model consistency (including YAML inversion ranges)
+    # -------------------------
+    # ero_type
+    ero_type = args.ero_type[0] if isinstance(args.ero_type, list) else int(args.ero_type)
+    if ero_type < 0 or ero_type > 7:
+        parser.error(f"ero_type must be in [0..7], got: {ero_type}")
+
+    # helper: check if an ero_option is a range [min,max] (inversion) or scalar [value]
+    def _is_range(opt_list):
+        return isinstance(opt_list, list) and len(opt_list) == 2
+
+    def _is_scalar_list(opt_list):
+        return isinstance(opt_list, list) and len(opt_list) == 1
+
+    # type 0 requires ero_file
+    if ero_type == 0 and (not args.ero_file):
+        parser.error("ero_type=0 requires ero_file (CSV path). Add erosion_model: ero_file: '...csv' in YAML")
 
 # @Gooey(navigation='tabbed', tabbed_groups=True)
 def main():
@@ -74,6 +466,14 @@ def main():
         help="Enable debug output",
         action="store_true",
         default=False,
+    )
+    general.add_argument(
+        "--input-file",
+        dest="input_file",
+        help=("YAML input file to override CLI values "
+              "(YAML has priority when both YAML and CLI provide a value)."),
+        default="",
+        type=str,
     )
     geometry = parser.add_argument_group(
         "Geometry and time options", "Options for the model geometry and run time"
@@ -867,6 +1267,24 @@ def main():
     )
 
     args = parser.parse_args()
+
+    # Parse twice: defaults vs actual CLI, to detect what the user explicitly set.
+    default_args = parser.parse_args([])
+    cli_args = parser.parse_args()
+
+    args = cli_args
+
+    y = None
+    if args.input_file:
+        y = _load_yaml_dict(args.input_file)
+
+        # Warn about YAML/CLI conflicts BEFORE applying YAML overrides
+        _warn_yaml_cli_conflicts(parser, cli_args, default_args, y)
+
+        # Apply YAML overrides
+        _apply_yaml_to_args(args, y)
+
+    validate_args(args, parser, y=y)
 
     # BG: CLI validation for multi-stage erosion
     if (0 in args.ero_type) and (args.ero_file == ""):
