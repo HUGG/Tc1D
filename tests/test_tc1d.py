@@ -3,7 +3,7 @@ import pytest
 from tc1d.tc1d import yr2sec, myr2sec, kilo2base, milli2base, micro2base
 from tc1d.tc1d import (
     mmyr2ms, deg2rad, round_to_base, calculate_eu,
-    read_ero_file, format_ero_stages_table,
+    read_ero_stages_from_yaml,
     erosion_constant, erosion_linear, erosion_exponential,
     calculate_erosion_rate, calculate_exhumation_magnitude
 )
@@ -54,8 +54,8 @@ List of tests to still create:
 * erosion_constant
 * erosion_linear
 * erosion_exponential
-* read_ero_file (ero_type=0: erosion_rate + thickness + errors)
-* format_ero_stages_table (ero_type=0: CSV echo strings)
+* read_ero_stages_from_yaml (ero_type=0: erosion_rate + thickness + errors)
+* format_ero_stages_table (ero_type=0: YAML echo strings)
 * calculate_exhumation_magnitude (ero_type=0: constant + truncation)
 * calculate_exhumation_magnitude (ero_type=0: linear)
 * calculate_exhumation_magnitude (ero_type=0: exponential)
@@ -176,165 +176,112 @@ class TestErosionType0:
         r = erosion_exponential(1e6, 1.0, 0.0, 2.0)
         assert abs(r - 0.0) < 1e-12
 
-    # Test: read_ero_file parses erosion_rate-mode stages and preserves raw CSV params (csv_params).
-    def test_read_ero_file_erosion_rate(self, tmp_path):
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,5.0,0.1,,\n"
-            "linear,erosion_rate,5.0,0.1,0.3,\n"
-            "exponential,erosion_rate,5.0,0.3,2.0,0.1\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_read_ero_stages_from_yaml_erosion_rate(self):
+        raw = [
+            {"type": "constant", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.1},
+            {"type": "linear", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.1, "parameter2": 0.3},
+            {"type": "exponential", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.3, "parameter2": 2.0,
+             "parameter3": 0.1},
+        ]
 
-        stages = read_ero_file(str(f))
+        stages = read_ero_stages_from_yaml(raw)
         assert len(stages) == 3
         assert stages[0]["type"] == "constant"
         assert stages[0]["unit"] == "erosion_rate"
         assert stages[0]["duration_myr"] == 5.0
-        assert stages[0]["csv_params"] == [0.1, None, None]
-        assert stages[2]["csv_params"] == [0.3, 2.0, 0.1]
+        assert stages[0]["input_params"] == [0.1, None, None]
+        assert stages[2]["input_params"] == [0.3, 2.0, 0.1]
 
-    # Test: read_ero_file parses thickness-mode stages and preserves raw CSV params (csv_params).
-    def test_read_ero_file_thickness(self, tmp_path):
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,thickness,5.0,0.5,,\n"
-            "linear,thickness,5.0,1.0,0.6,\n"
-            "exponential,thickness,5.0,1.5,2.0,0.5\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_read_ero_stages_from_yaml_thickness(self):
+        raw = [
+            {"type": "constant", "unit": "thickness", "duration_myr": 5.0, "parameter1": 0.5},
+            {"type": "linear", "unit": "thickness", "duration_myr": 5.0, "parameter1": 1.0, "parameter2": 0.6},
+            {"type": "exponential", "unit": "thickness", "duration_myr": 5.0, "parameter1": 1.5, "parameter2": 2.0,
+             "parameter3": 0.5},
+        ]
 
-        stages = read_ero_file(str(f))
+        stages = read_ero_stages_from_yaml(raw)
         assert len(stages) == 3
-        assert stages[1]["csv_params"] == [1.0, 0.6, None]
-        assert stages[2]["csv_params"] == [1.5, 2.0, 0.5]
+        assert stages[1]["input_params"] == [1.0, 0.6, None]
+        assert stages[2]["input_params"] == [1.5, 2.0, 0.5]
 
-    # Test: read_ero_file raises ValueError for invalid tau (<=0) and out-of-bounds shape factor s.
-    def test_read_ero_file_errors(self, tmp_path):
+    def test_read_ero_stages_from_yaml_errors(self):
         # tau <= 0 should fail
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "exponential,erosion_rate,5.0,0.1,0.0,0.2\n"
-        )
-        f = tmp_path / "ero_bad.csv"
-        f.write_text(csv_text)
+        raw = [
+            {"type": "exponential", "unit": "erosion_rate", "duration_myr": 5.0,
+             "parameter1": 0.1, "parameter2": 0.0, "parameter3": 0.2}
+        ]
         with pytest.raises(ValueError):
-            read_ero_file(str(f))
+            read_ero_stages_from_yaml(raw)
 
         # s out of bounds should fail
-        csv_text2 = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "linear,thickness,5.0,1.0,1.2,\n"
-        )
-        f2 = tmp_path / "ero_bad2.csv"
-        f2.write_text(csv_text2)
+        raw2 = [
+            {"type": "linear", "unit": "thickness", "duration_myr": 5.0,
+             "parameter1": 1.0, "parameter2": 1.2}
+        ]
         with pytest.raises(ValueError):
-            read_ero_file(str(f2))
+            read_ero_stages_from_yaml(raw2)
 
-    # Test: read_ero_file raises ValueError for non-float numeric fields (robust parsing).
-    def test_read_ero_file_bad_float(self, tmp_path):
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,5.0,abc,,\n"
-        )
-        f = tmp_path / "ero_bad.csv"
-        f.write_text(csv_text)
+    def test_read_ero_stages_from_yaml_bad_float(self):
+        raw = [
+            {"type": "constant", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": "abc"}
+        ]
         with pytest.raises(ValueError):
-            read_ero_file(str(f))
-
-    # Test: format_ero_stages_table includes expected headers/fields and the "unitless" convention string.
-    def test_format_ero_stages_table_contains_expected_fields(self, tmp_path):
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "linear,thickness,5.0,1.0,0.6,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
-
-        stages = read_ero_file(str(f))
-        table = format_ero_stages_table(stages)
-
-        assert "Stage" in table
-        assert "linear" in table
-        assert "thickness" in table
-        assert "p2=s (unitless)" in table
+            read_ero_stages_from_yaml(raw)
 
     # Test: calculate_exhumation_magnitude for type0 constant rate (no truncation): r_const * duration.
-    def test_calculate_exhumation_magnitude_type0_constant_rate(self, tmp_path):
-        # r_const=0.2 km/Myr over 10 Myr => 2.0 km
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,10.0,0.2,,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_calculate_exhumation_magnitude_type0_constant_rate(self):
+        raw = [{"type": "constant", "unit": "erosion_rate", "duration_myr": 10.0, "parameter1": 0.2}]
+        stages = read_ero_stages_from_yaml(raw)
 
         t_total_sec = myr2sec(10.0)
         mag_km, fw = calculate_exhumation_magnitude(
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             t_total_sec,
-            str(f),
+            stages,
         )
         assert abs(mag_km - 2.0) < 1e-10
         assert fw is False
 
     # Test: calculate_exhumation_magnitude truncates integration when total stage duration exceeds t_total.
-    def test_calculate_exhumation_magnitude_type0_truncation_constant(self, tmp_path):
-        # r_const=0.2 km/Myr over 10 Myr, but t_total=5 Myr => 1.0 km
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,10.0,0.2,,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_calculate_exhumation_magnitude_type0_truncation_constant(self):
+        raw = [{"type": "constant", "unit": "erosion_rate", "duration_myr": 10.0, "parameter1": 0.2}]
+        stages = read_ero_stages_from_yaml(raw)
 
         t_total_sec = myr2sec(5.0)
         mag_km, fw = calculate_exhumation_magnitude(
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             t_total_sec,
-            str(f),
+            stages,
         )
         assert abs(mag_km - 1.0) < 1e-10
         assert fw is False
 
     # Test: calculate_exhumation_magnitude for type0 linear rate matches analytic integral (mean rate * duration).
-    def test_calculate_exhumation_magnitude_type0_linear_rate(self, tmp_path):
-        # linear rate 0 -> 1 km/Myr over 10 Myr => mean 0.5 => 5.0 km
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "linear,erosion_rate,10.0,0.0,1.0,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_calculate_exhumation_magnitude_type0_linear_rate(self):
+        raw = [{"type": "linear", "unit": "erosion_rate", "duration_myr": 10.0, "parameter1": 0.0, "parameter2": 1.0}]
+        stages = read_ero_stages_from_yaml(raw)
 
         t_total_sec = myr2sec(10.0)
         mag_km, fw = calculate_exhumation_magnitude(
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             t_total_sec,
-            str(f),
+            stages,
         )
         assert abs(mag_km - 5.0) < 1e-10
         assert fw is False
 
     # Test: calculate_exhumation_magnitude for type0 exponential rate matches analytic integral.
-    def test_calculate_exhumation_magnitude_type0_exponential_rate(self, tmp_path):
-        # r(t) = r_target + (r_start-r_target)*exp(-t/tau)
-        # Here: r_start=1, r_target=0, tau=2 Myr, dt=10 Myr
-        # Expected thickness = 2*(1-exp(-10/2)) = 2*(1-exp(-5))
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "exponential,erosion_rate,10.0,1.0,2.0,0.0\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
+    def test_calculate_exhumation_magnitude_type0_exponential_rate(self):
+        raw = [{"type": "exponential", "unit": "erosion_rate", "duration_myr": 10.0,
+                "parameter1": 1.0, "parameter2": 2.0, "parameter3": 0.0}]
+        stages = read_ero_stages_from_yaml(raw)
 
         t_total_sec = myr2sec(10.0)
         mag_km, fw = calculate_exhumation_magnitude(
             0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             t_total_sec,
-            str(f),
+            stages,
         )
 
         expected = 2.0 * (1.0 - np.exp(-5.0))
@@ -342,15 +289,10 @@ class TestErosionType0:
         assert fw is False
 
     # Test: calculate_erosion_rate returns zero after the last stage when sum(stage durations) < t_total.
-    def test_calculate_erosion_rate_tail_to_zero(self, tmp_path):
+    def test_calculate_erosion_rate_tail_to_zero(self):
         # One stage: 5 Myr at 0.2 km/Myr, but model time longer -> tail=0
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,5.0,0.2,,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
-        stages = read_ero_file(str(f))
+        raw = [{"type": "constant", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.2}]
+        stages = read_ero_stages_from_yaml(raw)
 
         params = {
             "ero_type": 0,
@@ -375,15 +317,12 @@ class TestErosionType0:
         assert abs(vx_surf - 0.0) < 1e-30
 
     # Test: calculate_erosion_rate switches stages correctly around a stage boundary (no off-by-one).
-    def test_calculate_erosion_rate_stage_switching(self, tmp_path):
-        csv_text = (
-            "type,unit,duration_myr,parameter1,parameter2,parameter3\n"
-            "constant,erosion_rate,5.0,0.2,,\n"
-            "constant,erosion_rate,5.0,0.0,,\n"
-        )
-        f = tmp_path / "ero.csv"
-        f.write_text(csv_text)
-        stages = read_ero_file(str(f))
+    def test_calculate_erosion_rate_stage_switching(self):
+        raw = [
+            {"type": "constant", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.2},
+            {"type": "constant", "unit": "erosion_rate", "duration_myr": 5.0, "parameter1": 0.0},
+        ]
+        stages = read_ero_stages_from_yaml(raw)
 
         params = {
             "ero_type": 0,

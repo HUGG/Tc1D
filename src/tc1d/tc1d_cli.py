@@ -58,7 +58,7 @@ def _as_float_list(x):
 
 def _as_bool(x) -> bool:
     """
-    Parse booleans robustly from YAML.
+    Parse booleans from YAML.
     Accepts: bool, 0/1, 'true'/'false' strings (case-insensitive).
     """
     if isinstance(x, bool):
@@ -176,8 +176,10 @@ def _apply_yaml_to_args(args, y: dict) -> None:
             args.vx_init = _as_list(float(e["vx_init"]))
         if "ero_type" in e:
             args.ero_type = _as_list(int(e["ero_type"]))
-        if "ero_file" in e:
-            args.ero_file = str(e["ero_file"])
+        # BG: keep YAML-defined stages in the raw YAML dict 'y',
+        # but also attach them to args for convenience/debug (not an argparse option).
+        if "ero_stages" in e:
+            setattr(args, "ero_stages", e["ero_stages"])
 
         for i in range(1, 11):
             key = f"ero_option{i}"
@@ -292,7 +294,6 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("general", "no_echo_ages"): "no_echo_ages",
 
         ("erosion_model", "ero_type"): "ero_type",
-        ("erosion_model", "ero_file"): "ero_file",
 
         ("plotting", "no_plot_results"): "no_plot_results",
         ("plotting", "no_display_plots"): "no_display_plots",
@@ -398,9 +399,21 @@ def validate_args(args, parser, y=None) -> None:
     def _is_scalar_list(opt_list):
         return isinstance(opt_list, list) and len(opt_list) == 1
 
-    # type 0 requires ero_file
-    if ero_type == 0 and (not args.ero_file):
-        parser.error("ero_type=0 requires ero_file (CSV path). Add erosion_model: ero_file: '...csv' in YAML")
+    # BG: ero_type=0 is YAML-only: require erosion_model.ero_stages in the YAML input file.
+    if ero_type == 0:
+        has_yaml_stages = False
+        if isinstance(y, dict):
+            em = y.get("erosion_model", {})
+            if isinstance(em, dict):
+                stages = em.get("ero_stages", None)
+                has_yaml_stages = isinstance(stages, list) and len(stages) > 0
+
+        if not has_yaml_stages:
+            parser.error(
+                "ero_type=0 requires a YAML input file with:\n"
+                "  erosion_model: ero_stages: [...]\n"
+                "Use: tc1d-cli --input-file <file.yaml>\n"
+            )
 
 # @Gooey(navigation='tabbed', tabbed_groups=True)
 def main():
@@ -747,7 +760,7 @@ def main():
     erosion.add_argument(
         "--ero-type",
         dest="ero_type",
-        help="Type of erosion model (0-7 - see GitHub docs). Use 0 with --ero-file.",
+        help="Type of erosion model (0-7 - see GitHub docs). Use 0 with YAML erosion_model.ero_stages.",
         nargs="+",
         default=[1],
         type=int,
@@ -831,16 +844,6 @@ def main():
         nargs="+",
         default=[0.0],
         type=float,
-    )
-    erosion.add_argument(
-        "--ero-file",
-        dest="ero_file",
-        help=(
-            "CSV file defining multi-stage erosion (used only when --ero-type 0). "
-            "Example: data/ero_file.csv"
-        ),
-        default="",
-        type=str,
     )
     prediction = parser.add_argument_group(
         "Age prediction options", "Options for age prediction"
@@ -1286,10 +1289,6 @@ def main():
 
     validate_args(args, parser, y=y)
 
-    # BG: CLI validation for multi-stage erosion
-    if (0 in args.ero_type) and (args.ero_file == ""):
-        parser.error("--ero-type 0 requires --ero-file <path/to/file.csv>")
-
     # Display help and exit if no flags are set
     if len(sys.argv) == 1:
         parser.print_help()
@@ -1361,7 +1360,7 @@ def main():
         "ero_option8": args.ero_option8,
         "ero_option9": args.ero_option9,
         "ero_option10": args.ero_option10,
-        "ero_file": args.ero_file,
+        "ero_stages": getattr(args, "ero_stages", None),  # BG: YAML-defined stages for ero_type=0
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
         "t_total": args.time,

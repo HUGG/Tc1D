@@ -53,7 +53,7 @@ general:
 geometry_time:
   length: 125.0                # --length (model depth extent)
   nx: 251                      # --nx
-  time: 14.0                   # --time
+  time: 1000.0                 # --time
   dt: 10000.0                  # --dt
 
   init_moho_depth: 50.0        # --init-moho-depth
@@ -111,7 +111,7 @@ erosion_model:
   vx_init: 0.0                 # --vx-init (mm/yr)
 
   # Select erosion model (0 to 7)
-  # 0: multi-stage erosion from external CSV file (--ero-file)
+  # 0: multi-stage erosion defined directly in YAML (ero_stages)
   # 1: constant erosion magnitude (total thickness in km over the run)
   # 2: stepwise thicknesses with transition times
   # 3: exponential decay
@@ -119,7 +119,7 @@ erosion_model:
   # 5: tectonic exhumation + erosion
   # 6: linear change in erosion rate
   # 7: extensional tectonics
-  ero_type: 2
+  ero_type: 0
 
   # ---- Active parameters (EDIT THESE) ----------------------------------------
   # Define only the options used by your selected ero_type.
@@ -128,21 +128,51 @@ erosion_model:
   # ero_type = 2 (example: two intervals)
   # interval 1: 0 -> ero_option2 (Myr), thickness ero_option1 (km)
   # interval 2: ero_option2 -> ero_option4 (Myr), thickness ero_option3 (km)
-  ero_option1: 5.49822084
-  ero_option2: 7.0
-  ero_option3: 4.39490305
-  ero_option4: 14.0
+  #ero_option1: 5.49822084
+  #ero_option2: 7.0
+  #ero_option3: 4.39490305
+  #ero_option4: 14.0
 
-  # ---- Optional: ero_type = 0 (CSV-driven multi-stage erosion) ---------------
-  # If ero_type = 0, you must provide ero_file (at this stage).
-  # Expected CSV columns:
-  # type, unit, duration_myr, parameter1, parameter2, parameter3
-  #
-  # Example:
-  # ero_type: 0
-  # ero_file: "data/ero_file.csv"
-  #
-  #ero_file: "data/ero_file.csv"
+  # ---- Optional: ero_type = 0 (Multi-stage erosion) ---------------
+  # BG: YAML-defined multi-stage erosion/burial history
+  ero_stages:
+    - type: exponential
+      unit: erosion_rate
+      duration_myr: 150.0
+      parameter1: -0.030   # r_start (km/Myr)
+      parameter2: 40.0     # tau (Myr)
+      parameter3: -0.010   # r_target (km/Myr)
+
+    - type: exponential
+      unit: erosion_rate
+      duration_myr: 200.0
+      parameter1: -0.010
+      parameter2: 50.0
+      parameter3: 0.060
+
+    - type: linear
+      unit: erosion_rate
+      duration_myr: 200.0
+      parameter1: 0.060    # r_start
+      parameter2: 0.000    # r_end
+
+    - type: constant
+      unit: erosion_rate
+      duration_myr: 200.0
+      parameter1: 0.000    # r_const
+
+    - type: linear
+      unit: erosion_rate
+      duration_myr: 100.0
+      parameter1: 0.000
+      parameter2: 0.030
+
+    - type: exponential
+      unit: erosion_rate
+      duration_myr: 150.0
+      parameter1: 0.030
+      parameter2: 60.0
+      parameter3: 0.005
 
   # ---- Optional: other erosion types (examples) ------------------------------
   # ero_type = 1 (constant magnitude over the run)
@@ -207,7 +237,7 @@ plotting:
   plot_fault_depth_history: false
   invert_tt_plot: false
 
-  t_plots: [1, 3, 5, 7, 9, 11, 13]
+  t_plots: [150, 300, 450, 600, 750, 900, 950]
 
   crust_solidus: false
   crust_solidus_comp: "wet_intermediate"
