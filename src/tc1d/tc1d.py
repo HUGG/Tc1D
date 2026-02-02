@@ -731,7 +731,7 @@ def parse_ero_stage_row(row: dict, stage_idx: int = 1) -> dict:
       type: "constant" / "linear" / "exponential"
       unit: "erosion_rate" / "thickness"
       duration_myr: float > 0
-      parameter1/2/3: floats (some optional depending on type/unit)
+      p1/p2/p3 (or parameter1/2/3): floats (some optional depending on type/unit)
 
     Parameter conventions
     ---------------------
@@ -799,9 +799,9 @@ def parse_ero_stage_row(row: dict, stage_idx: int = 1) -> dict:
         )
     dt_stage_myr = duration_myr
 
-    p1 = _as_float(row.get("parameter1", None), "parameter1")
-    p2 = _as_float(row.get("parameter2", None), "parameter2")
-    p3 = _as_float(row.get("parameter3", None), "parameter3")
+    p1 = _as_float(row.get("p1", row.get("parameter1", None)), "p1/parameter1")
+    p2 = _as_float(row.get("p2", row.get("parameter2", None)), "p2/parameter2")
+    p3 = _as_float(row.get("p3", row.get("parameter3", None)), "p3/parameter3")
     input_params = [p1, p2, p3]
 
     # ============================
@@ -919,7 +919,221 @@ def read_ero_stages_from_yaml(ero_stages_input) -> list:
 
     return stages
 
+def _stage_idx_from_na_param_name(pname):
+    """
+    BG: Extract 1-based stage index from NA param name like:
+        'ero_stage01_duration_myr' or 'ero_stage01_p2'
+    Returns int stage index (1-based).
+    """
+    try:
+        token = pname.split("_")[1]  # "stage01"
+        idx = int(token.replace("stage", ""))
+    except Exception as exc:
+        raise ValueError(f"BG: cannot parse erosion stage index from {pname!r}.") from exc
+    return idx
 
+def _get_stage_param_value(st, key):
+    """
+    BG: Read stage parameter with backward-compatible YAML keys.
+    Accept both p1/p2/p3 and parameter1/2/3.
+    """
+    if key == "p1":
+        return st.get("p1", st.get("parameter1", None))
+    if key == "p2":
+        return st.get("p2", st.get("parameter2", None))
+    if key == "p3":
+        return st.get("p3", st.get("parameter3", None))
+    raise ValueError(f"BG: unknown stage parameter key {key!r}.")
+
+def _collect_ero_stage_duration_bounds(ero_stages_template):
+    """
+    BG: Collect duration bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion:
+        duration_myr: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_duration_myr": [2.0, 6.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        dur = st.get("duration_myr", None)
+
+        # BG: inversion syntax uses a 2-item range [min, max]
+        if isinstance(dur, (list, tuple)) and len(dur) == 2:
+            dmin = float(dur[0])
+            dmax = float(dur[1])
+
+            if dmin <= 0.0 or dmax <= 0.0 or dmax <= dmin:
+                raise ValueError(
+                    f"BG: erosion YAML stage {i}: duration_myr bounds must satisfy "
+                    f"0 < min < max (got {dur})."
+                )
+
+            key = f"ero_stage{i:02d}_duration_myr"
+            bounds[key] = [dmin, dmax]
+
+    return bounds
+
+def _collect_ero_stage_param_bounds(ero_stages_template):
+    """
+    BG: Collect p1/p2/p3 bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion (either key style supported):
+        p1: [min, max]   or  parameter1: [min, max]
+        p2: [min, max]   or  parameter2: [min, max]
+        p3: [min, max]   or  parameter3: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_p1": [0.0, 2.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        for key in ("p1", "p2", "p3"):
+            v = _get_stage_param_value(st, key)
+
+            # BG: inversion syntax uses a 2-item range [min, max]
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                vmin = float(v[0])
+                vmax = float(v[1])
+
+                if vmax <= vmin:
+                    raise ValueError(
+                        f"BG: erosion YAML stage {i}: {key} bounds must satisfy "
+                        f"min < max (got {v})."
+                    )
+
+                pname = f"ero_stage{i:02d}_{key}"
+                bounds[pname] = [vmin, vmax]
+
+    return bounds
+
+def _apply_na_stage_durations(
+    ero_stages_template,
+    duration_param_names,
+    x,
+    t_total_myr,
+    balance=True,
+):
+    """
+    BG: Apply NA-sampled durations into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    duration_param_names : list[str]
+        Names like 'ero_stage01_duration_myr' in order matching x.
+    x : array-like
+        NA sampled values.
+    t_total_myr : float
+        Total model duration in Myr.
+    balance : bool
+        If True, adjust one non-inverted stage to keep sum(durations)=t_total_myr.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    # BG: Map x values to stage index
+    inverted_stage_idxs = set()
+    for pname, val in zip(duration_param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: duration param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        inverted_stage_idxs.add(idx)
+        stages[idx - 1]["duration_myr"] = float(val)
+
+    # BG: Balancing to ensure sum durations == t_total
+    if balance:
+        # pick last stage not inverted (preferably)
+        balance_idx = None
+        for j in range(nst, 0, -1):
+            if j not in inverted_stage_idxs:
+                balance_idx = j
+                break
+
+        if balance_idx is not None:
+            current_sum = 0.0
+            for k, st in enumerate(stages, start=1):
+                if k == balance_idx:
+                    continue
+                current_sum += float(st.get("duration_myr", 0.0))
+
+            remainder = float(t_total_myr) - current_sum
+
+            # BG: invalid draw -> let objective penalize it (no crash)
+            if remainder <= 0.0:
+                return None
+
+            stages[balance_idx - 1]["duration_myr"] = remainder
+
+    return stages
+
+def _apply_na_stage_params(
+    ero_stages_template,
+    param_names,
+    x,
+):
+    """
+    BG: Apply NA-sampled p1/p2/p3 into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    param_names : list[str]
+        Names like 'ero_stage01_p1' in order matching x.
+    x : array-like
+        NA sampled values.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    for pname, val in zip(param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: stage param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        # pname: ero_stageXX_pY -> last token is 'p1'/'p2'/'p3'
+        key = pname.split("_")[-1]
+        if key not in ("p1", "p2", "p3"):
+            raise ValueError(
+                f"BG: stage param name {pname!r} does not end with p1/p2/p3."
+            )
+
+        # BG: write canonical keys (p1/p2/p3); parse_ero_stage_row supports fallback
+        stages[idx - 1][key] = float(val)
+
+    return stages
 
 def erosion_constant(t_local_myr: float, r_const: float) -> float:
     """
@@ -2564,11 +2778,65 @@ def batch_run_na(params, batch_params):
     print(f"{27 * '-'} Starting NA inverse mode {27 * '-'}\n")
     exec_start = time.time()
 
+    # BG: robust ero_type scalar for NA (CLI often stores lists)
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (ero_type_val[0] if isinstance(ero_type_val, (list, tuple, np.ndarray)) else ero_type_val) == 0
+
     # Objective function to be minimised, run for misfit
     def objective(x):
         # Map sampled values x to the corresponding parameter names
-        for key, value in zip(filtered_params, x):
+        for key, value in zip(param_names, x):
             filtered_params[key] = value
+
+        # ------------------------------------------------------------
+        # BG: If NA is inverting YAML ero_type=0 stage durations and/or p1/p2/p3,
+        # rebuild params['ero_stages'] (parsed)
+        # ------------------------------------------------------------
+        duration_param_names = [
+            k for k in param_names
+            if k.startswith("ero_stage") and k.endswith("_duration_myr")
+        ]
+
+        stage_p_param_names = [
+            k for k in param_names
+            if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+        ]
+
+        if ero_type0 and (len(duration_param_names) > 0 or len(stage_p_param_names) > 0):
+            # BG: start from raw YAML template
+            new_template = copy.deepcopy(params["ero_stages_template"])
+
+            # ---- durations (with balance) ----
+            if len(duration_param_names) > 0:
+                x_dur = [filtered_params[k] for k in duration_param_names]
+
+                new_template = _apply_na_stage_durations(
+                    new_template,  # raw YAML template
+                    duration_param_names,
+                    x_dur,
+                    t_total_myr=float(params["t_total"]),
+                    balance=True,
+                )
+
+                # BG: reject invalid duration combinations (no crash)
+                if new_template is None:
+                    return 1e9
+
+            # ---- p1/p2/p3 ----
+            if len(stage_p_param_names) > 0:
+                x_p = [filtered_params[k] for k in stage_p_param_names]
+                new_template = _apply_na_stage_params(
+                    new_template,
+                    stage_p_param_names,
+                    x_p,
+                )
+
+            # Parsed stages used by the forward model
+            params["ero_stages"] = read_ero_stages_from_yaml(new_template)
+            params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in params["ero_stages"])
+
+            # Optional: keep for debug
+            # params["ero_stages_current_template"] = new_template
 
         # BG: Get erosion parameters with default fallback from global params
         ero1 = filtered_params.get("ero_option1", params.get("ero_option1", 0.0))
@@ -2617,7 +2885,21 @@ def batch_run_na(params, batch_params):
             print("Rejected: model would place the sample above surface.")
             return 1e10  # Or some large misfit to reject the model
 
-        misfit = run_model(params)
+        # ------------------------------------------------------------
+        # BG: Silence forward-model verbosity during NA evaluations
+        # by forcing batch_mode=True just for this run_model() call.
+        # This prevents printing:
+        #   --- Calculating initial thermal model ---
+        #   --- Calculating transient thermal model ---
+        #   - Step ...
+        # ------------------------------------------------------------
+        _prev_batch_mode = params.get("batch_mode", False)
+        params["batch_mode"] = True
+        try:
+            misfit = run_model(params)
+        finally:
+            params["batch_mode"] = _prev_batch_mode
+
         print(f"The current misfit is: {misfit}\n")
         return misfit
 
@@ -2644,8 +2926,37 @@ def batch_run_na(params, batch_params):
         if len(value) > 1:
             filtered_params[key] = value
 
-    # Bounds of the parameter space
-    bounds = list(filtered_params.values())
+    # ------------------------------------------------------------
+    # BG: Add NA bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: NA duration inversion requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
+
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+
+        # Merge duration bounds into filtered_params (do not overwrite)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: Add NA bounds for YAML ero_type=0 stage p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+
+        # Merge param bounds into filtered_params
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: freeze parameter order once for NA mapping (critical)
+    param_names = list(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
 
     # BG: Read Neighbourhood Algorithm (NA) parameters from params
     na_ns = int(params["na_ns"])   # BG: NA - samples per iteration
@@ -2738,6 +3049,37 @@ def batch_run_na(params, batch_params):
     # BG: Safely extract best parameter set using param names
     best = searcher.samples[np.argmin(searcher.objectives)]
     best_dict = dict(zip(filtered_params.keys(), best))
+
+    # ------------------------------------------------------------
+    # BG: Rebuild ero_stages for best model if durations, p1, p2, p3 are inverted
+    # ------------------------------------------------------------
+    duration_param_names = [k for k in param_names if k.startswith("ero_stage") and k.endswith("_duration_myr")]
+    stage_p_param_names = [k for k in param_names if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))]
+
+    if ero_type0 and (len(duration_param_names) > 0 or len(stage_p_param_names) > 0):
+        new_template_best = copy.deepcopy(params["ero_stages_template"])
+
+        if len(duration_param_names) > 0:
+            x_dur_best = [best_dict[k] for k in duration_param_names]
+            new_template_best = _apply_na_stage_durations(
+                new_template_best,
+                duration_param_names,
+                x_dur_best,
+                t_total_myr=float(params["t_total"]),
+                balance=True,
+            )
+
+        if len(stage_p_param_names) > 0:
+            x_p_best = [best_dict[k] for k in stage_p_param_names]
+            new_template_best = _apply_na_stage_params(
+                new_template_best,
+                stage_p_param_names,
+                x_p_best,
+            )
+
+        params["ero_stages"] = read_ero_stages_from_yaml(new_template_best)
+        params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in params["ero_stages"])
+
     ero1 = best_dict.get("ero_option1", 0.0)
     # FIXME: Delete line below???
     ero3 = best_dict.get("ero_option3", 0.0)

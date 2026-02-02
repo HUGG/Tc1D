@@ -6,6 +6,7 @@ from importlib.metadata import version
 from pathlib import Path
 import sys
 import tc1d
+import copy
 
 # import cProfile
 # from gooey import Gooey
@@ -1361,6 +1362,7 @@ def main():
         "ero_option9": args.ero_option9,
         "ero_option10": args.ero_option10,
         "ero_stages": getattr(args, "ero_stages", None),  # BG: YAML-defined stages for ero_type=0
+        "ero_stages_template": copy.deepcopy(getattr(args, "ero_stages", None)), # BG: raw YAML template for NA duration inversion
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
         "t_total": args.time,
