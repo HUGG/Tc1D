@@ -1135,6 +1135,85 @@ def _apply_na_stage_params(
 
     return stages
 
+def _rebuild_ero_stages_from_sample(params_local: dict, sample_dict: dict) -> bool:
+    """
+    BG: Rebuild parsed erosion stages for ero_type=0 using YAML template and sampled
+    stage parameters (duration_myr and/or p1/p2/p3).
+
+    Conservative behavior:
+    - No duration balancing (balance=False).
+    - If sum(durations) > t_total: erosion is naturally truncated by forward model.
+    - If sum(durations) < t_total: erosion naturally drops to 0 after last stage.
+
+    Parameters
+    ----------
+    params_local : dict
+        Local copy of params used for this MCMC evaluation.
+        Must contain 'ero_stages_template' for ero_type=0 stage inversion.
+    sample_dict : dict
+        Sampled parameter values for this evaluation (floats).
+
+    Returns
+    -------
+    bool
+        True if stages were rebuilt (or not needed), False if invalid (reject sample).
+    """
+    # BG: robust ero_type scalar
+    ero_type_val = params_local.get("ero_type", None)
+    ero_type0 = (ero_type_val[0] if isinstance(ero_type_val, (list, tuple, np.ndarray)) else ero_type_val) == 0
+    if not ero_type0:
+        return True
+
+    # BG: Only rebuild if sample includes any stage parameters
+    duration_param_names = [
+        k for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith("_duration_myr")
+    ]
+    stage_p_param_names = [
+        k for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+    ]
+
+    if len(duration_param_names) == 0 and len(stage_p_param_names) == 0:
+        return True  # nothing to do
+
+    template = params_local.get("ero_stages_template", None)
+    if template is None:
+        raise ValueError(
+            "BG: ero_type=0 stage inversion requires params['ero_stages_template'] "
+            "(raw YAML erosion_model.ero_stages)."
+        )
+
+    new_template = copy.deepcopy(template)
+
+    # ---- durations (NO balance) ----
+    if len(duration_param_names) > 0:
+        x_dur = [float(sample_dict[k]) for k in duration_param_names]
+        new_template = _apply_na_stage_durations(
+            new_template,
+            duration_param_names,
+            x_dur,
+            t_total_myr=float(params_local["t_total"]),
+            balance=False,  # BG: key choice for truncate/drop-to-zero behavior
+        )
+        if new_template is None:
+            return False
+
+    # ---- p1/p2/p3 ----
+    if len(stage_p_param_names) > 0:
+        x_p = [float(sample_dict[k]) for k in stage_p_param_names]
+        new_template = _apply_na_stage_params(
+            new_template,
+            stage_p_param_names,
+            x_p,
+        )
+
+    # BG: Parse and cache for forward model usage
+    params_local["ero_stages"] = read_ero_stages_from_yaml(new_template)
+    params_local["ero_total_stage_sec"] = sum(st["dt_sec"] for st in params_local["ero_stages"])
+
+    return True
+
 def erosion_constant(t_local_myr: float, r_const: float) -> float:
     """
     BG: Constant erosion rate over a stage.
@@ -3370,6 +3449,32 @@ def log_prior(x):
         if not (low <= val <= high):
             return -np.inf
 
+    # BG: robust ero_type scalar
+    ero_type_val = global_params.get("ero_type", None)
+    ero_type0 = (ero_type_val[0] if isinstance(ero_type_val, (list, tuple, np.ndarray)) else ero_type_val) == 0
+
+    # BG: For ero_type=0, skip ero_option* cumulative constraints (they apply to ero_type>0 only).
+    # BG: Apply only stage-based constraints (e.g., sum of sampled stage durations <= t_total).
+
+    if ero_type0:
+        # reject samples where sum(duration) > t_total
+        t_total = global_params.get("t_total", 0.0)
+        t_total = float(t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total)
+
+        param_dict = dict(zip(global_param_names, x))
+
+        # BG: collect all sampled stage durations automatically
+        durs = [
+            float(v)
+            for k, v in param_dict.items()
+            if isinstance(k, str) and k.endswith("_duration_myr")
+        ]
+
+        if durs and sum(durs) > t_total:
+            return -np.inf
+
+        return 0.0
+
     param_dict = dict(zip(global_param_names, x))
     ero1 = param_dict.get("ero_option1", global_params.get("ero_option1", 0.0))
     ero3 = param_dict.get("ero_option3", global_params.get("ero_option3", 0.0))
@@ -3424,14 +3529,35 @@ def log_likelihood(x):
             return -np.inf
     params_local = copy.deepcopy(global_params)
     params_local.update(new_dict)
+    # BG: Force MCMC/inverse context (safety belt)
+    params_local["inverse_mode"] = True
+    params_local["run_type"] = "mcmc"
+
     cleaned_dict = {k: float(v) for k, v in new_dict.items()}
     print(f"[MCMC] Testing params: {cleaned_dict}")
+
+    # BG: Rebuild YAML ero_type=0 stages if stage params are sampled in this MCMC step
+    ok = _rebuild_ero_stages_from_sample(params_local, cleaned_dict)
+    if not ok:
+        return -np.inf
+
     try:
-        misfit = run_model(params_local)
+        # BG: Silence forward-model verbosity during MCMC evaluations
+        _prev_batch_mode = params_local.get("batch_mode", False)
+        params_local["batch_mode"] = True
+        try:
+            misfit = run_model(params_local)
+        finally:
+            params_local["batch_mode"] = _prev_batch_mode
+
         print(f"Misfit: {misfit}")
         return -misfit
+
     except Exception as e:
         print(f"[ERROR] run_model failed: {e}")
+        if params_local.get("debug", False):
+            import traceback
+            traceback.print_exc()
         return -np.inf
 
 
@@ -3451,24 +3577,72 @@ def batch_run_mcmc(params, batch_params):
     # print("--- Starting MCMC inverse mode ---\n")
     log_output(params, batch_mode=True)
 
-    # FIXME: Are the lines below needed???
-    param_list = list(ParameterGrid(batch_params))
-    # print(f"--- Starting batch processor for {len(param_list)} models ---\n")
-    # success = 0
-    # failed = 0
+    # ------------------------------------------------------------
+    # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
+    #     The previous code only used ParameterGrid(batch_params)[0] to
+    #     inject fixed values into `params`. We preserve the same intent
+    #     without building an unnecessary cartesian product.
+    # ------------------------------------------------------------
 
-    # BG: Extract parameters with more than one value (i.e., varied ones) to define search space
-    filtered_params = {k: v for k, v in batch_params.items() if len(v) > 1}
-    bounds = list(filtered_params.values())
-    param_names = list(filtered_params.keys())
+    # BG: Extract parameters with more than one value (i.e., varied ones)
+    #     These define the MCMC search space (bounds).
+    filtered_params = {
+        k: v
+        for k, v in batch_params.items()
+        if isinstance(v, (list, tuple, np.ndarray)) and len(v) > 1
+    }
+
+    # BG: Inject fixed batch params (scalars or singletons) into base `params`.
+    #     This preserves the previous behavior where the "first grid point"
+    #     was used as the base model for non-inverted params.
+    for k, v in batch_params.items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            if len(v) == 1:
+                params[k] = v[0]
+        else:
+            params[k] = v
+
+    # BG: ero_type scalar for MCMC
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (ero_type_val[0] if isinstance(ero_type_val, (list, tuple, np.ndarray)) else ero_type_val) == 0
+
+    # ------------------------------------------------------------
+    # BG: Add MCMC bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    #     (same conservative logic as NA)
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: MCMC inversion for ero_type=0 requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
+
+        # BG: duration_myr bounds -> ero_stageXX_duration_myr
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: p1/p2/p3 bounds -> ero_stageXX_p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: Keep deterministic ordering for reproducibility and safer x<->name mapping
+    param_names = sorted(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
+
     ndim = len(param_names)  # Number of parameters to invert
-    max_exhumation = 35.0  # BG: Maximum total exhumation constraint
-    max_burial = 15.0
+    if ndim == 0:
+        raise ValueError("BG: MCMC requires at least one parameter range to invert (ndim=0).")
 
-    # BG: Use the first parameter set to update the base parameters
-    model = param_list[0]  # BG: Start from the first parameter combination
-    for key in batch_params:
-        params[key] = model[key]
+    # BG: Conservative physical constraints (prior guards)
+    max_exhumation = 35.0  # km (or equivalent model unit, consistent with your prior)
+    max_burial = 15.0      # km (or equivalent model unit)
 
     # BG: Set global variables for MPI pickling compatibility
     global \
@@ -3479,7 +3653,7 @@ def batch_run_mcmc(params, batch_params):
         global_max_burial
     global_bounds = bounds
     global_param_names = param_names
-    global_params = params
+    global_params = copy.deepcopy(params)
     global_max_exhumation = max_exhumation
     global_max_burial = max_burial
 
@@ -3515,22 +3689,35 @@ def batch_run_mcmc(params, batch_params):
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
         exec_start = time.time()
 
-    # BG: Create the sampler and run the MCMC
+    # BG: Build sampler (optionally parallelized with an emcee pool)
     sampler = emcee.EnsembleSampler(
         nwalkers=nwalkers,
         ndim=ndim,
         log_prob_fn=log_probability,
         pool=pool,
     )
-    sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
-    if pool is not None:
-        pool.close()
 
-    # BG: Post-processing with legacy-compatible attributes
-    chain = sampler.chain
-    log_probs = sampler.lnprobability
+    # BG: Always close the pool, even if the MCMC run errors out
+    try:
+        sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
+    finally:
+        if pool is not None:
+            pool.close()
 
-    # BG: Flatten chains manually (legacy emcee version does not support .get_chain())
+    # BG: Post-processing compatible with emcee v2 and v3
+    if hasattr(sampler, "get_chain"):
+        # emcee v3 returns (nsteps, nwalkers, ndim) -> convert to (nwalkers, nsteps, ndim)
+        chain = sampler.get_chain()
+        chain = np.transpose(chain, (1, 0, 2))
+
+        log_probs = sampler.get_log_prob()
+        log_probs = np.transpose(log_probs, (1, 0))
+    else:
+        # emcee v2 returns (nwalkers, nsteps, ndim) directly
+        chain = sampler.chain
+        log_probs = sampler.lnprobability
+
+    # BG: Flatten chains after burn-in and thinning
     flat_samples = chain[:, discard::thin, :].reshape(-1, ndim)
     flat_log_probs = log_probs[:, discard::thin].reshape(-1)
 
@@ -3543,11 +3730,11 @@ def batch_run_mcmc(params, batch_params):
         writer.writerow(header)
         writer.writerows(combined_array)
 
-    # BG: Check if any valid samples remain after burn-in
-    if len(log_probs) == 0:
-        raise RuntimeError("No valid samples after burn-in. Aborting analysis.")
+    # BG: Check if any valid samples remain after burn-in/thinning
+    if flat_log_probs.size == 0:
+        raise RuntimeError("No valid samples after burn-in/thinning. Aborting analysis.")
 
-    # BG: Identify and print the best parameter set (lowest misfit)
+    # BG: Identify and print the best parameter set (highest log-probability)
     best_idx = np.argmax(flat_log_probs)
     best = flat_samples[best_idx]
     best_dict = dict(zip(param_names, best))
