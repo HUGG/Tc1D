@@ -54,7 +54,7 @@ geometry_time:
   length: 125.0                # --length (model depth extent)
   nx: 251                      # --nx
   time: 15.0                 # --time
-  dt: 10000.0                  # --dt
+  dt: 20000.0                  # --dt
 
   init_moho_depth: 50.0        # --init-moho-depth
   crustal_uplift: false        # --crustal-uplift
@@ -133,27 +133,363 @@ erosion_model:
 
   # ---- Optional: ero_type = 0 (Multi-stage erosion) ---------------
   # BG: YAML-defined multi-stage erosion/burial history
-  ero_stages:
+#  ero_stages:
     # Stage 1: exponential decay
-    - type: exponential
-      unit: erosion_rate
-      duration_myr: [0.1, 5.0]
-      parameter1: [0.1, 4.0]    # r_start (km/Myr)
-      parameter2: [0.1, 3.0] # tau (Myr)
-      parameter3: 0.01 # t_target (km/Myr)
+#    - type: exponential
+#      unit: erosion_rate
+#      duration_myr: [0.1, 5.0]
+#      parameter1: [0.1, 4.0]    # r_start (km/Myr)
+#      parameter2: [0.1, 3.0] # tau (Myr)
+#      parameter3: 0.01 # r_target (km/Myr)
 
     # Stage 2: constant erosion
-    - type: constant
-      unit: erosion_rate
-      duration_myr: [1.0, 10.0]
-      parameter1: 0.01
+#    - type: constant
+#      unit: erosion_rate
+#      duration_myr: [1.0, 10.0]
+#      parameter1: 0.01
 
     # Stage 3: linear increase
-    - type: linear
-      unit: erosion_rate
-      duration_myr: [0.1, 6.0]
-      parameter1: 0.01
-      parameter2: [0.1, 3.0]
+#    - type: linear
+#      unit: erosion_rate
+#      duration_myr: [0.1, 6.0]
+#      parameter1: 0.01
+#      parameter2: [0.1, 3.0]
+
+  # --- RJMCMC trans-dimensional stage model selection -------------------------
+  # BG: This block activates a reversible-jump MCMC inversion in which:
+  #   - the number of erosion stages K is itself inverted
+  #   - each stage is exponential and described by:
+  #       duration_myr, r_start, tau, r_target
+  #
+  # Practical meaning:
+  #   - small K  -> simpler erosion histories
+  #   - large K  -> more flexible / more detailed erosion histories
+  #
+
+  transdimensional:
+    enabled: true
+    # true  = run RJMCMC inversion
+    # false = ignore this block
+
+    stage_type: exponential
+    # Only "exponential" is currently supported in RJMCMC v1.
+    #
+    # Exponential stage meaning:
+    #   erosion rate starts at r_start and evolves toward r_target
+    #   with characteristic timescale tau.
+    #
+    # Allowed value:
+    #   exponential
+
+    unit: erosion_rate
+    # Parameters are interpreted as erosion rates [km/Myr].
+    #
+    # Allowed value:
+    #   erosion_rate
+
+    # ---- Model dimension bounds ----------------------------------------------
+    k_min: 1
+    # Minimum number of erosion stages allowed.
+    #
+    # Effect:
+    #   - smaller values allow simpler models
+    #   - larger values force more complexity
+
+    k_max: 8
+    # Maximum number of erosion stages allowed.
+    #
+    # Effect:
+    #   - larger values allow more complex erosion histories
+    #   - too large values may slow mixing and encourage overfitting
+
+    # ---- Prior bounds on stage parameters (uniform priors) -------------------
+    duration_bounds_myr: [0.05, 15.0]
+    # Allowed duration of each exponential stage [Myr].
+    #
+    # Meaning:
+    #   each stage must last between min and max duration.
+    #
+    # Effect of changing bounds:
+    #   - increasing max allows very long stages
+    #   - decreasing min prevents tiny short-lived stages
+    #   - too small a min may create many artificial micro-stages
+    #
+    # Recommended range:
+    #   min: 0.05 to 0.5
+    #   max: should be compatible with total model time t_total
+
+    r_start_bounds: [0.0, 4.0]
+    # Initial erosion rate at the start of each stage [km/Myr].
+    #
+    # Meaning:
+    #   this controls how fast erosion starts at the beginning of a stage.
+    #
+    # Effect of changing bounds:
+    #   - larger max allows very rapid short-lived erosion pulses
+    #   - smaller max constrains the inversion to smoother/slower histories
+    #
+    # Recommended range:
+    #   [0.0, 2.0] for moderate systems
+    #   [0.0, 4.0] if strong exhumation pulses are plausible
+    #
+    # Good default:
+    #   [0.0, 4.0]
+
+    tau_bounds: [0.05, 5.0]
+    # Exponential characteristic time [Myr].
+    #
+    # Meaning:
+    #   tau controls how quickly the erosion rate evolves from r_start toward
+    #   r_target.
+    #
+    # Small tau:
+    #   rapid adjustment toward r_target
+    #
+    # Large tau:
+    #   slower, smoother evolution
+    #
+    # Effect of changing bounds:
+    #   - very small tau allows abrupt decay / adjustment
+    #   - large tau allows broad smooth transitions
+    #
+    # Good default:
+    #   [0.05, 5.0]
+
+    r_target_bounds: [0.0, 1.0]
+    # Long-term asymptotic erosion rate [km/Myr].
+    #
+    # Meaning:
+    #   the stage tends toward this rate as time increases.
+    #
+    # Effect of changing bounds:
+    #   - larger max allows sustained high long-term erosion
+    #   - smaller max favors decay toward low background erosion
+    #
+    # Good default:
+    #   [0.0, 1.0]
+
+    # ---- Move probabilities ---------------------------------------------------
+    # These three values are internally normalized to sum to 1.
+    #
+    # within = perturb parameters inside the current model dimension K
+    # birth  = split a stage, increasing K by 1
+    # death  = merge two stages, decreasing K by 1
+    #
+    # If birth is too small:
+    #   the chain may stay too long in low K
+    #
+    # If death is too small:
+    #   the chain may accumulate too many stages
+    #
+    # If within is too small:
+    #   the chain changes K often but does not optimize stage parameters enough
+    moves:
+      p_within: 0.55
+      # Recommended range:
+      #   0.50 to 0.70
+      #
+      # Good default:
+      #   0.55
+
+      p_birth: 0.25
+      # Recommended range:
+      #   0.15 to 0.30
+      #
+      # Increase if:
+      #   chain struggles to reach higher K
+      #
+      # Decrease if:
+      #   chain spends too much time in very complex models
+
+      p_death: 0.20
+      # Recommended range:
+      #   0.15 to 0.30
+      #
+      # Increase if:
+      #   chain tends to stay too long at large K
+      #
+      # Good default:
+      #   0.20
+
+    rjmcmc:
+      nsteps: 20000
+      # Total number of RJMCMC iterations.
+      #
+      # Effect:
+      #   more steps = better exploration, slower run
+      #
+      # Recommended:
+      #   3000 to 5000 for testing
+      #   10000+ for more stable interpretation
+      #
+      # Good default:
+      #   5000
+
+      burnin: 2000
+      # Number of initial iterations discarded before saving posterior samples.
+      #
+      # Effect:
+      #   removes early transient phase before the chain reaches good solutions
+      #
+      # Recommended:
+      #   about 10% of nsteps as a first guess
+      #
+      # Good default:
+      #   500 for nsteps=5000
+
+      thin: 10
+      # Save one sample every 'thin' iterations after burnin.
+      #
+      # Effect:
+      #   larger thin reduces file size and autocorrelation in saved samples
+      #   smaller thin keeps more detail but creates bigger CSV files
+      #
+      # Recommended range:
+      #   2 to 10
+      #
+      # Good default:
+      #   5
+
+      debug_nsteps: 0
+      # Optional override of nsteps for quick testing.
+      #
+      # If > 0:
+      #   the code uses debug_nsteps instead of nsteps
+      #
+      # If = 0:
+      #   the code uses nsteps normally
+      #
+      # Recommended:
+      #   set equal to nsteps for explicit testing
+      #   or set to 0 for production
+      #
+      # Good default for test:
+      #   5000
+
+      progress_every: 50
+      # Print progress every N iterations in the terminal.
+      #
+      # Effect:
+      #   smaller values = more verbose terminal output
+      #   larger values = cleaner terminal output
+      #
+      # Recommended range:
+      #   20 to 100
+      #
+      # Good default:
+      #   50
+
+      seed: 123
+      # Random seed for reproducibility.
+      #
+      # Effect:
+      #   same seed -> same stochastic run
+      #   different seed -> independent repeat
+      #
+      # Recommendation:
+      #   keep fixed during debugging
+      #   vary later to test robustness
+
+      # ---- Random-walk proposal widths ---------------------------------------
+      rw_sigma:
+        duration_myr: 0.3
+      # Proposal step size for duration_myr during within-model moves.
+      #
+      # Effect:
+      #   larger value -> bigger jumps in duration
+      #   smaller value -> more conservative/local exploration
+      #
+      # If within acceptance is too high (>~0.8 often):
+      #   try increasing this slightly
+      #
+      # Recommended range:
+      #   0.1 to 0.5
+      #
+      # Good default:
+      #   0.2
+
+        r_start: 0.3
+      # Proposal step size for r_start [km/Myr].
+      #
+      # Effect:
+      #   larger value -> more aggressive exploration
+      #   smaller value -> finer local tuning
+      #
+      # Recommended range:
+      #   0.1 to 0.5
+      #
+      # Good default:
+      #   0.2
+
+        tau: 0.3
+      # Proposal step size for tau [Myr].
+      #
+      # Effect:
+      #   controls how strongly tau changes in within moves
+      #
+      # Recommended range:
+      #   0.1 to 0.5
+      #
+      # Good default:
+      #   0.2
+
+        r_target: 0.03
+      # Proposal step size for r_target [km/Myr].
+      #
+      # Usually smaller than rw_sigma_rstart because r_target often spans a
+      # narrower useful range and can be sensitive.
+      #
+      # Recommended range:
+      #   0.01 to 0.10
+      #
+      # Good default:
+      #   0.02
+
+      # ---- Complexity prior ---------------------------------------------------
+      lambda_k: 1.0
+      # Complexity penalty on the number of stages:
+      #   p(K) ∝ exp(-lambda_k * (K - k_min))
+      #
+      # Effect:
+      #   lambda_k = 0.0 -> no prior penalty on large K
+      #   larger lambda_k -> stronger preference for simpler models
+      #
+      # Practical guidance:
+      #   0.0 = pure flexibility / weak parsimony
+      #   0.2-0.5 = moderate parsimony
+      #   1.0+ = strong parsimony
+      #
+      # Recommended range:
+      #   0.0 to 1.0
+      #
+      # Good default:
+      #   0.5
+
+      death_mode: merge_any
+      # Merge strategy for death moves.
+      #
+      # merge_any:
+      #   more flexible, better mixing, recommended
+      #
+      # merge_compatible:
+      #   stricter/debug-like mode
+      #
+      # Recommended:
+      #   merge_any
+
+      # ---- BIC diagnostic -----------------------------------------------------
+      bic_nobs: 4
+      # Number of independent observations used in BIC calculation.
+      #
+      # Effect:
+      #   higher values strengthen the BIC penalty term p*ln(N)
+      #
+      # Important:
+      #   use the number of truly independent thermochronological observations
+      #   entering the inversion.
+      #
+      # Recommended:
+      #   set explicitly rather than relying on auto
 
   # ---- Optional: other erosion types (examples) ------------------------------
   # ero_type = 1 (constant magnitude over the run)

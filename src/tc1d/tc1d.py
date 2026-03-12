@@ -24,6 +24,8 @@ from sklearn.model_selection import ParameterGrid
 import copy  # TODO: Could this be removed?
 import corner  # BG: Corner plots for MCMC
 import emcee  # BG: For MCMC sampling
+import json # BG: for rjmcmc csv files
+import pandas as pd
 from itertools import combinations
 from mpi4py import MPI
 from neighpy import NASearcher, NAAppraiser
@@ -918,6 +920,295 @@ def read_ero_stages_from_yaml(ero_stages_input) -> list:
         stages.append(parse_ero_stage_row(row, stage_idx=i))
 
     return stages
+
+def _get_transdimensional_cfg(params: dict) -> dict:
+    """
+    Read and validate the trans-dimensional RJMCMC configuration.
+
+    BG: The trans-dimensional configuration is expected to be provided by the
+    BG: YAML loader under ``params["transdimensional"]``. A legacy fallback to
+    BG: ``params["erosion_transdimensional"]`` is also supported.
+
+    Parameters
+    ----------
+    params : dict
+        Model parameter dictionary.
+
+    Returns
+    -------
+    dict
+        Validated trans-dimensional configuration with defaults filled in.
+        If no trans-dimensional block is present, returns ``{"enabled": False}``.
+
+    Raises
+    ------
+    ValueError
+        If the configuration is malformed or contains invalid values.
+    """
+    cfg = params.get("transdimensional", None)
+    if cfg is None:
+        cfg = params.get("erosion_transdimensional", None)
+
+    if cfg is None:
+        return {"enabled": False}
+
+    if not isinstance(cfg, dict):
+        raise ValueError("BG: erosion_model.transdimensional must be a dict.")
+
+    enabled = bool(cfg.get("enabled", False))
+    stage_type = str(cfg.get("stage_type", "exponential")).strip().lower()
+    unit = str(cfg.get("unit", "erosion_rate")).strip().lower()
+
+    k_min = int(cfg.get("k_min", 1))
+    k_max = int(cfg.get("k_max", 10))
+
+    # BG: Stage-parameter bounds. When enabled=True, user-provided bounds are
+    # BG: expected. Otherwise, defaults are allowed.
+    duration_bounds_myr = cfg.get("duration_bounds_myr", None)
+    r_start_bounds = cfg.get("r_start_bounds", None)
+    tau_bounds = cfg.get("tau_bounds", None)
+    r_target_bounds = cfg.get("r_target_bounds", None)
+
+    # BG: Optional move probabilities. They are normalized below.
+    moves = cfg.get(
+        "moves",
+        {"p_within": 0.70, "p_birth": 0.15, "p_death": 0.15},
+    )
+
+    # BG: RJMCMC control block.
+    rj = cfg.get("rjmcmc", {})
+
+    # ------------------------------------------------------------------
+    # BG: Configuration validation
+    # ------------------------------------------------------------------
+    if stage_type != "exponential":
+        raise ValueError(
+            "BG: transdimensional.stage_type supports only 'exponential' in v1."
+        )
+
+    if unit != "erosion_rate":
+        raise ValueError(
+            "BG: transdimensional.unit supports only 'erosion_rate' in v1."
+        )
+
+    if k_min < 1 or k_max < 1 or k_max < k_min:
+        raise ValueError(
+            f"BG: transdimensional requires 1 <= k_min <= k_max "
+            f"(got {k_min}, {k_max})."
+        )
+
+    def _check_bounds(name, bounds):
+        """
+        BG: Validate a 2-element numeric bound pair [min, max].
+        """
+        if not (isinstance(bounds, (list, tuple)) and len(bounds) == 2):
+            raise ValueError(
+                f"BG: transdimensional.{name} must be a 2-element list [min, max]."
+            )
+
+        lo, hi = float(bounds[0]), float(bounds[1])
+
+        if not (hi > lo):
+            raise ValueError(
+                f"BG: transdimensional.{name} must satisfy max > min "
+                f"(got {bounds})."
+            )
+
+        # BG: Enforce physically meaningful lower bounds for parameters that
+        # BG: must remain strictly positive.
+        if name in ("duration_bounds_myr", "tau_bounds") and lo <= 0.0:
+            raise ValueError(
+                f"BG: transdimensional.{name} must have min > 0 "
+                f"(got {bounds})."
+            )
+
+        # BG: Erosion-rate bounds may be zero, but not negative in the current
+        # BG: RJMCMC v1 setup.
+        if name in ("r_start_bounds", "r_target_bounds") and lo < 0.0:
+            raise ValueError(
+                f"BG: transdimensional.{name} must have min >= 0 "
+                f"(got {bounds})."
+            )
+
+        return (lo, hi)
+
+    if enabled:
+        duration_bounds_myr = _check_bounds("duration_bounds_myr", duration_bounds_myr)
+        r_start_bounds = _check_bounds("r_start_bounds", r_start_bounds)
+        tau_bounds = _check_bounds("tau_bounds", tau_bounds)
+        r_target_bounds = _check_bounds("r_target_bounds", r_target_bounds)
+    else:
+        duration_bounds_myr = (
+            (0.05, 10.0)
+            if duration_bounds_myr is None
+            else _check_bounds("duration_bounds_myr", duration_bounds_myr)
+        )
+        r_start_bounds = (
+            (0.0, 4.0)
+            if r_start_bounds is None
+            else _check_bounds("r_start_bounds", r_start_bounds)
+        )
+        tau_bounds = (
+            (0.05, 5.0)
+            if tau_bounds is None
+            else _check_bounds("tau_bounds", tau_bounds)
+        )
+        r_target_bounds = (
+            (0.0, 1.0)
+            if r_target_bounds is None
+            else _check_bounds("r_target_bounds", r_target_bounds)
+        )
+
+    # ------------------------------------------------------------------
+    # BG: Move probabilities
+    # ------------------------------------------------------------------
+    if not isinstance(moves, dict):
+        raise ValueError(
+            "BG: transdimensional.moves must be a dict with "
+            "p_within / p_birth / p_death."
+        )
+
+    p_within = float(moves.get("p_within", 0.70))
+    p_birth = float(moves.get("p_birth", 0.15))
+    p_death = float(moves.get("p_death", 0.15))
+
+    probs = np.array([p_within, p_birth, p_death], dtype=float)
+
+    if np.any(probs < 0.0):
+        raise ValueError("BG: RJMCMC move probabilities must be >= 0.")
+
+    prob_sum = probs.sum()
+    if prob_sum <= 0.0:
+        raise ValueError("BG: RJMCMC move probabilities must sum to > 0.")
+
+    probs = probs / prob_sum
+
+    # ------------------------------------------------------------------
+    # BG: Helpers for reading RJMCMC control values
+    # ------------------------------------------------------------------
+    def _read_rj_int(key, default):
+        try:
+            return int(rj.get(key, default))
+        except Exception:
+            return int(default)
+
+    def _read_rj_float(key, default):
+        try:
+            return float(rj.get(key, default))
+        except Exception:
+            return float(default)
+
+    def _read_rj_str(key, default):
+        value = rj.get(key, default)
+        return str(value).strip()
+
+    nsteps = _read_rj_int("nsteps", 2000)
+    burnin = _read_rj_int("burnin", 200)
+    thin = _read_rj_int("thin", 2)
+    seed = _read_rj_int("seed", 123)
+
+    # BG: Optional debug / reporting controls.
+    debug_nsteps = _read_rj_int("debug_nsteps", 0)
+    progress_every = _read_rj_int("progress_every", 50)
+
+    # BG: Random-walk proposal scales for within-model moves.
+    rw_sigma_cfg = rj.get("rw_sigma", {})
+
+    if not isinstance(rw_sigma_cfg, dict):
+        raise ValueError("BG: transdimensional.rjmcmc.rw_sigma must be a dict.")
+
+    def _read_rw_sigma_float(key, default):
+        try:
+            return float(rw_sigma_cfg.get(key, default))
+        except Exception:
+            return float(default)
+
+    rw_sigma_duration = _read_rw_sigma_float("duration_myr", 0.2)
+    rw_sigma_rstart = _read_rw_sigma_float("r_start", 0.2)
+    rw_sigma_tau = _read_rw_sigma_float("tau", 0.2)
+    rw_sigma_rtarget = _read_rw_sigma_float("r_target", 0.02)
+
+    # BG: Optional complexity prior and model-selection diagnostics.
+    lambda_k = _read_rj_float("lambda_k", 0.0)
+
+    # BG: RJMCMC v1 currently uses merge_any as the reference death-move mode.
+    # BG: merge_compatible is accepted only for backward compatibility.
+    death_mode = _read_rj_str("death_mode", "merge_any").lower()
+    if death_mode not in ("merge_any", "merge_compatible"):
+        raise ValueError(
+            "BG: transdimensional.rjmcmc.death_mode must be "
+            "'merge_any' or 'merge_compatible'."
+        )
+
+    # BG: Keep bic_nobs as provided here. Conversion / auto-resolution is
+    # BG: handled later in batch_run_rjmcmc().
+    bic_nobs = rj.get("bic_nobs", rj.get("nobs", rj.get("n_obs", "auto")))
+
+    # ------------------------------------------------------------------
+    # BG: RJMCMC control validation
+    # ------------------------------------------------------------------
+    if nsteps <= 0:
+        raise ValueError("BG: RJMCMC requires nsteps > 0.")
+    if burnin < 0:
+        raise ValueError("BG: RJMCMC requires burnin >= 0.")
+    if thin <= 0:
+        raise ValueError("BG: RJMCMC requires thin > 0.")
+    if burnin >= nsteps:
+        raise ValueError("BG: RJMCMC requires burnin < nsteps.")
+
+    if any(
+        v <= 0.0
+        for v in (
+            rw_sigma_duration,
+            rw_sigma_rstart,
+            rw_sigma_tau,
+            rw_sigma_rtarget,
+        )
+    ):
+        raise ValueError("BG: RJMCMC rw_sigma_* values must all be > 0.")
+
+    if debug_nsteps < 0:
+        raise ValueError("BG: RJMCMC requires debug_nsteps >= 0.")
+    if progress_every <= 0:
+        raise ValueError("BG: RJMCMC requires progress_every > 0.")
+    if lambda_k < 0.0:
+        raise ValueError("BG: RJMCMC requires lambda_k >= 0.")
+
+    return {
+        "enabled": enabled,
+        "stage_type": stage_type,
+        "unit": unit,
+        "k_min": k_min,
+        "k_max": k_max,
+        "bounds": {
+            "duration_myr": duration_bounds_myr,
+            "r_start": r_start_bounds,
+            "tau": tau_bounds,
+            "r_target": r_target_bounds,
+        },
+        "moves": {
+            "p_within": float(probs[0]),
+            "p_birth": float(probs[1]),
+            "p_death": float(probs[2]),
+        },
+        "rjmcmc": {
+            "nsteps": nsteps,
+            "burnin": burnin,
+            "thin": thin,
+            "debug_nsteps": debug_nsteps,
+            "progress_every": progress_every,
+            "seed": seed,
+            "lambda_k": lambda_k,
+            "death_mode": death_mode,
+            "bic_nobs": bic_nobs,
+            "rw_sigma": {
+                "duration_myr": rw_sigma_duration,
+                "r_start": rw_sigma_rstart,
+                "tau": rw_sigma_tau,
+                "r_target": rw_sigma_rtarget,
+            },
+        },
+    }
 
 def _stage_idx_from_na_param_name(pname):
     """
@@ -2178,6 +2469,9 @@ def init_params(
     ero_option8=0.0,
     ero_option9=0.0,
     ero_option10=0.0,
+    ero_stages=None,
+    ero_stages_template=None,
+    transdimensional=None,
     calc_ages=True,
     ketch_aft=True,
     madtrax_aft=False,
@@ -2487,6 +2781,12 @@ def init_params(
         "ero_option8": ero_option8,
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
+        # BG: YAML-style multi-stage erosion / templates (optional)
+        "ero_stages": ero_stages,
+        "ero_stages_template": copy.deepcopy(ero_stages_template) if ero_stages_template is not None else None,
+        # BG: transdimensional RJMCMC config (optional)
+        "transdimensional": copy.deepcopy(transdimensional) if transdimensional is not None else None,
+        "transdimensional_template": copy.deepcopy(transdimensional) if transdimensional is not None else None,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
         "t_total": time,
@@ -3570,22 +3870,42 @@ def log_probability(x):
 
 
 def batch_run_mcmc(params, batch_params):
-    """Runs TC1D in inverse mode using MCMC"""
-    # Define working directory path
-    wd = Path.cwd()
-
-    # print("--- Starting MCMC inverse mode ---\n")
+    """
+    BG: Run Tc1D in inverse mode using fixed-dimension MCMC or,
+    BG: when enabled, trans-dimensional RJMCMC for ero_type=0.
+    """
     log_output(params, batch_mode=True)
 
     # ------------------------------------------------------------
-    # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
-    #     The previous code only used ParameterGrid(batch_params)[0] to
-    #     inject fixed values into `params`. We preserve the same intent
-    #     without building an unnecessary cartesian product.
+    # BG: Optional RJMCMC (trans-dimensional) for ero_type=0.
+    # BG: If enabled, route directly to the dedicated RJMCMC driver.
+    # ------------------------------------------------------------
+    td_cfg = _get_transdimensional_cfg(params)
+
+    ero_type_val = params.get("ero_type", None)
+    ero_type_scalar = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    )
+    ero_type0 = (ero_type_scalar == 0)
+
+    if td_cfg.get("enabled", False):
+        if not ero_type0:
+            raise ValueError(
+                "BG: transdimensional RJMCMC is only supported for ero_type=0."
+            )
+        return batch_run_rjmcmc(params, batch_params, td_cfg)
+
+    # ------------------------------------------------------------
+    # BG: Fixed-dimension MCMC does NOT need a ParameterGrid.
+    # BG: The previous workflow only used ParameterGrid(batch_params)[0]
+    # BG: to inject fixed values into params. We preserve that intent
+    # BG: without building an unnecessary cartesian product.
     # ------------------------------------------------------------
 
-    # BG: Extract parameters with more than one value (i.e., varied ones)
-    #     These define the MCMC search space (bounds).
+    # BG: Extract parameters with more than one value. These define the
+    # BG: MCMC search space and are interpreted as inversion bounds.
     filtered_params = {
         k: v
         for k, v in batch_params.items()
@@ -3841,6 +4161,1303 @@ def batch_run_mcmc(params, batch_params):
         f"\n{16 * '-'} MCMC execution completed in {exec_end - exec_start:10.4f} seconds {16 * '-'}"
     )
 
+def batch_run_rjmcmc(params, batch_params, td_cfg):
+    """
+    BG: Run Tc1D in trans-dimensional RJMCMC mode for ero_type=0.
+
+    BG: This baseline RJMCMC implementation jointly explores:
+    BG: - the number of exponential erosion stages K
+    BG: - the parameters of each stage:
+    BG:   duration_myr, r_start, tau, r_target
+    """
+
+    wd = Path.cwd()
+    log_output(params, batch_mode=True)
+
+    # ------------------------------------------------------------------
+    # BG: Build a local inverse-mode parameter dictionary.
+    # ------------------------------------------------------------------
+    base_params = copy.deepcopy(params)
+    base_params["inverse_mode"] = True
+    base_params["run_type"] = "mcmc"
+
+    # BG: Inject fixed batch parameters so run_model() receives scalars
+    for key, value in batch_params.items():
+        if isinstance(value, (list, tuple, np.ndarray)):
+            if len(value) == 1:
+                base_params[key] = value[0]
+        else:
+            base_params[key] = value
+
+    # ------------------------------------------------------------------
+    # BG: Total model time [Myr]
+    # ------------------------------------------------------------------
+    t_total = base_params.get("t_total", None)
+    t_total = float(
+        t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total
+    )
+
+    if t_total <= 0.0:
+        raise ValueError("BG: t_total must be > 0 for RJMCMC.")
+
+    # ------------------------------------------------------------------
+    # BG: Read validated trans-dimensional configuration
+    # ------------------------------------------------------------------
+    bounds = td_cfg["bounds"]
+    rj_cfg = td_cfg["rjmcmc"]
+    move_cfg = td_cfg["moves"]
+
+    b_dur = tuple(bounds["duration_myr"])
+    b_r0 = tuple(bounds["r_start"])
+    b_tau = tuple(bounds["tau"])
+    b_rt = tuple(bounds["r_target"])
+
+    # ------------------------------------------------------------------
+    # BG: Bounds on number of stages
+    # ------------------------------------------------------------------
+    k_min = int(td_cfg["k_min"])
+    k_max = int(td_cfg["k_max"])
+
+    if not (1 <= k_min <= k_max):
+        raise ValueError("BG: RJMCMC requires 1 <= k_min <= k_max.")
+
+    # ------------------------------------------------------------------
+    # BG: Widths of uniform proposal ranges used in birth moves
+    # ------------------------------------------------------------------
+    w_r0 = float(b_r0[1] - b_r0[0])
+    w_tau = float(b_tau[1] - b_tau[0])
+    w_rt = float(b_rt[1] - b_rt[0])
+
+    if (w_r0 <= 0.0) or (w_tau <= 0.0) or (w_rt <= 0.0):
+        raise ValueError(
+            "BG: RJMCMC bounds must have strictly positive widths "
+            "for r_start, tau, and r_target."
+        )
+
+    logW_newstage = np.log(w_r0) + np.log(w_tau) + np.log(w_rt)
+
+    # ------------------------------------------------------------------
+    # BG: Random generator
+    # ------------------------------------------------------------------
+    seed = int(rj_cfg["seed"])
+    rng = np.random.default_rng(seed)
+
+    # ------------------------------------------------------------------
+    # BG: RJMCMC controls
+    # ------------------------------------------------------------------
+    nsteps = int(rj_cfg["nsteps"])
+    burnin = int(rj_cfg["burnin"])
+    thin = int(rj_cfg["thin"])
+
+    debug_nsteps = int(rj_cfg.get("debug_nsteps", 0))
+    if debug_nsteps > 0:
+        nsteps = debug_nsteps
+        burnin = min(burnin, max(0, nsteps // 5))
+        thin = max(1, min(thin, 2))
+
+    rw_sigma = rj_cfg["rw_sigma"]
+
+    sig_dur = float(rw_sigma["duration_myr"])
+    sig_r0 = float(rw_sigma["r_start"])
+    sig_tau = float(rw_sigma["tau"])
+    sig_rt = float(rw_sigma["r_target"])
+
+    p_within = float(move_cfg["p_within"])
+    p_birth = float(move_cfg["p_birth"])
+    p_death = float(move_cfg["p_death"])
+
+    lambda_k = float(rj_cfg["lambda_k"])
+
+    print(
+        f"[RJMCMC v1] config: nsteps={nsteps}, burnin={burnin}, thin={thin}, "
+        f"moves={p_within:.2f}/{p_birth:.2f}/{p_death:.2f}"
+    )
+
+    print(
+        f"[RJMCMC v1] rw_sigma: dur={sig_dur}, r0={sig_r0}, "
+        f"tau={sig_tau}, rt={sig_rt}"
+    )
+
+    print(f"[RJMCMC v1] lambda_k used = {lambda_k}")
+
+    # ------------------------------------------------------------------
+    # BG: Helper to sample one exponential stage
+    # ------------------------------------------------------------------
+    def _sample_stage():
+        return {
+            "duration_myr": float(rng.uniform(*b_dur)),
+            "r_start": float(rng.uniform(*b_r0)),
+            "tau": float(rng.uniform(*b_tau)),
+            "r_target": float(rng.uniform(*b_rt)),
+        }
+
+    # ------------------------------------------------------------------
+    # BG: Convert RJ state to ero_stages structure
+    # ------------------------------------------------------------------
+    def _state_to_ero_stages_input(state, pad_duration_myr=0.0):
+        ero = []
+
+        for stage in state["stages"]:
+            ero.append(
+                {
+                    "type": "exponential",
+                    "unit": "erosion_rate",
+                    "duration_myr": float(stage["duration_myr"]),
+                    "parameter1": float(stage["r_start"]),
+                    "parameter2": float(stage["tau"]),
+                    "parameter3": float(stage["r_target"]),
+                }
+            )
+
+        if pad_duration_myr > 0.0:
+            ero.append(
+                {
+                    "type": "constant",
+                    "unit": "erosion_rate",
+                    "duration_myr": float(pad_duration_myr),
+                    "parameter1": 0.0,
+                }
+            )
+
+        return ero
+
+    def _build_time_rate_curve_from_state(state, n_per_stage=200, pad_to_t_total=True):
+        t_plot = []
+        r_plot = []
+
+        t_acc = 0.0
+
+        for stage in state["stages"]:
+            dur = float(stage["duration_myr"])
+            r0 = float(stage["r_start"])
+            tau = float(stage["tau"])
+            rt = float(stage["r_target"])
+
+            if dur <= 0.0:
+                continue
+
+            t_local = np.linspace(0.0, dur, int(max(2, n_per_stage)))
+            r_local = erosion_exponential(t_local, r0, rt, tau)
+
+            t_plot.extend((t_acc + t_local).tolist())
+            r_plot.extend(np.asarray(r_local, dtype=float).tolist())
+
+            t_acc += dur
+
+        if pad_to_t_total and (t_acc < t_total):
+            t_pad = np.linspace(t_acc, t_total, int(max(2, n_per_stage)))
+            r_pad = np.zeros_like(t_pad, dtype=float)
+
+            t_plot.extend(t_pad.tolist())
+            r_plot.extend(r_pad.tolist())
+
+        return np.asarray(t_plot, dtype=float), np.asarray(r_plot, dtype=float)
+
+    def _plot_trace_generic(x, y, xlabel, ylabel, title, outfile_name, yscale=None):
+        plt.figure()
+        plt.plot(x, y, ".")
+        plt.xlabel(xlabel)
+        plt.ylabel(ylabel)
+
+        if yscale is not None:
+            plt.yscale(yscale)
+
+        plt.title(title)
+
+        if base_params.get("save_plots", True):
+            figfile = wd / "png" / outfile_name
+            plt.savefig(figfile, dpi=300)
+            print(f"[RJMCMC] wrote {figfile}")
+
+        if base_params.get("display_plots", False):
+            plt.show()
+        else:
+            plt.close()
+
+    def _plot_best_by_k(df_best_by_k):
+        if df_best_by_k is None or len(df_best_by_k) == 0:
+            return
+
+        plt.figure()
+        plt.plot(
+            df_best_by_k["K"].to_numpy(),
+            df_best_by_k["misfit_best"].to_numpy(),
+            "o-",
+        )
+        plt.xlabel("K (# stages)")
+        plt.ylabel("Best misfit")
+        plt.yscale("log")
+        plt.title("RJMCMC: best misfit by K")
+
+        if base_params.get("save_plots", True):
+            figfile = wd / "png" / "rjmcmc_best_misfit_by_K.png"
+            plt.savefig(figfile, dpi=300)
+            print(f"[RJMCMC] wrote {figfile}")
+
+        if base_params.get("display_plots", False):
+            plt.show()
+        else:
+            plt.close()
+
+        plt.figure()
+        plt.plot(
+            df_best_by_k["K"].to_numpy(),
+            df_best_by_k["bic_best"].to_numpy(),
+            "o-",
+        )
+        plt.xlabel("K (# stages)")
+        plt.ylabel("Best BIC")
+        plt.title("RJMCMC: best BIC by K")
+
+        if base_params.get("save_plots", True):
+            figfile = wd / "png" / "rjmcmc_best_bic_by_K.png"
+            plt.savefig(figfile, dpi=300)
+            print(f"[RJMCMC] wrote {figfile}")
+
+        if base_params.get("display_plots", False):
+            plt.show()
+        else:
+            plt.close()
+
+    # ------------------------------------------------------------------
+    # BG: Misfit cache used to avoid re-running identical RJ states.
+    # BG: Cache keys are exact (no rounding) to preserve MH/RJMCMC correctness.
+    # ------------------------------------------------------------------
+    misfit_cache = {}
+    misfit_cache_max = 2000
+
+    def _state_key(state):
+        """
+        BG: Build an exact immutable cache key for one RJ state.
+        """
+        key = []
+        for stage in state["stages"]:
+            key.append(
+                (
+                    float(stage["duration_myr"]),
+                    float(stage["r_start"]),
+                    float(stage["tau"]),
+                    float(stage["r_target"]),
+                )
+            )
+        return tuple(key)
+
+    def _eval_misfit(state):
+        """
+        BG: Evaluate the forward-model misfit for one RJ state.
+
+        BG: If the total sampled duration is shorter than t_total, the remaining
+        BG: model time is padded with a final zero-erosion stage.
+        """
+        total_duration = sum(float(stage["duration_myr"]) for stage in state["stages"])
+        if total_duration > t_total:
+            return np.inf
+
+        key = _state_key(state)
+        if key in misfit_cache:
+            return misfit_cache[key]
+
+        pad_duration_myr = max(0.0, t_total - total_duration)
+
+        params_local = copy.deepcopy(base_params)
+        ero_input = _state_to_ero_stages_input(
+            state,
+            pad_duration_myr=pad_duration_myr,
+        )
+        params_local["ero_stages"] = read_ero_stages_from_yaml(ero_input)
+        params_local["ero_total_stage_sec"] = sum(
+            stage["dt_sec"] for stage in params_local["ero_stages"]
+        )
+
+        _prev_batch_mode = params_local.get("batch_mode", False)
+        params_local["batch_mode"] = True
+        try:
+            misfit = run_model(params_local)
+        finally:
+            params_local["batch_mode"] = _prev_batch_mode
+
+        misfit_value = float(misfit)
+
+        if len(misfit_cache) >= misfit_cache_max:
+            misfit_cache.pop(next(iter(misfit_cache)))
+
+        misfit_cache[key] = misfit_value
+        return misfit_value
+
+    # ------------------------------------------------------------------
+    # BG: Prior and posterior definitions.
+    # BG: We use:
+    # BG:   loglike = -0.5 * chi2
+    # BG:   logpost = loglike + logprior
+    # ------------------------------------------------------------------
+    def _log_prior_K(k: int) -> float:
+        """
+        BG: Prior on the number of stages K.
+
+        BG: p(K) ∝ exp(-lambda_k * (K - k_min))
+        """
+        if k < k_min or k > k_max:
+            return -np.inf
+
+        return -lambda_k * float(k - k_min)
+
+    def _log_prior_state(state) -> float:
+        """
+        BG: Prior on one RJ state.
+
+        BG: Includes:
+        BG: - prior on K through lambda_k
+        BG: - hard bounds on all stage parameters
+        BG: - hard constraint sum(duration_myr) <= t_total
+        BG: - normalized uniform priors for r_start, tau, and r_target
+
+        BG: Intentional design choice:
+        BG: We do not include a normalized uniform prior term for duration_myr.
+        BG: Model parsimony is controlled primarily through lambda_k, because
+        BG: the scientific goal is to penalize the number of stages rather than
+        BG: the internal shape parameters of each stage.
+        """
+        stages = state.get("stages", [])
+        k = len(stages)
+
+        log_prior = _log_prior_K(k)
+        if not np.isfinite(log_prior):
+            return -np.inf
+
+        total_duration = sum(float(stage["duration_myr"]) for stage in stages)
+        if total_duration > t_total:
+            return -np.inf
+
+        for stage in stages:
+            dur = float(stage["duration_myr"])
+            r0 = float(stage["r_start"])
+            tau = float(stage["tau"])
+            rt = float(stage["r_target"])
+
+            if not (b_dur[0] <= dur <= b_dur[1]):
+                return -np.inf
+            if not (b_r0[0] <= r0 <= b_r0[1]):
+                return -np.inf
+            if not (b_tau[0] <= tau <= b_tau[1]):
+                return -np.inf
+            if not (b_rt[0] <= rt <= b_rt[1]):
+                return -np.inf
+
+            # BG: These are the parameters drawn independently when a genuinely
+            # BG: new right-stage is created in a birth move.
+            log_prior += -np.log(w_r0)
+            log_prior += -np.log(w_tau)
+            log_prior += -np.log(w_rt)
+
+        return float(log_prior)
+
+    def _eval_logpost(state):
+        """
+        BG: Evaluate posterior components for one RJ state.
+
+        Returns
+        -------
+        tuple
+            (logpost, logprior, loglike, chi2)
+        """
+        log_prior = _log_prior_state(state)
+        if not np.isfinite(log_prior):
+            return -np.inf, -np.inf, -np.inf, np.inf
+
+        chi2 = _eval_misfit(state)
+        if not np.isfinite(chi2):
+            return -np.inf, log_prior, -np.inf, np.inf
+
+        log_like = -0.5 * float(chi2)
+        log_post = float(log_like + log_prior)
+
+        return log_post, float(log_prior), float(log_like), float(chi2)
+
+    def _reflect(x, lo, hi):
+        """
+        BG: Reflecting boundary transform for symmetric random-walk proposals.
+        """
+        if hi <= lo:
+            return lo
+
+        width = hi - lo
+        y = (x - lo) % (2.0 * width)
+        if y > width:
+            y = 2.0 * width - y
+
+        return lo + y
+
+    def _propose_within(state):
+        """
+        BG: Within-model proposal.
+
+        BG: Randomly choose one stage, then randomly perturb one of:
+        BG: duration_myr, r_start, tau, or r_target.
+        """
+        proposal = copy.deepcopy(state)
+
+        k = len(proposal["stages"])
+        if k == 0:
+            return proposal
+
+        idx = int(rng.integers(0, k))
+        stage = proposal["stages"][idx]
+
+        param_names = ["duration_myr", "r_start", "tau", "r_target"]
+        param_name = param_names[int(rng.integers(0, len(param_names)))]
+
+        if param_name == "duration_myr":
+            stage[param_name] = float(stage[param_name]) + rng.normal(0.0, sig_dur)
+            stage[param_name] = _reflect(stage[param_name], b_dur[0], b_dur[1])
+
+        elif param_name == "r_start":
+            stage[param_name] = float(stage[param_name]) + rng.normal(0.0, sig_r0)
+            stage[param_name] = _reflect(stage[param_name], b_r0[0], b_r0[1])
+
+        elif param_name == "tau":
+            stage[param_name] = float(stage[param_name]) + rng.normal(0.0, sig_tau)
+            stage[param_name] = _reflect(stage[param_name], b_tau[0], b_tau[1])
+
+        else:  # r_target
+            stage[param_name] = float(stage[param_name]) + rng.normal(0.0, sig_rt)
+            stage[param_name] = _reflect(stage[param_name], b_rt[0], b_rt[1])
+
+        proposal["stages"][idx] = stage
+        return proposal
+
+    def _eligible_birth_indices(state):
+        """
+        BG: Return stage indices that are long enough to be split into two
+        BG: sub-stages that both satisfy duration > dmin.
+
+        BG: We require strict inequality here so that the split interval has
+        BG: strictly positive width in the RJ proposal density.
+        """
+        stages = state.get("stages", [])
+        if len(stages) >= k_max:
+            return []
+
+        dmin = float(b_dur[0])
+        eligible = []
+
+        for idx, stage in enumerate(stages):
+            if float(stage["duration_myr"]) > 2.0 * dmin:
+                eligible.append(idx)
+
+        return eligible
+
+    def _eligible_death_indices(state):
+        """
+        BG: Return eligible adjacent-pair indices for death moves.
+
+        BG: RJMCMC v1 uses merge_any, but we exclude adjacent pairs whose merged
+        BG: duration would violate the hard upper bound on duration_myr.
+        """
+        stages = state.get("stages", [])
+        if len(stages) <= k_min:
+            return []
+
+        dmax = float(b_dur[1])
+        eligible = []
+
+        for idx in range(len(stages) - 1):
+            dsum = float(stages[idx]["duration_myr"]) + float(
+                stages[idx + 1]["duration_myr"]
+            )
+            if dsum <= dmax:
+                eligible.append(idx)
+
+        return eligible
+
+    def _propose_birth(state):
+        """
+        BG: Birth move.
+
+        BG: One eligible stage is split into two:
+        BG: - the left stage keeps the original parameters but gets duration d1
+        BG: - the right stage is a genuinely new exponential stage drawn from
+        BG:   the prior bounds with duration d2
+        """
+        proposal = copy.deepcopy(state)
+
+        k = len(proposal["stages"])
+        if k >= k_max:
+            return proposal, False, None
+
+        eligible = _eligible_birth_indices(proposal)
+        if len(eligible) == 0:
+            return proposal, False, None
+
+        idx = int(rng.choice(eligible))
+        stage_old = proposal["stages"][idx]
+        d_old = float(stage_old["duration_myr"])
+
+        dmin = float(b_dur[0])
+        if d_old <= 2.0 * dmin:
+            return proposal, False, None
+
+        d1 = float(rng.uniform(dmin, d_old - dmin))
+        d2 = float(d_old - d1)
+
+        if (d1 < dmin) or (d2 < dmin):
+            return proposal, False, None
+
+        stage_left = copy.deepcopy(stage_old)
+        stage_left["duration_myr"] = float(d1)
+
+        stage_right = {
+            "duration_myr": float(d2),
+            "r_start": float(rng.uniform(*b_r0)),
+            "tau": float(rng.uniform(*b_tau)),
+            "r_target": float(rng.uniform(*b_rt)),
+        }
+
+        proposal["stages"][idx] = stage_left
+        proposal["stages"].insert(idx + 1, stage_right)
+
+        meta = {
+            "idx": int(idx),
+            "d_old": float(d_old),
+            "d1": float(d1),
+            "d2": float(d2),
+            "n_birth_fwd": int(len(eligible)),
+        }
+        return proposal, True, meta
+
+    def _propose_death(state):
+        """
+        BG: Death move.
+
+        BG: One adjacent pair is merged into a single stage.
+        BG: In the current baseline implementation, the merged stage keeps the
+        BG: parameters of the left stage and only its duration is updated.
+
+        BG: A weighted-merge version could be introduced later if needed, but
+        BG: the current design is intentionally simple and stable.
+        """
+        proposal = copy.deepcopy(state)
+
+        k = len(proposal["stages"])
+        if k <= k_min:
+            return proposal, False, None
+
+        eligible = _eligible_death_indices(proposal)
+        if len(eligible) == 0:
+            return proposal, False, None
+
+        idx = int(rng.choice(eligible))
+
+        stage_left = proposal["stages"][idx]
+        stage_right = proposal["stages"][idx + 1]
+
+        d1 = float(stage_left["duration_myr"])
+        d2 = float(stage_right["duration_myr"])
+        d_old = float(d1 + d2)
+
+        if d_old > float(b_dur[1]):
+            return proposal, False, None
+
+        stage_new = copy.deepcopy(stage_left)
+        stage_new["duration_myr"] = float(d_old)
+
+        proposal["stages"][idx] = stage_new
+        proposal["stages"].pop(idx + 1)
+
+        meta = {
+            "idx": int(idx),
+            "d1": float(d1),
+            "d2": float(d2),
+            "d_old": float(d_old),
+            "n_death_fwd": int(len(eligible)),
+        }
+        return proposal, True, meta
+
+    # ------------------------------------------------------------------
+    # BG: Initialization.
+    # BG: Try several random initial states at K=k_min and keep the first
+    # BG: one with finite posterior and finite misfit.
+    # ------------------------------------------------------------------
+    max_init_tries = int(rj_cfg.get("max_init_tries", 200))
+
+    state0 = None
+    logpost0 = -np.inf
+    lp0 = -np.inf
+    misfit0 = np.inf
+
+    for _ in range(max_init_tries):
+        candidate = {"stages": [_sample_stage() for _ in range(k_min)]}
+        logpost_c, lp_c, _, misfit_c = _eval_logpost(candidate)
+
+        if np.isfinite(logpost_c) and np.isfinite(misfit_c):
+            state0 = candidate
+            logpost0 = float(logpost_c)
+            lp0 = float(lp_c)
+            misfit0 = float(misfit_c)
+            break
+
+    if state0 is None:
+        raise RuntimeError(
+            f"BG: RJMCMC could not initialize a finite starting state after "
+            f"{max_init_tries} tries."
+        )
+
+    print(
+        f"[RJMCMC v1] init K={len(state0['stages'])}, "
+        f"misfit={misfit0}, logpost={logpost0}"
+    )
+    print(
+        f"[RJMCMC v1] init stages (first): "
+        f"{state0['stages'][0] if state0['stages'] else None}"
+    )
+
+    init_csv = wd / "csv" / "rjmcmc_debug_init_state.csv"
+    with open(init_csv, "w", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(
+            ["stage", "duration_myr", "r_start", "tau", "r_target", "misfit", "logpost"]
+        )
+        for i_stage, stage in enumerate(state0["stages"], start=1):
+            writer.writerow(
+                [
+                    i_stage,
+                    stage["duration_myr"],
+                    stage["r_start"],
+                    stage["tau"],
+                    stage["r_target"],
+                    misfit0,
+                    logpost0,
+                ]
+            )
+
+    print(f"[RJMCMC] wrote {init_csv}")
+
+    # ------------------------------------------------------------------
+    # BG: Main RJMCMC sampling setup
+    # ------------------------------------------------------------------
+    nsteps_run = nsteps
+    burnin_run = burnin
+    thin_run = thin
+
+    state = copy.deepcopy(state0)
+    logpost = logpost0
+    logprior = lp0
+    miscur = misfit0
+
+    progress_every = int(rj_cfg.get("progress_every", 50))
+    progress_every = max(1, progress_every)
+
+    trace_csv = wd / "csv" / "rjmcmc_trace.csv"
+    with open(trace_csv, "w", newline="") as ftrace:
+        writer = csv.writer(ftrace)
+        writer.writerow(
+            ["it", "accepted", "move", "K", "misfit", "logprior", "loglike", "logpost"]
+        )
+
+    samples_csv = wd / "csv" / "rjmcmc_samples.csv"
+    with open(samples_csv, "w", newline="") as fs:
+        writer = csv.writer(fs)
+        writer.writerow(
+            ["it", "K", "misfit", "logprior", "loglike", "logpost", "stages_json"]
+        )
+
+    # BG: Per-move proposal / acceptance counters.
+    n_prop = {"within": 0, "birth": 0, "death": 0}
+    n_accm = {"within": 0, "birth": 0, "death": 0}
+
+    misfit_init = float(miscur)
+
+    with open(trace_csv, "a", newline="") as ftrace, open(samples_csv, "a", newline="") as fs:
+        wtrace = csv.writer(ftrace)
+        wsamp = csv.writer(fs)
+
+        wtrace.writerow(
+            [
+                0,
+                1,
+                "init",
+                len(state["stages"]),
+                float(misfit_init),
+                float(logprior),
+                float(-0.5 * misfit_init),
+                float(logpost),
+            ]
+        )
+
+        def _draw_move(state):
+            """
+            BG: Draw one move after renormalizing probabilities at K bounds.
+            """
+            k = len(state["stages"])
+
+            pw = p_within
+            pb = p_birth if (k < k_max) else 0.0
+            pd = p_death if (k > k_min) else 0.0
+
+            norm = pw + pb + pd
+            if norm <= 0.0:
+                raise ValueError(
+                    "BG: invalid RJMCMC move probabilities; renormalized sum is zero."
+                )
+
+            pw /= norm
+            pb /= norm
+            pd /= norm
+
+            u = rng.random()
+            if u < pw:
+                return "within", pw, pb, pd
+            elif u < pw + pb:
+                return "birth", pw, pb, pd
+            else:
+                return "death", pw, pb, pd
+
+        def _move_probs_for_k(k: int):
+            """
+            BG: Return renormalized move probabilities for a given K.
+            """
+            pw = p_within
+            pb = p_birth if (k < k_max) else 0.0
+            pd = p_death if (k > k_min) else 0.0
+
+            norm = pw + pb + pd
+            if norm <= 0.0:
+                return 0.0, 0.0, 0.0
+
+            return pw / norm, pb / norm, pd / norm
+
+        for it in range(1, nsteps_run + 1):
+            move, pw_eff, pb_eff, pd_eff = _draw_move(state)
+            n_prop[move] += 1
+
+            meta = None
+
+            if move == "within":
+                proposal = _propose_within(state)
+                ok_move = True
+
+            elif move == "birth":
+                proposal, ok_move, meta = _propose_birth(state)
+
+            else:  # death
+                proposal, ok_move, meta = _propose_death(state)
+
+            if not ok_move:
+                accepted = False
+                acc_str = "reject"
+
+            else:
+                logpost_prop, lp_prop, ll_prop, mis_prop = _eval_logpost(proposal)
+                k_new = len(proposal["stages"])
+
+                # BG: Base MH term from posterior ratio
+                log_alpha = float(logpost_prop) - float(logpost)
+
+                # ------------------------------------------------------
+                # BG: Additional RJ terms for birth/death moves
+                # ------------------------------------------------------
+                if move == "birth":
+                    if (pb_eff <= 0.0) or (meta is None):
+                        accepted = False
+
+                    else:
+                        pb_fwd = float(pb_eff)
+
+                        # BG: Reverse move probability = death at proposed K
+                        _, _, pd_rev = _move_probs_for_k(k_new)
+                        pd_rev = float(pd_rev)
+
+                        if pd_rev <= 0.0:
+                            accepted = False
+
+                        else:
+                            n_birth_fwd = int(meta.get("n_birth_fwd", 0))
+                            n_death_rev = len(_eligible_death_indices(proposal))
+
+                            if n_birth_fwd <= 0 or n_death_rev <= 0:
+                                accepted = False
+
+                            else:
+                                dmin = float(b_dur[0])
+                                d_old = float(meta["d_old"])
+                                split_range = float(d_old - 2.0 * dmin)
+
+                                if split_range <= 0.0:
+                                    accepted = False
+
+                                else:
+                                    # BG: Forward proposal:
+                                    # BG: choose eligible stage
+                                    # BG: choose split point d1
+                                    # BG: draw new right-stage parameters
+                                    log_q_forward = (
+                                        -np.log(n_birth_fwd)
+                                        -np.log(split_range)
+                                        -logW_newstage
+                                    )
+
+                                    # BG: Reverse proposal:
+                                    # BG: choose merged adjacent pair
+                                    log_q_reverse = -np.log(n_death_rev)
+
+                                    log_alpha += np.log(pd_rev) - np.log(pb_fwd)
+                                    log_alpha += log_q_reverse - log_q_forward
+
+                                    accepted = (
+                                        np.isfinite(log_alpha)
+                                        and (np.log(rng.random()) < log_alpha)
+                                    )
+
+                elif move == "death":
+                    if (pd_eff <= 0.0) or (meta is None):
+                        accepted = False
+
+                    else:
+                        pd_fwd = float(pd_eff)
+
+                        # BG: Reverse move probability = birth at proposed K
+                        _, pb_rev, _ = _move_probs_for_k(k_new)
+                        pb_rev = float(pb_rev)
+
+                        if pb_rev <= 0.0:
+                            accepted = False
+
+                        else:
+                            n_death_fwd = int(meta.get("n_death_fwd", 0))
+                            n_birth_rev = len(_eligible_birth_indices(proposal))
+
+                            if n_death_fwd <= 0 or n_birth_rev <= 0:
+                                accepted = False
+
+                            else:
+                                dmin = float(b_dur[0])
+                                d_old = float(meta["d_old"])
+                                split_range = float(d_old - 2.0 * dmin)
+
+                                if split_range <= 0.0:
+                                    accepted = False
+
+                                else:
+                                    # BG: Forward proposal:
+                                    # BG: choose merged adjacent pair
+                                    log_q_forward = -np.log(n_death_fwd)
+
+                                    # BG: Reverse proposal:
+                                    # BG: choose stage
+                                    # BG: choose split point d1
+                                    # BG: draw new right-stage parameters
+                                    log_q_reverse = (
+                                        -np.log(n_birth_rev)
+                                        -np.log(split_range)
+                                        -logW_newstage
+                                    )
+
+                                    log_alpha += np.log(pb_rev) - np.log(pd_fwd)
+                                    log_alpha += log_q_reverse - log_q_forward
+
+                                    accepted = (
+                                        np.isfinite(log_alpha)
+                                        and (np.log(rng.random()) < log_alpha)
+                                    )
+
+                else:
+                    # BG: Standard MH acceptance for within-model proposals
+                    accepted = (
+                        np.isfinite(log_alpha)
+                        and (np.log(rng.random()) < log_alpha)
+                    )
+
+                if accepted:
+                    state = proposal
+                    logpost = float(logpost_prop)
+                    logprior = float(lp_prop)
+                    miscur = float(mis_prop)
+                    n_accm[move] += 1
+                    acc_str = "ACCEPT"
+                else:
+                    acc_str = "reject"
+
+            kcur = len(state["stages"])
+
+            # BG: Trace output for every iteration
+            ll_cur_trace = -0.5 * float(miscur)
+            wtrace.writerow(
+                [
+                    it,
+                    int(accepted),
+                    move,
+                    kcur,
+                    float(miscur),
+                    float(logprior),
+                    float(ll_cur_trace),
+                    float(logpost),
+                ]
+            )
+
+            # BG: Save posterior samples after burn-in and thinning
+            if (it > burnin_run) and ((it - burnin_run) % thin_run == 0):
+                stages_json = json.dumps(state["stages"])
+                wsamp.writerow(
+                    [
+                        it,
+                        kcur,
+                        float(miscur),
+                        float(logprior),
+                        float(-0.5 * float(miscur)),
+                        float(logpost),
+                        stages_json,
+                    ]
+                )
+
+            if (it <= 5) or (it % progress_every == 0) or (it == nsteps_run):
+                print(
+                    f"[RJMCMC] it={it:04d}/{nsteps_run} move={move} {acc_str} "
+                    f"K={kcur} misfit={miscur:.3f} logpost={logpost:.3f}"
+                )
+
+    df_trace = pd.read_csv(trace_csv)
+
+    its = df_trace["it"].to_numpy()
+    misfits = df_trace["misfit"].to_numpy()
+    Ks = df_trace["K"].to_numpy()
+    logposts = df_trace["logpost"].to_numpy()
+
+    # BG: Cumulative best misfit reached so far
+    best_misfit_so_far = np.minimum.accumulate(misfits)
+
+    _plot_trace_generic(
+        its,
+        misfits,
+        xlabel="Iteration",
+        ylabel="Misfit",
+        title="RJMCMC: misfit trace",
+        outfile_name="rjmcmc_trace_misfit.png",
+        yscale="log",
+    )
+
+    _plot_trace_generic(
+        its,
+        logposts,
+        xlabel="Iteration",
+        ylabel="Log-posterior",
+        title="RJMCMC: log-posterior trace",
+        outfile_name="rjmcmc_trace_logpost.png",
+        yscale=None,
+    )
+
+    _plot_trace_generic(
+        its,
+        best_misfit_so_far,
+        xlabel="Iteration",
+        ylabel="Best misfit so far",
+        title="RJMCMC: best misfit so far",
+        outfile_name="rjmcmc_best_misfit_so_far.png",
+        yscale="log",
+    )
+
+    _plot_trace_generic(
+        its,
+        Ks,
+        xlabel="Iteration",
+        ylabel="K (# stages)",
+        title="RJMCMC: K trace",
+        outfile_name="rjmcmc_trace_K.png",
+        yscale=None,
+    )
+
+    # ------------------------------------------------------------------
+    # BG: Posterior-style histogram of sampled K values
+    # ------------------------------------------------------------------
+    try:
+        df_samples = pd.read_csv(samples_csv)
+        if len(df_samples) > 0:
+            k_samp = df_samples["K"].astype(int).to_numpy()
+
+            plt.figure()
+            plt.hist(k_samp, bins=np.arange(k_min, k_max + 2) - 0.5)
+            plt.xlabel("K (# stages)")
+            plt.ylabel("Count")
+            plt.title("RJMCMC: K histogram (saved samples)")
+
+            if base_params.get("save_plots", True):
+                figfile = wd / "png" / "rjmcmc_samples_K_hist.png"
+                plt.savefig(figfile, dpi=300)
+                print(f"[RJMCMC] wrote {figfile}")
+
+            if base_params.get("display_plots", False):
+                plt.show()
+            else:
+                plt.close()
+
+    except Exception as e_hist:
+        print(f"[RJMCMC] Warning: could not plot K histogram: {e_hist}")
+
+    # ------------------------------------------------------------------
+    # BG: Posterior probability of K estimated from saved RJMCMC samples
+    # ------------------------------------------------------------------
+    try:
+        df_samples = pd.read_csv(samples_csv)
+
+        if len(df_samples) > 0:
+            k_counts = (
+                df_samples["K"]
+                .astype(int)
+                .value_counts()
+                .sort_index()
+                .reindex(range(k_min, k_max + 1), fill_value=0)
+            )
+
+            k_probs = k_counts / float(k_counts.sum())
+
+            outcsv = wd / "csv" / "rjmcmc_posterior_K.csv"
+            with open(outcsv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["K", "count", "posterior_probability"])
+                for kval in range(k_min, k_max + 1):
+                    writer.writerow(
+                        [
+                            int(kval),
+                            int(k_counts.loc[kval]),
+                            float(k_probs.loc[kval]),
+                        ]
+                    )
+
+            print(f"[RJMCMC] wrote {outcsv}")
+
+            plt.figure()
+            plt.bar(
+                k_probs.index.to_numpy(),
+                k_probs.to_numpy(),
+                width=0.8,
+            )
+            plt.xlabel("K (# stages)")
+            plt.ylabel("Posterior probability")
+            plt.title("RJMCMC: posterior probability of K")
+
+            if base_params.get("save_plots", True):
+                figfile = wd / "png" / "rjmcmc_posterior_K.png"
+                plt.savefig(figfile, dpi=300)
+                print(f"[RJMCMC] wrote {figfile}")
+
+            if base_params.get("display_plots", False):
+                plt.show()
+            else:
+                plt.close()
+
+    except Exception as e_pk:
+        print(f"[RJMCMC] Warning: could not compute posterior probability of K: {e_pk}")
+
+    # ------------------------------------------------------------------
+    # BG: BIC helper functions
+    # BG: With chi2 misfit and logL = -0.5 * chi2:
+    # BG: BIC = p * ln(N) + chi2
+    # BG: For exponential stages, p = 4 * K
+    # ------------------------------------------------------------------
+    def _get_bic_nobs(base_params, rj_cfg) -> int:
+        nobs = rj_cfg.get("bic_nobs", rj_cfg.get("nobs", rj_cfg.get("n_obs", "auto")))
+
+        if isinstance(nobs, (int, np.integer)):
+            return int(nobs)
+
+        if isinstance(nobs, str) and nobs.strip().lower() != "auto":
+            try:
+                return int(nobs)
+            except Exception:
+                pass
+
+        for key in ("n_obs", "nobs", "ndata", "n_data"):
+            if key in base_params:
+                try:
+                    return int(base_params[key])
+                except Exception:
+                    pass
+
+        print(
+            "[RJMCMC] Warning: could not infer bic_nobs; using N=1. "
+            "Set transdimensional.rjmcmc.bic_nobs in YAML for meaningful BIC."
+        )
+        return 1
+
+    def _bic_from_misfit(misfit: float, K: int, N: int) -> float:
+        p = 4 * int(K)
+        N = max(1, int(N))
+        return float(p * np.log(N) + float(misfit))
+
+    # ------------------------------------------------------------------
+    # BG: Export best models by K, plus global best-by-misfit and best-by-BIC
+    # ------------------------------------------------------------------
+    def _write_best_stages_csv(best_row, criterion_name: str):
+        """
+        BG: Export the stages of one selected best model to CSV.
+
+        BG: best_row = (K, it_best, misfit_best, bic_best, stages_json)
+        """
+        K, it_best, mis_best, bic_best, stages_json = best_row
+        stages = json.loads(stages_json)
+
+        outcsv = wd / "csv" / f"rjmcmc_best_{criterion_name}_stages.csv"
+        with open(outcsv, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "criterion",
+                    "K",
+                    "it_best",
+                    "stage",
+                    "duration_myr",
+                    "r_start",
+                    "tau",
+                    "r_target",
+                    "misfit_best",
+                    "bic_best",
+                ]
+            )
+
+            for j, stage in enumerate(stages, start=1):
+                writer.writerow(
+                    [
+                        criterion_name,
+                        int(K),
+                        int(it_best),
+                        int(j),
+                        float(stage["duration_myr"]),
+                        float(stage["r_start"]),
+                        float(stage["tau"]),
+                        float(stage["r_target"]),
+                        float(mis_best),
+                        float(bic_best),
+                    ]
+                )
+
+        print(f"[RJMCMC] wrote {outcsv}")
+
+    try:
+        df_samples = pd.read_csv(samples_csv)
+
+        if len(df_samples) > 0:
+            N_bic = _get_bic_nobs(base_params, rj_cfg)
+            print(f"[RJMCMC] BIC: using N={N_bic}")
+
+            best_rows = []
+
+            for Kval in range(k_min, k_max + 1):
+                df_k = df_samples[df_samples["K"] == Kval]
+                if len(df_k) == 0:
+                    continue
+
+                idx_best = int(df_k["misfit"].astype(float).idxmin())
+                misfit_best = float(df_samples.loc[idx_best, "misfit"])
+                bic_best = _bic_from_misfit(misfit_best, Kval, N_bic)
+
+                best_rows.append(
+                    (
+                        int(df_samples.loc[idx_best, "K"]),
+                        int(df_samples.loc[idx_best, "it"]),
+                        misfit_best,
+                        bic_best,
+                        df_samples.loc[idx_best, "stages_json"],
+                    )
+                )
+
+            outcsv = wd / "csv" / "rjmcmc_best_by_K.csv"
+            with open(outcsv, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["K", "it_best", "misfit_best", "bic_best", "stages_json"])
+                for row in best_rows:
+                    writer.writerow(list(row))
+
+            print(f"[RJMCMC] wrote {outcsv}")
+
+            df_best_by_k = pd.DataFrame(
+                best_rows,
+                columns=["K", "it_best", "misfit_best", "bic_best", "stages_json"],
+            )
+            _plot_best_by_k(df_best_by_k)
+
+            if len(best_rows) == 0:
+                raise ValueError(
+                    "BG: best_rows is empty; no valid K-specific samples were found."
+                )
+
+            best_by_misfit = sorted(best_rows, key=lambda row: row[2])[0]
+            best_by_bic = sorted(best_rows, key=lambda row: row[3])[0]
+
+            print(
+                f"[RJMCMC] BIC selection: N={N_bic}, "
+                f"K*={best_by_bic[0]} (min BIC)"
+            )
+
+            outcsv2 = wd / "csv" / "rjmcmc_best_overall.csv"
+            with open(outcsv2, "w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    ["criterion", "K", "it_best", "misfit_best", "bic_best", "stages_json"]
+                )
+                writer.writerow(["misfit", *best_by_misfit])
+                writer.writerow(["bic", *best_by_bic])
+
+            print(f"[RJMCMC] wrote {outcsv2}")
+
+            # ----------------------------------------------------------
+            # BG: Reconstructed erosion-rate curves for selected best models
+            # ----------------------------------------------------------
+            try:
+                stages_misfit = json.loads(best_by_misfit[4])
+                stages_bic = json.loads(best_by_bic[4])
+
+                state_misfit = {"stages": stages_misfit}
+                state_bic = {"stages": stages_bic}
+
+                t_mis, r_mis = _build_time_rate_curve_from_state(state_misfit)
+                t_bic, r_bic = _build_time_rate_curve_from_state(state_bic)
+
+                plt.figure()
+
+                if len(t_mis) > 0:
+                    plt.plot(t_mis, r_mis, label=f"Best misfit (K={best_by_misfit[0]})")
+                if len(t_bic) > 0:
+                    plt.plot(t_bic, r_bic, label=f"Best BIC (K={best_by_bic[0]})")
+
+                plt.xlabel("Model time (Myr)")
+                plt.ylabel("Erosion rate (km/Myr)")
+                plt.title("RJMCMC: reconstructed erosion history")
+                plt.legend()
+
+                if base_params.get("save_plots", True):
+                    figfile = wd / "png" / "rjmcmc_best_erosion_histories.png"
+                    plt.savefig(figfile, dpi=300)
+                    print(f"[RJMCMC] wrote {figfile}")
+
+                if base_params.get("display_plots", False):
+                    plt.show()
+                else:
+                    plt.close()
+
+            except Exception as e_plot:
+                print(
+                    "[RJMCMC] Warning: could not plot reconstructed erosion histories: "
+                    f"{e_plot}"
+                )
+
+            _write_best_stages_csv(best_by_misfit, "misfit")
+            _write_best_stages_csv(best_by_bic, "bic")
+
+    except Exception as e:
+        print(f"[RJMCMC] Warning: could not write best_by_K diagnostics: {e}")
+
+    def _rate(a, b):
+        return (a / b) if b > 0 else 0.0
+
+    print("[RJMCMC] Acceptance summary:")
+    for move_name in ("within", "birth", "death"):
+        print(
+            f"  - {move_name:6s}: {n_accm[move_name]}/{n_prop[move_name]} = "
+            f"{_rate(n_accm[move_name], n_prop[move_name]):.3f}"
+        )
+
+    print(f"[RJMCMC] wrote trace:   {trace_csv}")
+    print(f"[RJMCMC] wrote samples: {samples_csv}")
+
+    return
 
 def run_model(params):
     # Say hello

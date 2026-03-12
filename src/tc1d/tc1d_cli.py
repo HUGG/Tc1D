@@ -181,6 +181,9 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         # but also attach them to args for convenience/debug (not an argparse option).
         if "ero_stages" in e:
             setattr(args, "ero_stages", e["ero_stages"])
+        # BG: transdimensional RJMCMC config (stored as a dict, not an argparse option)
+        if "transdimensional" in e:
+            setattr(args, "transdimensional", e["transdimensional"])
 
         for i in range(1, 11):
             key = f"ero_option{i}"
@@ -400,21 +403,37 @@ def validate_args(args, parser, y=None) -> None:
     def _is_scalar_list(opt_list):
         return isinstance(opt_list, list) and len(opt_list) == 1
 
-    # BG: ero_type=0 is YAML-only: require erosion_model.ero_stages in the YAML input file.
-    if ero_type == 0:
-        has_yaml_stages = False
-        if isinstance(y, dict):
-            em = y.get("erosion_model", {})
-            if isinstance(em, dict):
-                stages = em.get("ero_stages", None)
-                has_yaml_stages = isinstance(stages, list) and len(stages) > 0
+    # BG: detect transdimensional RJMCMC enabled from YAML
+    td_enabled = False
+    if isinstance(y, dict):
+        em = y.get("erosion_model", {})
+        if isinstance(em, dict):
+            td = em.get("transdimensional", {})
+            if isinstance(td, dict):
+                td_enabled = bool(td.get("enabled", False))
 
-        if not has_yaml_stages:
-            parser.error(
-                "ero_type=0 requires a YAML input file with:\n"
-                "  erosion_model: ero_stages: [...]\n"
-                "Use: tc1d-cli --input-file <file.yaml>\n"
-            )
+    if ero_type == 0:
+        # BG: If transdimensional is enabled, ero_stages are optional (can be used later as init).
+        if not td_enabled:
+            has_yaml_stages = False
+            if isinstance(y, dict):
+                em = y.get("erosion_model", {})
+                if isinstance(em, dict):
+                    stages = em.get("ero_stages", None)
+                    has_yaml_stages = isinstance(stages, list) and len(stages) > 0
+
+            if not has_yaml_stages:
+                parser.error(
+                    "ero_type=0 requires a YAML input file with:\n"
+                    "  erosion_model: ero_stages: [...]\n"
+                    "OR enable transdimensional inversion:\n"
+                    "  erosion_model: transdimensional: {enabled: true, ...}\n"
+                    "Use: tc1d-cli --input-file <file.yaml>\n"
+                )
+
+    # BG: If transdimensional enabled, enforce ero_type==0 (even if user set differently)
+    if td_enabled and ero_type != 0:
+        parser.error("transdimensional.enabled=true requires ero_type=0")
 
 # @Gooey(navigation='tabbed', tabbed_groups=True)
 def main():
@@ -761,7 +780,7 @@ def main():
     erosion.add_argument(
         "--ero-type",
         dest="ero_type",
-        help="Type of erosion model (0-7 - see GitHub docs). Use 0 with YAML erosion_model.ero_stages.",
+        help="Type of erosion model (0-7 - see GitHub docs). Use 0 with YAML erosion_model.ero_stages or erosion_model.transdimensional.enabled=true.",
         nargs="+",
         default=[1],
         type=int,
@@ -1416,6 +1435,8 @@ def main():
         "mcmc_nsteps": args.mcmc_nsteps,  # BG: MCMC - number of steps per walker
         "mcmc_discard": args.mcmc_discard,  # BG: MCMC - number of burn-in steps to discard
         "mcmc_thin": args.mcmc_thin,  # BG: MCMC - thinning factor for chains
+        "transdimensional": getattr(args, "transdimensional", None),  # BG: RJMCMC config dict (optional)
+        "transdimensional_template": copy.deepcopy(getattr(args, "transdimensional", None)),  # BG: immutable template
         "log_output": args.log_output,
         "log_file": args.log_file,
         "model_id": args.model_id,
