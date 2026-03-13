@@ -3751,15 +3751,21 @@ def log_prior(x):
 
     # BG: robust ero_type scalar
     ero_type_val = global_params.get("ero_type", None)
-    ero_type0 = (ero_type_val[0] if isinstance(ero_type_val, (list, tuple, np.ndarray)) else ero_type_val) == 0
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
 
-    # BG: For ero_type=0, skip ero_option* cumulative constraints (they apply to ero_type>0 only).
+    # BG: For ero_type=0, skip ero_option* cumulative constraints
+    # BG: (they apply to ero_type>0 only).
     # BG: Apply only stage-based constraints (e.g., sum of sampled stage durations <= t_total).
-
     if ero_type0:
-        # reject samples where sum(duration) > t_total
+        # Reject samples where sum(duration) > t_total
         t_total = global_params.get("t_total", 0.0)
-        t_total = float(t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total)
+        t_total = float(
+            t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total
+        )
 
         param_dict = dict(zip(global_param_names, x))
 
@@ -3810,7 +3816,7 @@ def log_prior(x):
         if not (lower <= ero9 <= upper):
             return -np.inf
 
-    # Total thickness must remain ≥ 0 km (cannot end above surface)
+    # Total thickness must remain >= 0 km (cannot end above surface)
     cumulative = ero1 + ero3 + ero5 + ero7 + ero9
     if cumulative < 0.0:
         return -np.inf
@@ -3821,14 +3827,17 @@ def log_prior(x):
 def log_likelihood(x):
     param_dict = dict(zip(global_param_names, x))
     new_dict = {}
+
     for k, v in param_dict.items():
         try:
             new_dict[k] = float(v[0]) if isinstance(v, list) else float(v)
         except (ValueError, TypeError):
             print(f"[WARNING] Could not convert {k}={v} to float.")
             return -np.inf
+
     params_local = copy.deepcopy(global_params)
     params_local.update(new_dict)
+
     # BG: Force MCMC/inverse context (safety belt)
     params_local["inverse_mode"] = True
     params_local["run_type"] = "mcmc"
@@ -3850,8 +3859,14 @@ def log_likelihood(x):
         finally:
             params_local["batch_mode"] = _prev_batch_mode
 
+        if not np.isfinite(misfit):
+            return -np.inf
+
         print(f"Misfit: {misfit}")
-        return -misfit
+
+        # BG: Standard Gaussian log-likelihood assuming independent normal
+        # BG: errors and using chi-square misfit.
+        return -0.5 * misfit
 
     except Exception as e:
         print(f"[ERROR] run_model failed: {e}")
@@ -3865,50 +3880,31 @@ def log_probability(x):
     lp = log_prior(x)
     if not np.isfinite(lp):
         return -np.inf
+
     ll = log_likelihood(x)
+    if not np.isfinite(ll):
+        return -np.inf
+
     return lp + ll
 
 
 def batch_run_mcmc(params, batch_params):
-    """
-    BG: Run Tc1D in inverse mode using fixed-dimension MCMC or,
-    BG: when enabled, trans-dimensional RJMCMC for ero_type=0.
-    """
-    log_output(params, batch_mode=True)
-
+    """Runs TC1D in inverse mode using MCMC"""
     # Define working directory path
     wd = Path.cwd()
 
-    # ------------------------------------------------------------
-    # BG: Optional RJMCMC (trans-dimensional) for ero_type=0.
-    # BG: If enabled, route directly to the dedicated RJMCMC driver.
-    # ------------------------------------------------------------
-    td_cfg = _get_transdimensional_cfg(params)
-
-    ero_type_val = params.get("ero_type", None)
-    ero_type_scalar = (
-        ero_type_val[0]
-        if isinstance(ero_type_val, (list, tuple, np.ndarray))
-        else ero_type_val
-    )
-    ero_type0 = (ero_type_scalar == 0)
-
-    if td_cfg.get("enabled", False):
-        if not ero_type0:
-            raise ValueError(
-                "BG: transdimensional RJMCMC is only supported for ero_type=0."
-            )
-        return batch_run_rjmcmc(params, batch_params, td_cfg)
+    # print("--- Starting MCMC inverse mode ---\n")
+    log_output(params, batch_mode=True)
 
     # ------------------------------------------------------------
-    # BG: Fixed-dimension MCMC does NOT need a ParameterGrid.
-    # BG: The previous workflow only used ParameterGrid(batch_params)[0]
-    # BG: to inject fixed values into params. We preserve that intent
-    # BG: without building an unnecessary cartesian product.
+    # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
+    #     The previous code only used ParameterGrid(batch_params)[0] to
+    #     inject fixed values into `params`. We preserve the same intent
+    #     without building an unnecessary cartesian product.
     # ------------------------------------------------------------
 
-    # BG: Extract parameters with more than one value. These define the
-    # BG: MCMC search space and are interpreted as inversion bounds.
+    # BG: Extract parameters with more than one value (i.e., varied ones)
+    #     These define the MCMC search space (bounds).
     filtered_params = {
         k: v
         for k, v in batch_params.items()
@@ -4044,42 +4040,48 @@ def batch_run_mcmc(params, batch_params):
     flat_samples = chain[:, discard::thin, :].reshape(-1, ndim)
     flat_log_probs = log_probs[:, discard::thin].reshape(-1)
 
+    if flat_log_probs.size == 0:
+        raise RuntimeError("No valid samples after burn-in/thinning. Aborting analysis.")
+
+    # BG: With the current uniform hard-bound prior, valid samples have log_prior = 0,
+    # BG: so log_probability = log_likelihood = -0.5 * misfit.
+    # BG: This allows exact reconstruction of the chi-square misfit from flat_log_probs.
+    flat_misfits = -2.0 * flat_log_probs
+
     # Write sample results to file
     outfile = wd / "csv" / "mcmc_searcher_results.csv"
-    header = param_names + ["log probability"]
-    combined_array = np.column_stack((flat_samples, flat_log_probs))
+    header = param_names + ["log_probability", "misfit"]
+    combined_array = np.column_stack((flat_samples, flat_log_probs, flat_misfits))
     with open(outfile, "w") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(combined_array)
 
-    # BG: Check if any valid samples remain after burn-in/thinning
-    if flat_log_probs.size == 0:
-        raise RuntimeError("No valid samples after burn-in/thinning. Aborting analysis.")
-
-    # BG: Identify and print the best parameter set (highest log-probability)
-    best_idx = np.argmax(flat_log_probs)
+    # BG: Identify and print the best parameter set (minimum misfit)
+    best_idx = np.argmin(flat_misfits)
     best = flat_samples[best_idx]
     best_dict = dict(zip(param_names, best))
     print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
+    print(f"Best misfit: {float(flat_misfits[best_idx])}")
+    print(f"Best log probability: {float(flat_log_probs[best_idx])}")
 
     # Stop timer before displaying plots if plots are to be displayed
     if params["display_plots"]:
         exec_end = time.time()
 
-    # BG: Plot evolution of misfit values
+    # BG: Plot evolution of negative log-posterior values
     plt.figure()
     neg_log_probs = -flat_log_probs
     plt.plot(neg_log_probs, ".", markersize=2)
     plt.scatter(best_idx, neg_log_probs[best_idx], c="g", s=10)
     plt.xlabel("Sample Index")
-    plt.ylabel("Misfit")
-    plt.title("MCMC Misfit Values")
+    plt.ylabel(r"$-\log P$")
+    plt.title("MCMC Negative Log-Posterior Values")
     plt.yscale("log")
     if params["save_plots"]:
-        savefile = wd / "png" / "mcmc_misfit.png"
+        savefile = wd / "png" / "mcmc_neg_log_posterior.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC misfit plot written to {savefile}")
+        print(f"- MCMC negative log-posterior plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4100,6 +4102,23 @@ def batch_run_mcmc(params, batch_params):
         savefile = wd / "png" / "mcmc_chains.png"
         plt.savefig(savefile, dpi=300)
         print(f"- MCMC chain plot written to {savefile}")
+    if params["display_plots"]:
+        plt.show()
+    else:
+        plt.close()
+
+    # BG: Plot evolution of misfit values
+    plt.figure()
+    plt.plot(flat_misfits, ".", markersize=2)
+    plt.scatter(best_idx, flat_misfits[best_idx], c="g", s=10)
+    plt.xlabel("Sample Index")
+    plt.ylabel("Misfit")
+    plt.title("MCMC Misfit Values")
+    plt.yscale("log")
+    if params["save_plots"]:
+        savefile = wd / "png" / "mcmc_misfit.png"
+        plt.savefig(savefile, dpi=300)
+        print(f"- MCMC misfit plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4132,7 +4151,7 @@ def batch_run_mcmc(params, batch_params):
         ax_histx = fig.add_subplot(gs[0, :-1], sharex=ax)
         ax_histy = fig.add_subplot(gs[1:, -1], sharey=ax)
 
-        sc = ax.scatter(x, y, c=neg_log_probs, cmap="viridis", marker="x")
+        sc = ax.scatter(x, y, c=flat_misfits, cmap="viridis", marker="x")
         ax.scatter(best[i], best[j], color="red", marker="x", label="Best")
         ax.set_xlabel(param_names[i])
         ax.set_ylabel(param_names[j])
