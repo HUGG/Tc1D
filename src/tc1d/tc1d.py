@@ -3876,6 +3876,9 @@ def batch_run_mcmc(params, batch_params):
     """
     log_output(params, batch_mode=True)
 
+    # Define working directory path
+    wd = Path.cwd()
+
     # ------------------------------------------------------------
     # BG: Optional RJMCMC (trans-dimensional) for ero_type=0.
     # BG: If enabled, route directly to the dedicated RJMCMC driver.
