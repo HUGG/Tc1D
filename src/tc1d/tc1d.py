@@ -3889,11 +3889,10 @@ def log_probability(x):
 
 
 def batch_run_mcmc(params, batch_params):
-    """Runs TC1D in inverse mode using MCMC"""
-    # Define working directory path
-    wd = Path.cwd()
-
-    # print("--- Starting MCMC inverse mode ---\n")
+    """
+    BG: Run Tc1D in inverse mode using fixed-dimension MCMC or,
+    BG: when enabled, trans-dimensional RJMCMC for ero_type=0.
+    """
     log_output(params, batch_mode=True)
 
     # ------------------------------------------------------------
@@ -3902,9 +3901,32 @@ def batch_run_mcmc(params, batch_params):
     #     inject fixed values into `params`. We preserve the same intent
     #     without building an unnecessary cartesian product.
     # ------------------------------------------------------------
+    td_cfg = _get_transdimensional_cfg(params)
 
-    # BG: Extract parameters with more than one value (i.e., varied ones)
-    #     These define the MCMC search space (bounds).
+    ero_type_val = params.get("ero_type", None)
+    ero_type_scalar = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    )
+    ero_type0 = (ero_type_scalar == 0)
+
+    if td_cfg.get("enabled", False):
+        if not ero_type0:
+            raise ValueError(
+                "BG: transdimensional RJMCMC is only supported for ero_type=0."
+            )
+        return batch_run_rjmcmc(params, batch_params, td_cfg)
+
+    # ------------------------------------------------------------
+    # BG: Fixed-dimension MCMC does NOT need a ParameterGrid.
+    # BG: The previous workflow only used ParameterGrid(batch_params)[0]
+    # BG: to inject fixed values into params. We preserve that intent
+    # BG: without building an unnecessary cartesian product.
+    # ------------------------------------------------------------
+
+    # BG: Extract parameters with more than one value. These define the
+    # BG: MCMC search space and are interpreted as inversion bounds.
     filtered_params = {
         k: v
         for k, v in batch_params.items()
@@ -4057,8 +4079,12 @@ def batch_run_mcmc(params, batch_params):
         writer.writerow(header)
         writer.writerows(combined_array)
 
-    # BG: Identify and print the best parameter set (minimum misfit)
-    best_idx = np.argmin(flat_misfits)
+    # BG: Check if any valid samples remain after burn-in/thinning
+    if flat_log_probs.size == 0:
+        raise RuntimeError("No valid samples after burn-in/thinning. Aborting analysis.")
+
+    # BG: Identify and print the best parameter set (highest log-probability)
+    best_idx = np.argmax(flat_log_probs)
     best = flat_samples[best_idx]
     best_dict = dict(zip(param_names, best))
     print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
@@ -7671,8 +7697,12 @@ def run_model(params):
             obs_zhe_stdev = -9999.0
         else:
             if ages_from_data_file:
-                obs_zhe = obs_ages[obs_ahe_indices[0]]
-                obs_zhe_stdev = obs_stdev[obs_ahe_indices[0]]
+                # BG: Fix bug in batch/log output for ZHe observations.
+                # When reading ages from file, ZHe must use obs_zhe_indices rather than
+                # obs_ahe_indices. The previous code could silently write the first AHe
+                # value as observed ZHe, or crash for ZHe-only datasets.
+                obs_zhe = obs_ages[obs_zhe_indices[0]]
+                obs_zhe_stdev = obs_stdev[obs_zhe_indices[0]]
             else:
                 obs_zhe = params["obs_zhe"][0]
                 obs_zhe_stdev = params["obs_zhe_stdev"][0]
