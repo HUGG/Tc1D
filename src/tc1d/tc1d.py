@@ -13,6 +13,7 @@ from scipy.linalg import solve
 import shutil
 import subprocess
 import time
+import math
 from typing import Tuple
 import warnings
 
@@ -151,6 +152,7 @@ def echo_model_info(
 
     # Output erosion model
     ero_models = {
+        0: "Erosion model: Multi-stage erosion from YAML (ero_stages)",
         1: "Constant",
         2: "Step-function",
         3: "Exponential decay",
@@ -763,6 +765,597 @@ def calculate_ages_and_tcs(
     )
 
 
+def parse_ero_stage_row(row: dict, stage_idx: int = 1) -> dict:
+    """
+    BG: Parse one erosion stage from YAML and build the internal rate-based
+    parameterization used by the forward model (ero_type=0).
+
+    YAML stage schema
+    -----------------
+    Each stage is a dict with:
+      type: "constant" / "linear" / "exponential"
+      unit: "erosion_rate" / "thickness"
+      duration_myr: float > 0
+      p1/p2/p3 (or parameter1/2/3): floats (some optional depending on type/unit)
+
+    Parameter conventions
+    ---------------------
+    - constant + erosion_rate : p1 = r_const
+    - constant + thickness    : p1 = M_total   (converted internally to mean rate)
+
+    - linear + erosion_rate   : p1 = r_start, p2 = r_end
+    - linear + thickness      : p1 = M_total, p2 = s (dimensionless in [-1, 1])
+
+    - exponential + erosion_rate : p1 = r_start, p2 = tau, p3 = r_target
+    - exponential + thickness    : p1 = M_total, p2 = tau, p3 = M_base
+                                   (baseline thickness; internal rates are reconstructed)
+
+    Returns
+    -------
+    stage : dict
+        {
+          "type": str,
+          "unit": str,
+          "duration_myr": float,
+          "dt_sec": float,
+          "params": np.ndarray,      # internal: constant [r], linear [r0,r1], exponential [r0,rt,tau]
+          "input_params": list,      # raw YAML p1/p2/p3 for echo/debug
+        }
+    """
+
+    if not isinstance(row, dict):
+        raise ValueError(f"BG: erosion YAML stage {stage_idx}: stage must be a dict.")
+
+    def _as_float(v, name):
+        # BG: YAML may give float/int directly; also accept strings.
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            raise ValueError(
+                f"BG: erosion YAML stage {stage_idx}: {name} must be a float (got {v!r})."
+            )
+
+    stage_type = str(row.get("type", "")).strip().lower()
+    unit = str(row.get("unit", "")).strip().lower()
+
+    if stage_type not in ("constant", "linear", "exponential"):
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: invalid type={stage_type!r}. "
+            "Valid: constant, linear, exponential."
+        )
+
+    if unit not in ("erosion_rate", "thickness"):
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: invalid unit={unit!r}. "
+            "Valid: erosion_rate, thickness."
+        )
+
+    duration_myr = _as_float(row.get("duration_myr", None), "duration_myr")
+    if duration_myr is None or duration_myr <= 0.0:
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: duration_myr must be > 0 (got {duration_myr})."
+        )
+    dt_stage_myr = duration_myr
+
+    p1 = _as_float(row.get("p1", row.get("parameter1", None)), "p1/parameter1")
+    p2 = _as_float(row.get("p2", row.get("parameter2", None)), "p2/parameter2")
+    p3 = _as_float(row.get("p3", row.get("parameter3", None)), "p3/parameter3")
+    input_params = [p1, p2, p3]
+
+    # ============================
+    # BG: Build internal parameterization (rate-based)
+    # ============================
+
+    if stage_type == "constant":
+        if unit == "erosion_rate":
+            if p1 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: constant + erosion_rate requires parameter1=r_const."
+                )
+            r_const = p1
+        else:  # thickness
+            if p1 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: constant + thickness requires parameter1=M_total."
+                )
+            r_const = p1 / dt_stage_myr  # km/Myr
+        params = np.array([r_const], dtype=float)
+
+    elif stage_type == "linear":
+        if unit == "erosion_rate":
+            if p1 is None or p2 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + erosion_rate requires p1=r_start, p2=r_end."
+                )
+            r_start, r_end = p1, p2
+        else:  # thickness
+            if p1 is None or p2 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + thickness requires p1=M_total, p2=s in [-1,1]."
+                )
+            M_total, s = p1, p2
+            if s < -1.0 or s > 1.0:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + thickness requires s in [-1,1] (got {s})."
+                )
+            r_mean = M_total / dt_stage_myr
+            r_start = r_mean * (1.0 - s)
+            r_end = r_mean * (1.0 + s)
+        params = np.array([r_start, r_end], dtype=float)
+
+    else:  # exponential
+        if p2 is None or p2 <= 0.0:
+            raise ValueError(
+                f"BG: erosion YAML stage {stage_idx}: exponential requires parameter2=tau > 0."
+            )
+        tau = p2
+
+        if unit == "erosion_rate":
+            if p1 is None or p3 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: exponential + erosion_rate requires p1=r_start, p2=tau, p3=r_target."
+                )
+            r_start, r_target = p1, p3
+        else:  # thickness
+            if p1 is None or p3 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: exponential + thickness requires p1=M_total, p2=tau, p3=M_base."
+                )
+            M_total, M_base = p1, p3
+            r_target = M_base / dt_stage_myr
+
+            # BG: enforce strict thickness conservation over the stage duration
+            A = tau * (1.0 - math.exp(-dt_stage_myr / tau))
+            if abs(A) < 1e-12:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: cannot compute r_start (tau too small or duration too small). "
+                    f"tau={tau}, duration={dt_stage_myr}."
+                )
+            r_start = r_target + (M_total - r_target * dt_stage_myr) / A
+
+        params = np.array([r_start, r_target, tau], dtype=float)
+
+    return {
+        "type": stage_type,
+        "unit": unit,
+        "duration_myr": dt_stage_myr,
+        "dt_sec": myr2sec(dt_stage_myr),
+        "params": params,
+        "input_params": input_params,
+    }
+
+
+def read_ero_stages_from_yaml(ero_stages_input) -> list:
+    """
+    BG: Read and validate YAML erosion stages for ero_type=0.
+
+    Parameters
+    ----------
+    ero_stages_input : list of dict
+        Raw YAML list under:
+          erosion_model:
+            ero_stages: [...]
+
+    Returns
+    -------
+    stages : list of dict
+        Parsed stages with internal 'params' representation (rate-based).
+    """
+    if ero_stages_input is None:
+        raise ValueError(
+            "BG: ero_type=0 requires erosion_model.ero_stages in the YAML input file."
+        )
+
+    if not isinstance(ero_stages_input, list) or len(ero_stages_input) == 0:
+        raise ValueError("BG: erosion_model.ero_stages must be a non-empty list.")
+
+    stages = []
+    for i, row in enumerate(ero_stages_input, start=1):
+        stages.append(parse_ero_stage_row(row, stage_idx=i))
+
+    return stages
+
+
+def _stage_idx_from_na_param_name(pname):
+    """
+    BG: Extract 1-based stage index from NA param name like:
+        'ero_stage01_duration_myr' or 'ero_stage01_p2'
+    Returns int stage index (1-based).
+    """
+    try:
+        token = pname.split("_")[1]  # "stage01"
+        idx = int(token.replace("stage", ""))
+    except Exception as exc:
+        raise ValueError(
+            f"BG: cannot parse erosion stage index from {pname!r}."
+        ) from exc
+    return idx
+
+
+def _get_stage_param_value(st, key):
+    """
+    BG: Read stage parameter with backward-compatible YAML keys.
+    Accept both p1/p2/p3 and parameter1/2/3.
+    """
+    if key == "p1":
+        return st.get("p1", st.get("parameter1", None))
+    if key == "p2":
+        return st.get("p2", st.get("parameter2", None))
+    if key == "p3":
+        return st.get("p3", st.get("parameter3", None))
+    raise ValueError(f"BG: unknown stage parameter key {key!r}.")
+
+
+def _collect_ero_stage_duration_bounds(ero_stages_template):
+    """
+    BG: Collect duration bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion:
+        duration_myr: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_duration_myr": [2.0, 6.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        dur = st.get("duration_myr", None)
+
+        # BG: inversion syntax uses a 2-item range [min, max]
+        if isinstance(dur, (list, tuple)) and len(dur) == 2:
+            dmin = float(dur[0])
+            dmax = float(dur[1])
+
+            if dmin <= 0.0 or dmax <= 0.0 or dmax <= dmin:
+                raise ValueError(
+                    f"BG: erosion YAML stage {i}: duration_myr bounds must satisfy "
+                    f"0 < min < max (got {dur})."
+                )
+
+            key = f"ero_stage{i:02d}_duration_myr"
+            bounds[key] = [dmin, dmax]
+
+    return bounds
+
+
+def _collect_ero_stage_param_bounds(ero_stages_template):
+    """
+    BG: Collect p1/p2/p3 bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion (either key style supported):
+        p1: [min, max]   or  parameter1: [min, max]
+        p2: [min, max]   or  parameter2: [min, max]
+        p3: [min, max]   or  parameter3: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_p1": [0.0, 2.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        for key in ("p1", "p2", "p3"):
+            v = _get_stage_param_value(st, key)
+
+            # BG: inversion syntax uses a 2-item range [min, max]
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                vmin = float(v[0])
+                vmax = float(v[1])
+
+                if vmax <= vmin:
+                    raise ValueError(
+                        f"BG: erosion YAML stage {i}: {key} bounds must satisfy "
+                        f"min < max (got {v})."
+                    )
+
+                pname = f"ero_stage{i:02d}_{key}"
+                bounds[pname] = [vmin, vmax]
+
+    return bounds
+
+
+def _apply_na_stage_durations(
+    ero_stages_template,
+    duration_param_names,
+    x,
+    t_total_myr,
+    balance=True,
+):
+    """
+    BG: Apply NA-sampled durations into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    duration_param_names : list[str]
+        Names like 'ero_stage01_duration_myr' in order matching x.
+    x : array-like
+        NA sampled values.
+    t_total_myr : float
+        Total model duration in Myr.
+    balance : bool
+        If True, adjust one non-inverted stage to keep sum(durations)=t_total_myr.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    # BG: Map x values to stage index
+    inverted_stage_idxs = set()
+    for pname, val in zip(duration_param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: duration param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        inverted_stage_idxs.add(idx)
+        stages[idx - 1]["duration_myr"] = float(val)
+
+    # BG: Balancing to ensure sum durations == t_total
+    if balance:
+        # pick last stage not inverted (preferably)
+        balance_idx = None
+        for j in range(nst, 0, -1):
+            if j not in inverted_stage_idxs:
+                balance_idx = j
+                break
+
+        if balance_idx is not None:
+            current_sum = 0.0
+            for k, st in enumerate(stages, start=1):
+                if k == balance_idx:
+                    continue
+                current_sum += float(st.get("duration_myr", 0.0))
+
+            remainder = float(t_total_myr) - current_sum
+
+            # BG: invalid draw -> let objective penalize it (no crash)
+            if remainder <= 0.0:
+                return None
+
+            stages[balance_idx - 1]["duration_myr"] = remainder
+
+    return stages
+
+
+def _apply_na_stage_params(
+    ero_stages_template,
+    param_names,
+    x,
+):
+    """
+    BG: Apply NA-sampled p1/p2/p3 into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    param_names : list[str]
+        Names like 'ero_stage01_p1' in order matching x.
+    x : array-like
+        NA sampled values.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    for pname, val in zip(param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: stage param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        # pname: ero_stageXX_pY -> last token is 'p1'/'p2'/'p3'
+        key = pname.split("_")[-1]
+        if key not in ("p1", "p2", "p3"):
+            raise ValueError(
+                f"BG: stage param name {pname!r} does not end with p1/p2/p3."
+            )
+
+        # BG: write canonical keys (p1/p2/p3); parse_ero_stage_row supports fallback
+        stages[idx - 1][key] = float(val)
+
+    return stages
+
+
+def _rebuild_ero_stages_from_sample(params_local: dict, sample_dict: dict) -> bool:
+    """
+    BG: Rebuild parsed erosion stages for ero_type=0 using YAML template and sampled
+    stage parameters (duration_myr and/or p1/p2/p3).
+
+    Conservative behavior:
+    - No duration balancing (balance=False).
+    - If sum(durations) > t_total: erosion is naturally truncated by forward model.
+    - If sum(durations) < t_total: erosion naturally drops to 0 after last stage.
+
+    Parameters
+    ----------
+    params_local : dict
+        Local copy of params used for this MCMC evaluation.
+        Must contain 'ero_stages_template' for ero_type=0 stage inversion.
+    sample_dict : dict
+        Sampled parameter values for this evaluation (floats).
+
+    Returns
+    -------
+    bool
+        True if stages were rebuilt (or not needed), False if invalid (reject sample).
+    """
+    # BG: robust ero_type scalar
+    ero_type_val = params_local.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+    if not ero_type0:
+        return True
+
+    # BG: Only rebuild if sample includes any stage parameters
+    duration_param_names = [
+        k
+        for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith("_duration_myr")
+    ]
+    stage_p_param_names = [
+        k
+        for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+    ]
+
+    if len(duration_param_names) == 0 and len(stage_p_param_names) == 0:
+        return True  # nothing to do
+
+    template = params_local.get("ero_stages_template", None)
+    if template is None:
+        raise ValueError(
+            "BG: ero_type=0 stage inversion requires params['ero_stages_template'] "
+            "(raw YAML erosion_model.ero_stages)."
+        )
+
+    new_template = copy.deepcopy(template)
+
+    # ---- durations (NO balance) ----
+    if len(duration_param_names) > 0:
+        x_dur = [float(sample_dict[k]) for k in duration_param_names]
+        new_template = _apply_na_stage_durations(
+            new_template,
+            duration_param_names,
+            x_dur,
+            t_total_myr=float(params_local["t_total"]),
+            balance=False,  # BG: key choice for truncate/drop-to-zero behavior
+        )
+        if new_template is None:
+            return False
+
+    # ---- p1/p2/p3 ----
+    if len(stage_p_param_names) > 0:
+        x_p = [float(sample_dict[k]) for k in stage_p_param_names]
+        new_template = _apply_na_stage_params(
+            new_template,
+            stage_p_param_names,
+            x_p,
+        )
+
+    # BG: Parse and cache for forward model usage
+    params_local["ero_stages"] = read_ero_stages_from_yaml(new_template)
+    params_local["ero_total_stage_sec"] = sum(
+        st["dt_sec"] for st in params_local["ero_stages"]
+    )
+
+    return True
+
+
+def erosion_constant(t_local_myr: float, r_const: float) -> float:
+    """
+    BG: Constant erosion rate over a stage.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage, in Myr.
+    r_const : float
+        Constant erosion rate [km/Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr (always r_const).
+    """
+    return r_const
+
+
+def erosion_linear(
+    t_local_myr: float, r_start: float, r_end: float, dt_stage_myr: float
+) -> float:
+    """
+    BG: Linear change in erosion rate over a stage.
+
+    Rate evolves linearly from r_start (at t_local=0) to r_end
+    (at t_local = dt_stage_myr).
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Erosion rate at the start of the stage [km/Myr].
+    r_end : float
+        Erosion rate at the end of the stage [km/Myr].
+    dt_stage_myr : float
+        Duration of the stage [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if dt_stage_myr <= 0.0:
+        return r_start
+    t = min(max(t_local_myr, 0.0), dt_stage_myr)
+    return r_start + (r_end - r_start) * (t / dt_stage_myr)
+
+
+def erosion_exponential(
+    t_local_myr: float, r_start: float, r_target: float, tau_myr: float
+) -> float:
+    """
+    BG: Exponential change in erosion rate over a stage.
+
+    Rate follows an exponential relaxation from r_start towards r_target
+    with timescale tau_myr.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Initial erosion rate at stage start [km/Myr].
+    r_target : float
+        Target erosion rate [km/Myr].
+    tau_myr : float
+        Characteristic timescale [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if tau_myr <= 0.0:
+        return r_start
+    t = max(t_local_myr, 0.0)
+    return r_target + (r_start - r_target) * math.exp(-t / tau_myr)
+
+
 def calculate_erosion_rate(
     params,
     dt,
@@ -779,6 +1372,7 @@ def calculate_erosion_rate(
 
     Erosion model types:
 
+    0. Multi-stage erosion defined from the YAML input file (BG)
     1. Constant erosion rate
     2. Constant rate with a step-function change at a specified time
     3. Exponential decay
@@ -825,9 +1419,101 @@ def calculate_erosion_rate(
     # Split the code below into separate functions?
     # Could have tests integrated more easily that way.
 
+    # BG: Normalize ero_type to a scalar int (CLI stores lists; YAML may also store lists).
+    ero_type = (
+        params["ero_type"][0]
+        if isinstance(params.get("ero_type", None), (list, tuple, np.ndarray))
+        else int(params["ero_type"])
+    )
+
+    # BG: Multi-stage erosion model (ero_type = 0)
+    if ero_type == 0:
+        # BG: Multi-stage erosion from YAML stages (ero_type=0).
+        stages = params.get("ero_stages", None)
+
+        # BG: YAML-only: ero_type=0 must provide erosion stages in params.
+        if not isinstance(stages, list) or len(stages) == 0:
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' in params (from YAML input file). "
+            )
+
+        if (
+            stages is not None
+            and (len(stages) > 0)
+            and isinstance(stages[0], dict)
+            and ("dt_sec" not in stages[0])
+        ):
+            # BG: YAML pathway: parse + validate stages once (raw YAML list -> internal stage dicts).
+            stages = read_ero_stages_from_yaml(stages)
+            params["ero_stages"] = (
+                stages  # BG: cache parsed stages to avoid re-parsing every timestep
+            )
+            params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in stages)
+
+        else:
+            # BG: stages already parsed/cached in params (dt_sec exists)
+            stages = params["ero_stages"]
+            if "ero_total_stage_sec" not in params:
+                params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in stages)
+
+        # 2) Find which stage we are currently in, using current_time [s]
+        t = current_time  # current model time [s] since start
+        t0 = 0.0
+        found = False
+
+        for i, st in enumerate(stages):
+            t1 = t0 + st["dt_sec"]
+            is_last = i == len(stages) - 1
+
+            if (t >= t0) and (t < t1 or (is_last and t <= t1)):
+                # Local time since stage start in Myr
+                t_local_myr = (t - t0) / myr2sec(1.0)
+
+                stage_type = st["type"]
+                dt_stage_myr = st["duration_myr"]
+                p = st["params"]
+
+                # 3) Compute instantaneous erosion rate [km/Myr] for this stage
+                if stage_type == "constant":
+                    rate_km_myr = erosion_constant(t_local_myr, p[0])
+
+                elif stage_type == "linear":
+                    rate_km_myr = erosion_linear(t_local_myr, p[0], p[1], dt_stage_myr)
+
+                elif stage_type == "exponential":
+                    rate_km_myr = erosion_exponential(t_local_myr, p[0], p[1], p[2])
+
+                else:
+                    raise ValueError(f"Unknown erosion stage type: {stage_type}")
+
+                found = True
+                break
+
+            t0 = t1
+
+        if not found:
+            # BG: If stages end before t_total, set erosion rate to zero after the last stage.
+            total_stage_sec = params.get(
+                "ero_total_stage_sec", sum(st["dt_sec"] for st in stages)
+            )
+            eps_sec = max(1.0e-6, 2.0 * abs(dt))
+
+            if t >= total_stage_sec - eps_sec:
+                rate_km_myr = 0.0
+            else:
+                raise ValueError(
+                    "current_time is outside erosion stages (unexpected). "
+                    "Check erosion stages durations and time handling."
+                )
+
+        # 4) Convert rate [km/Myr] to velocity [m/s]
+        vx_array[:] = mmyr2ms(rate_km_myr)
+        vx_surf = vx_array[0]
+        vx_max = abs(vx_surf)
+
     # Constant erosion rate
     # Convert to inputting rate directly?
-    if params["ero_type"] == 1:
+    elif params["ero_type"] == 1:
         vx_array[:] = kilo2base(params["ero_option1"]) / t_total
         vx_surf = vx_array[0]
         vx_max = vx_surf
@@ -989,7 +1675,7 @@ def calculate_erosion_rate(
     # Catch bad cases
     else:
         raise ValueError(
-            f"Bad erosion type: {params['ero_type']}. Must be between 1 and 7."
+            f"Bad erosion type: {params['ero_type']}. Must be 0 (multi-stage) or between 1 and 7."
         )
 
     # Set velocities below Moho to mantle velocity if using crustal uplift only
@@ -1012,14 +1698,99 @@ def calculate_exhumation_magnitude(
     ero_option9,
     ero_option10,
     t_total,
+    ero_stages=None,
 ):
-    """Calculates erosion magnitude in kilometers."""
+    """
+    Calculates total erosion / exhumation magnitude over the full model run.
+
+    For ero_type = 0 (YAML-defined multi-stage erosion), the magnitude is computed
+    by analytically integrating the erosion rate over each stage, using the
+    internal rate-based parameterization reconstructed by read_ero_stages_from_yaml().
+
+    If the total duration of erosion stages exceeds t_total, only the portion
+    within t_total is integrated. If stages are shorter than t_total, no erosion
+    is applied beyond the last stage.
+
+    Returns erosion magnitude in kilometers.
+    """
 
     # Initialize fw_ref_frame Boolean for ero types != 7
     fw_ref_frame = False
 
+    # BG: Normalize ero_type to scalar (CLI/YAML can pass list-like)
+    ero_type = (
+        ero_type[0]
+        if isinstance(ero_type, (list, tuple, np.ndarray))
+        else int(ero_type)
+    )
+
+    # BG: Multi-stage erosion from YAML stages (ero_type = 0)
+    if ero_type == 0:
+        stages = ero_stages
+        if not isinstance(stages, list) or len(stages) == 0:
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' (from YAML input file)."
+            )
+
+        if isinstance(stages[0], dict) and ("dt_sec" not in stages[0]):
+            stages = read_ero_stages_from_yaml(stages)
+
+        thickness_km = 0.0
+        # Convert total model time from seconds to Myr
+        t_total_myr = t_total / myr2sec(1.0)
+        remaining_myr = t_total_myr
+        total_stage_myr = sum(st["duration_myr"] for st in stages)
+
+        # BG: warn if stages extend beyond model time (magnitude will be truncated)
+        if total_stage_myr > t_total_myr + 1.0e-12:
+            warnings.warn(
+                "Sum of erosion stage durations exceeds t_total. "
+                "Exhumation magnitude will be computed only up to the model time (t_total).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        for st in stages:
+            dt_stage = st["duration_myr"]  # Myr
+            dt = min(dt_stage, remaining_myr)
+            if dt <= 0.0:
+                break
+
+            p = st["params"]
+            stage_type = st["type"]
+
+            if stage_type == "constant":
+                r_const = p[0]
+                thickness_km += r_const * dt
+
+            elif stage_type == "linear":
+                r_start, r_end = p[0], p[1]
+                # Integral of a linear erosion rate from r_start to r_end over dt
+                thickness_km += (
+                    r_start * dt + 0.5 * (r_end - r_start) * (dt**2) / dt_stage
+                )
+
+            elif stage_type == "exponential":
+                r_start, r_target, tau = p[0], p[1], p[2]
+                # Integral of r(t) = r_target + (r_start - r_target)*exp(-t/tau)
+                thickness_km += r_target * dt + (r_start - r_target) * tau * (
+                    1.0 - math.exp(-dt / tau)
+                )
+
+            else:
+                raise ValueError(f"Unknown stage erosion type: {stage_type}")
+
+            remaining_myr -= dt
+
+        if total_stage_myr < t_total_myr - 1.0e-12:
+            # BG: If stages are shorter than t_total, erosion is set to zero afterwards
+            # (no additional exhumation beyond what is prescribed in the file).
+            pass
+
+        magnitude = thickness_km
+
     # Constant erosion rate
-    if ero_type == 1:
+    elif ero_type == 1:
         magnitude = ero_option1
 
     elif ero_type == 2:
@@ -1102,7 +1873,9 @@ def calculate_exhumation_magnitude(
         magnitude /= kilo2base(1.0)
 
     else:
-        raise ValueError(f"Bad erosion type: {ero_type}. Must be between 1 and 7.")
+        raise ValueError(
+            f"Bad erosion type: {ero_type}. Must be 0 (multi-stage) or between 1 and 7."
+        )
 
     # Return values in km
     return magnitude, fw_ref_frame
@@ -1511,6 +2284,18 @@ def init_params(
     obs_age_file="",
     misfit_num_params=0,
     misfit_type=1,
+    # BG: Neighbourhood Algorithm (NA) parameters
+    na_ns=24,  # BG: samples per iteration (default: 24)
+    na_nr=12,  # BG: number of Voronoi cells to resample (default: 12)
+    na_ni=50,  # BG: size of initial random search (default: 50)
+    na_n=6,  # BG: number of NA iterations (default: 6)
+    na_n_resample=2000,  # BG: NA appraiser - total new samples
+    na_n_walkers=5,  # BG: NA appraiser - parallel walkers
+    # BG: MCMC (emcee) parameters
+    mcmc_nwalkers=30,  # BG: number of walkers in the ensemble (default: 30)
+    mcmc_nsteps=150,  # BG: number of steps per walker (default: 150)
+    mcmc_discard=50,  # BG: burn-in steps to discard (default: 50)
+    mcmc_thin=3,  # BG: thinning factor (default: 3)
     plot_results=True,
     display_plots=True,
     plot_ma=True,
@@ -1621,7 +2406,7 @@ def init_params(
     vx_init : float or int, default=0.0
         Initial steady-state advection velocity in mm/yr.
     ero_type : int, default=1
-        Type of erosion model (1, 2, 3, 4, 5, 6, 7 - see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+        Type of erosion model (0, 1, 2, 3, 4, 5, 6, 7 - see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option1 : float or int, default=0.0
         Erosion model option 1 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option2 : float or int, default=0.0
@@ -1846,6 +2631,18 @@ def init_params(
         "obs_age_file": obs_age_file,
         "misfit_num_params": misfit_num_params,
         "misfit_type": misfit_type,
+        # BG: Neighbourhood Algorithm (NA) hyper-parameters
+        "na_ns": na_ns,  # BG: NA - samples per iteration
+        "na_nr": na_nr,  # BG: NA - cells to resample
+        "na_ni": na_ni,  # BG: NA - initial random search size
+        "na_n": na_n,  # BG: NA - number of iterations
+        "na_n_resample": na_n_resample,  # BG: NA appraiser - total new samples
+        "na_n_walkers": na_n_walkers,  # BG: NA appraiser - parallel walkers
+        # BG: MCMC (emcee) hyper-parameters
+        "mcmc_nwalkers": mcmc_nwalkers,  # BG: MCMC - number of walkers
+        "mcmc_nsteps": mcmc_nsteps,  # BG: MCMC - steps per walker
+        "mcmc_discard": mcmc_discard,  # BG: MCMC - burn-in steps to discard
+        "mcmc_thin": mcmc_thin,  # BG: MCMC - thinning factor
         "log_output": log_output,
         "log_file": log_file,
         "model_id": model_id,
@@ -2162,11 +2959,75 @@ def batch_run_na(params, batch_params):
     print(f"{27 * '-'} Starting NA inverse mode {27 * '-'}\n")
     exec_start = time.time()
 
+    # BG: robust ero_type scalar for NA (CLI often stores lists)
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
     # Objective function to be minimised, run for misfit
     def objective(x):
         # Map sampled values x to the corresponding parameter names
-        for key, value in zip(filtered_params, x):
+        for key, value in zip(param_names, x):
             filtered_params[key] = value
+
+        # ------------------------------------------------------------
+        # BG: If NA is inverting YAML ero_type=0 stage durations and/or p1/p2/p3,
+        # rebuild params['ero_stages'] (parsed)
+        # ------------------------------------------------------------
+        duration_param_names = [
+            k
+            for k in param_names
+            if k.startswith("ero_stage") and k.endswith("_duration_myr")
+        ]
+
+        stage_p_param_names = [
+            k
+            for k in param_names
+            if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+        ]
+
+        if ero_type0 and (
+            len(duration_param_names) > 0 or len(stage_p_param_names) > 0
+        ):
+            # BG: start from raw YAML template
+            new_template = copy.deepcopy(params["ero_stages_template"])
+
+            # ---- durations (with balance) ----
+            if len(duration_param_names) > 0:
+                x_dur = [filtered_params[k] for k in duration_param_names]
+
+                new_template = _apply_na_stage_durations(
+                    new_template,  # raw YAML template
+                    duration_param_names,
+                    x_dur,
+                    t_total_myr=float(params["t_total"]),
+                    balance=True,
+                )
+
+                # BG: reject invalid duration combinations (no crash)
+                if new_template is None:
+                    return 1e9
+
+            # ---- p1/p2/p3 ----
+            if len(stage_p_param_names) > 0:
+                x_p = [filtered_params[k] for k in stage_p_param_names]
+                new_template = _apply_na_stage_params(
+                    new_template,
+                    stage_p_param_names,
+                    x_p,
+                )
+
+            # Parsed stages used by the forward model
+            params["ero_stages"] = read_ero_stages_from_yaml(new_template)
+            params["ero_total_stage_sec"] = sum(
+                st["dt_sec"] for st in params["ero_stages"]
+            )
+
+            # Optional: keep for debug
+            # params["ero_stages_current_template"] = new_template
 
         # BG: Get erosion parameters with default fallback from global params
         ero1 = filtered_params.get("ero_option1", params.get("ero_option1", 0.0))
@@ -2215,7 +3076,21 @@ def batch_run_na(params, batch_params):
             print("Rejected: model would place the sample above surface.")
             return 1e10  # Or some large misfit to reject the model
 
-        misfit = run_model(params)
+        # ------------------------------------------------------------
+        # BG: Silence forward-model verbosity during NA evaluations
+        # by forcing batch_mode=True just for this run_model() call.
+        # This prevents printing:
+        #   --- Calculating initial thermal model ---
+        #   --- Calculating transient thermal model ---
+        #   - Step ...
+        # ------------------------------------------------------------
+        _prev_batch_mode = params.get("batch_mode", False)
+        params["batch_mode"] = True
+        try:
+            misfit = run_model(params)
+        finally:
+            params["batch_mode"] = _prev_batch_mode
+
         print(f"The current misfit is: {misfit}\n")
         return misfit
 
@@ -2242,16 +3117,51 @@ def batch_run_na(params, batch_params):
         if len(value) > 1:
             filtered_params[key] = value
 
-    # Bounds of the parameter space
-    bounds = list(filtered_params.values())
+    # ------------------------------------------------------------
+    # BG: Add NA bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: NA duration inversion requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
 
-    # Initialize NA searcher
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+
+        # Merge duration bounds into filtered_params (do not overwrite)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: Add NA bounds for YAML ero_type=0 stage p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+
+        # Merge param bounds into filtered_params
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: freeze parameter order once for NA mapping (critical)
+    param_names = list(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
+
+    # BG: Read Neighbourhood Algorithm (NA) parameters from params
+    na_ns = int(params["na_ns"])  # BG: NA - samples per iteration
+    na_nr = int(params["na_nr"])  # BG: NA - number of Voronoi cells to resample
+    na_ni = int(params["na_ni"])  # BG: NA - size of initial random search
+    na_n = int(params["na_n"])  # BG: NA - number of NA iterations
+
+    # Initialize NA searcher (BG: controlled by CLI flags)
     searcher = NASearcher(
         objective,
-        ns=8,  # 16 #100, # number of samples per iteration #10
-        nr=4,  # 8 #10, # number of cells to resample #1
-        ni=20,  # 100, # size of initial random search #1
-        n=5,  # 20, # number of iterations #1
+        ns=na_ns,
+        nr=na_nr,
+        ni=na_ni,
+        n=na_n,
         bounds=bounds,
     )
 
@@ -2308,12 +3218,17 @@ def batch_run_na(params, batch_params):
 
         i[:] = [param_dict[k] for k in filtered_params.keys()]
 
+    # BG: Read NA appraiser settings from params (BG)
+    na_n_resample = int(params["na_n_resample"])  # BG: total new samples
+    na_n_walkers = int(params["na_n_walkers"])  # BG: parallel walkers
+
+    # Initialize NA appraiser (BG: controlled by CLI flags)
     appraiser = NAAppraiser(
         initial_ensemble=searcher.samples,  # points of parameter space already sampled
         log_ppd=-searcher.objectives,  # objective function values
         bounds=bounds,
-        n_resample=2000,  # number of desired new samples #100
-        n_walkers=5,  # number of parallel walkers #1
+        n_resample=na_n_resample,  # BG: number of desired new samples
+        n_walkers=na_n_walkers,  # BG: number of parallel walkers
     )
 
     appraiser.run()  # Results stored in appraiser.samples
@@ -2325,6 +3240,45 @@ def batch_run_na(params, batch_params):
     # BG: Safely extract best parameter set using param names
     best = searcher.samples[np.argmin(searcher.objectives)]
     best_dict = dict(zip(filtered_params.keys(), best))
+
+    # ------------------------------------------------------------
+    # BG: Rebuild ero_stages for best model if durations, p1, p2, p3 are inverted
+    # ------------------------------------------------------------
+    duration_param_names = [
+        k
+        for k in param_names
+        if k.startswith("ero_stage") and k.endswith("_duration_myr")
+    ]
+    stage_p_param_names = [
+        k
+        for k in param_names
+        if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+    ]
+
+    if ero_type0 and (len(duration_param_names) > 0 or len(stage_p_param_names) > 0):
+        new_template_best = copy.deepcopy(params["ero_stages_template"])
+
+        if len(duration_param_names) > 0:
+            x_dur_best = [best_dict[k] for k in duration_param_names]
+            new_template_best = _apply_na_stage_durations(
+                new_template_best,
+                duration_param_names,
+                x_dur_best,
+                t_total_myr=float(params["t_total"]),
+                balance=True,
+            )
+
+        if len(stage_p_param_names) > 0:
+            x_p_best = [best_dict[k] for k in stage_p_param_names]
+            new_template_best = _apply_na_stage_params(
+                new_template_best,
+                stage_p_param_names,
+                x_p_best,
+            )
+
+        params["ero_stages"] = read_ero_stages_from_yaml(new_template_best)
+        params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in params["ero_stages"])
+
     ero1 = best_dict.get("ero_option1", 0.0)
     # FIXME: Delete line below???
     ero3 = best_dict.get("ero_option3", 0.0)
@@ -2615,6 +3569,38 @@ def log_prior(x):
         if not (low <= val <= high):
             return -np.inf
 
+    # BG: robust ero_type scalar
+    ero_type_val = global_params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
+    # BG: For ero_type=0, skip ero_option* cumulative constraints
+    # BG: (they apply to ero_type>0 only).
+    # BG: Apply only stage-based constraints (e.g., sum of sampled stage durations <= t_total).
+    if ero_type0:
+        # Reject samples where sum(duration) > t_total
+        t_total = global_params.get("t_total", 0.0)
+        t_total = float(
+            t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total
+        )
+
+        param_dict = dict(zip(global_param_names, x))
+
+        # BG: collect all sampled stage durations automatically
+        durs = [
+            float(v)
+            for k, v in param_dict.items()
+            if isinstance(k, str) and k.endswith("_duration_myr")
+        ]
+
+        if durs and sum(durs) > t_total:
+            return -np.inf
+
+        return 0.0
+
     param_dict = dict(zip(global_param_names, x))
     ero1 = param_dict.get("ero_option1", global_params.get("ero_option1", 0.0))
     ero3 = param_dict.get("ero_option3", global_params.get("ero_option3", 0.0))
@@ -2650,7 +3636,7 @@ def log_prior(x):
         if not (lower <= ero9 <= upper):
             return -np.inf
 
-    # Total thickness must remain ≥ 0 km (cannot end above surface)
+    # Total thickness must remain >= 0 km (cannot end above surface)
     cumulative = ero1 + ero3 + ero5 + ero7 + ero9
     if cumulative < 0.0:
         return -np.inf
@@ -2661,22 +3647,53 @@ def log_prior(x):
 def log_likelihood(x):
     param_dict = dict(zip(global_param_names, x))
     new_dict = {}
+
     for k, v in param_dict.items():
         try:
             new_dict[k] = float(v[0]) if isinstance(v, list) else float(v)
         except (ValueError, TypeError):
             print(f"[WARNING] Could not convert {k}={v} to float.")
             return -np.inf
+
     params_local = copy.deepcopy(global_params)
     params_local.update(new_dict)
+
+    # BG: Force MCMC/inverse context (safety belt)
+    params_local["inverse_mode"] = True
+    params_local["run_type"] = "mcmc"
+
     cleaned_dict = {k: float(v) for k, v in new_dict.items()}
     print(f"[MCMC] Testing params: {cleaned_dict}")
+
+    # BG: Rebuild YAML ero_type=0 stages if stage params are sampled in this MCMC step
+    ok = _rebuild_ero_stages_from_sample(params_local, cleaned_dict)
+    if not ok:
+        return -np.inf
+
     try:
-        misfit = run_model(params_local)
+        # BG: Silence forward-model verbosity during MCMC evaluations
+        _prev_batch_mode = params_local.get("batch_mode", False)
+        params_local["batch_mode"] = True
+        try:
+            misfit = run_model(params_local)
+        finally:
+            params_local["batch_mode"] = _prev_batch_mode
+
+        if not np.isfinite(misfit):
+            return -np.inf
+
         print(f"Misfit: {misfit}")
-        return -misfit
+
+        # BG: Standard Gaussian log-likelihood assuming independent normal
+        # BG: errors and using chi-square misfit.
+        return -0.5 * misfit
+
     except Exception as e:
         print(f"[ERROR] run_model failed: {e}")
+        if params_local.get("debug", False):
+            import traceback
+
+            traceback.print_exc()
         return -np.inf
 
 
@@ -2684,7 +3701,11 @@ def log_probability(x):
     lp = log_prior(x)
     if not np.isfinite(lp):
         return -np.inf
+
     ll = log_likelihood(x)
+    if not np.isfinite(ll):
+        return -np.inf
+
     return lp + ll
 
 
@@ -2696,24 +3717,78 @@ def batch_run_mcmc(params, batch_params):
     # print("--- Starting MCMC inverse mode ---\n")
     log_output(params, batch_mode=True)
 
-    # FIXME: Are the lines below needed???
-    param_list = list(ParameterGrid(batch_params))
-    # print(f"--- Starting batch processor for {len(param_list)} models ---\n")
-    # success = 0
-    # failed = 0
+    # ------------------------------------------------------------
+    # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
+    #     The previous code only used ParameterGrid(batch_params)[0] to
+    #     inject fixed values into `params`. We preserve the same intent
+    #     without building an unnecessary cartesian product.
+    # ------------------------------------------------------------
 
-    # BG: Extract parameters with more than one value (i.e., varied ones) to define search space
-    filtered_params = {k: v for k, v in batch_params.items() if len(v) > 1}
-    bounds = list(filtered_params.values())
-    param_names = list(filtered_params.keys())
+    # BG: Extract parameters with more than one value (i.e., varied ones)
+    #     These define the MCMC search space (bounds).
+    filtered_params = {
+        k: v
+        for k, v in batch_params.items()
+        if isinstance(v, (list, tuple, np.ndarray)) and len(v) > 1
+    }
+
+    # BG: Inject fixed batch params (scalars or singletons) into base `params`.
+    #     This preserves the previous behavior where the "first grid point"
+    #     was used as the base model for non-inverted params.
+    for k, v in batch_params.items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            if len(v) == 1:
+                params[k] = v[0]
+        else:
+            params[k] = v
+
+    # BG: ero_type scalar for MCMC
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
+    # ------------------------------------------------------------
+    # BG: Add MCMC bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    #     (same conservative logic as NA)
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: MCMC inversion for ero_type=0 requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
+
+        # BG: duration_myr bounds -> ero_stageXX_duration_myr
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: p1/p2/p3 bounds -> ero_stageXX_p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: Keep deterministic ordering for reproducibility and safer x<->name mapping
+    param_names = sorted(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
+
     ndim = len(param_names)  # Number of parameters to invert
-    max_exhumation = 35.0  # BG: Maximum total exhumation constraint
-    max_burial = 15.0
+    if ndim == 0:
+        raise ValueError(
+            "BG: MCMC requires at least one parameter range to invert (ndim=0)."
+        )
 
-    # BG: Use the first parameter set to update the base parameters
-    model = param_list[0]  # BG: Start from the first parameter combination
-    for key in batch_params:
-        params[key] = model[key]
+    # BG: Conservative physical constraints (prior guards)
+    max_exhumation = 35.0  # km (or equivalent model unit, consistent with your prior)
+    max_burial = 15.0  # km (or equivalent model unit)
 
     # BG: Set global variables for MPI pickling compatibility
     global \
@@ -2724,15 +3799,20 @@ def batch_run_mcmc(params, batch_params):
         global_max_burial
     global_bounds = bounds
     global_param_names = param_names
-    global_params = params
+    global_params = copy.deepcopy(params)
     global_max_exhumation = max_exhumation
     global_max_burial = max_burial
 
     # BG: MCMC setup - number of walkers and initial positions sampled from uniform priors
-    nwalkers = 16
-    nsteps = 200
-    discard = 30
-    thin = 3
+    mcmc_nwalkers = int(params["mcmc_nwalkers"])  # BG: number of walkers
+    mcmc_nsteps = int(params["mcmc_nsteps"])  # BG: steps per walker
+    mcmc_discard = int(params["mcmc_discard"])  # BG: burn-in steps
+    mcmc_thin = int(params["mcmc_thin"])  # BG: thinning factor
+
+    nwalkers = mcmc_nwalkers
+    nsteps = mcmc_nsteps
+    discard = mcmc_discard
+    thin = mcmc_thin
 
     p0 = [
         [np.random.uniform(low, high) for (low, high) in bounds]
@@ -2755,61 +3835,82 @@ def batch_run_mcmc(params, batch_params):
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
         exec_start = time.time()
 
-    # BG: Create the sampler and run the MCMC
+    # BG: Build sampler (optionally parallelized with an emcee pool)
     sampler = emcee.EnsembleSampler(
         nwalkers=nwalkers,
         ndim=ndim,
         log_prob_fn=log_probability,
         pool=pool,
     )
-    sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
-    if pool is not None:
-        pool.close()
 
-    # BG: Post-processing with legacy-compatible attributes
-    chain = sampler.chain
-    log_probs = sampler.lnprobability
+    # BG: Always close the pool, even if the MCMC run errors out
+    try:
+        sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
+    finally:
+        if pool is not None:
+            pool.close()
 
-    # BG: Flatten chains manually (legacy emcee version does not support .get_chain())
+    # BG: Post-processing compatible with emcee v2 and v3
+    if hasattr(sampler, "get_chain"):
+        # emcee v3 returns (nsteps, nwalkers, ndim) -> convert to (nwalkers, nsteps, ndim)
+        chain = sampler.get_chain()
+        chain = np.transpose(chain, (1, 0, 2))
+
+        log_probs = sampler.get_log_prob()
+        log_probs = np.transpose(log_probs, (1, 0))
+    else:
+        # emcee v2 returns (nwalkers, nsteps, ndim) directly
+        chain = sampler.chain
+        log_probs = sampler.lnprobability
+
+    # BG: Flatten chains after burn-in and thinning
     flat_samples = chain[:, discard::thin, :].reshape(-1, ndim)
     flat_log_probs = log_probs[:, discard::thin].reshape(-1)
 
+    if flat_log_probs.size == 0:
+        raise RuntimeError(
+            "No valid samples after burn-in/thinning. Aborting analysis."
+        )
+
+    # BG: With the current uniform hard-bound prior, valid samples have log_prior = 0,
+    # BG: so log_probability = log_likelihood = -0.5 * misfit.
+    # BG: This allows exact reconstruction of the chi-square misfit from flat_log_probs.
+    flat_misfits = -2.0 * flat_log_probs
+
     # Write sample results to file
     outfile = wd / "csv" / "mcmc_searcher_results.csv"
-    header = param_names + ["log probability"]
-    combined_array = np.column_stack((flat_samples, flat_log_probs))
+    header = param_names + ["log_probability", "misfit"]
+    combined_array = np.column_stack((flat_samples, flat_log_probs, flat_misfits))
     with open(outfile, "w") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(combined_array)
 
-    # BG: Check if any valid samples remain after burn-in
-    if len(log_probs) == 0:
-        raise RuntimeError("No valid samples after burn-in. Aborting analysis.")
-
-    # BG: Identify and print the best parameter set (lowest misfit)
-    best_idx = np.argmax(flat_log_probs)
+    # BG: Identify and print the best parameter set (minimum misfit)
+    best_idx = np.argmin(flat_misfits)
     best = flat_samples[best_idx]
-    best_dict = dict(zip(param_names, best))  # Manquait ici
+    best_dict = dict(zip(param_names, best))
     print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
+    print(f"Best misfit: {float(flat_misfits[best_idx])}")
+    print(f"Best log probability: {float(flat_log_probs[best_idx])}")
 
     # Stop timer before displaying plots if plots are to be displayed
     if params["display_plots"]:
         exec_end = time.time()
 
-    # BG: Plot evolution of misfit values
+    # BG: Plot evolution of negative log-posterior values
     plt.figure()
     neg_log_probs = -flat_log_probs
     plt.plot(neg_log_probs, ".", markersize=2)
     plt.scatter(best_idx, neg_log_probs[best_idx], c="g", s=10)
     plt.xlabel("Sample Index")
-    plt.ylabel("Misfit")
-    plt.title("MCMC Misfit Values")
+    plt.ylabel(r"$-\log P$")
+    plt.title("MCMC Negative Log-Posterior Values")
     plt.yscale("log")
     if params["save_plots"]:
-        savefile = wd / "png" / "mcmc_misfit.png"
+        savefile = wd / "png" / "mcmc_neg_log_posterior.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC misfit plot written to {savefile}")
+        print(f"- MCMC negative log-posterior plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -2830,6 +3931,23 @@ def batch_run_mcmc(params, batch_params):
         savefile = wd / "png" / "mcmc_chains.png"
         plt.savefig(savefile, dpi=300)
         print(f"- MCMC chain plot written to {savefile}")
+    if params["display_plots"]:
+        plt.show()
+    else:
+        plt.close()
+
+    # BG: Plot evolution of misfit values
+    plt.figure()
+    plt.plot(flat_misfits, ".", markersize=2)
+    plt.scatter(best_idx, flat_misfits[best_idx], c="g", s=10)
+    plt.xlabel("Sample Index")
+    plt.ylabel("Misfit")
+    plt.title("MCMC Misfit Values")
+    plt.yscale("log")
+    if params["save_plots"]:
+        savefile = wd / "png" / "mcmc_misfit.png"
+        plt.savefig(savefile, dpi=300)
+        print(f"- MCMC misfit plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -2862,7 +3980,7 @@ def batch_run_mcmc(params, batch_params):
         ax_histx = fig.add_subplot(gs[0, :-1], sharex=ax)
         ax_histy = fig.add_subplot(gs[1:, -1], sharey=ax)
 
-        sc = ax.scatter(x, y, c=neg_log_probs, cmap="viridis", marker="x")
+        sc = ax.scatter(x, y, c=flat_misfits, cmap="viridis", marker="x")
         ax.scatter(best[i], best[j], color="red", marker="x", label="Best")
         ax.set_xlabel(param_names[i])
         ax.set_ylabel(param_names[j])
@@ -2942,6 +4060,51 @@ def run_model(params):
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
 
+    # BG: Preload multi-stage erosion stages from YAML (ero_type = 0)
+    ero_type = (
+        params["ero_type"][0]
+        if isinstance(params.get("ero_type", None), (list, tuple))
+        else int(params["ero_type"])
+    )
+
+    if ero_type == 0:
+        stages = params.get("ero_stages", None)
+        if stages is None or (isinstance(stages, list) and len(stages) == 0):
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' from YAML input file."
+            )
+
+        # BG: Parse once if raw YAML (no dt_sec), otherwise assume already parsed
+        if (
+            isinstance(stages, list)
+            and len(stages) > 0
+            and isinstance(stages[0], dict)
+            and ("dt_sec" not in stages[0])
+        ):
+            stages = read_ero_stages_from_yaml(stages)
+            params["ero_stages"] = stages  # cache parsed
+
+        # BG: Validate total duration vs t_total (seconds)
+        total_stage_sec = sum(st["dt_sec"] for st in params["ero_stages"])
+        eps_sec = max(
+            1.0e-6, 2.0 * dt
+        )  # dt is model timestep [s] (already converted in run_model)
+
+        if total_stage_sec > t_total + eps_sec:
+            total_stage_myr = total_stage_sec / myr2sec(1.0)
+            t_total_myr = t_total / myr2sec(1.0)
+
+            warnings.warn(
+                f"The cumulative erosion duration ({total_stage_myr:.2f} Myr) "
+                f"exceeds the model time ({t_total_myr:.2f} Myr).\n"
+                "Tc1D will apply erosion stages only until the model end time. "
+                "Any erosion defined after this time will be ignored.",
+                RuntimeWarning,
+            )
+
+        # Total duration of all erosion stages (seconds), used for tail handling
+        params["ero_total_stage_sec"] = total_stage_sec
+
     # Calculate exhumation magnitude
     exhumation_magnitude, fw_reference_frame = calculate_exhumation_magnitude(
         params["ero_type"],
@@ -2956,6 +4119,7 @@ def run_model(params):
         params["ero_option9"],
         params["ero_option10"],
         t_total,
+        params["ero_stages"],
     )
 
     # Create velocity arrays for heat transfer
