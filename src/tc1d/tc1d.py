@@ -197,6 +197,50 @@ def calculate_explicit_stability(
     return cond_stab, adv_stab
 
 
+# Peclet number calculation
+def calculate_peclet_number(
+    ero_type: int,
+    vx: float,
+    x: np.ndarray,
+    xstag: np.ndarray,
+    k: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    moho_depth: float,
+    max_depth: float,
+    crustal_uplift: bool,
+):
+    """Calculates the Peclet number."""
+    # FIXME: This does not currently support ero type 7
+    if ero_type == 7:
+        peclet = -1.0
+    else:
+        if crustal_uplift:
+            kappa_eff = k[xstag <= moho_depth].mean() / (
+                rho[x <= moho_depth].mean() * cp[x <= moho_depth].mean()
+            )
+            peclet = abs(vx) * moho_depth / kappa_eff
+        else:
+            kappa_eff = k.mean() / (rho.mean() * cp.mean())
+            peclet = abs(vx) * max_depth / kappa_eff
+
+    return peclet
+
+
+# Dimensionless heat production calculation
+def calculate_nd_heat_prod(
+    heat_prod: np.ndarray,
+    k: np.ndarray,
+    reference_temp: float,
+    max_depth: float,
+):
+    """Calculates a dimensionless heat production factor."""
+    # TODO: Handle the fixed temperature at depth better?
+    nd_heat_prod = (heat_prod.mean() * max_depth**2) / (2 * k.mean() * reference_temp)
+
+    return nd_heat_prod
+
+
 # Mantle adiabat from Turcotte and Schubert (eqn 4.254)
 def adiabat(alphav: float, temp: float, cp: float) -> float:
     """Calculates a mantle adiabat in degress / m."""
@@ -729,6 +773,7 @@ def calculate_erosion_rate(
     fault_depth,
     moho_depth,
     fw_reference_frame,
+    mantle_velocity,
 ):
     """Defines the way in which erosion should be applied.
 
@@ -762,6 +807,8 @@ def calculate_erosion_rate(
         Moho depth.
     fw_reference_frame : Boolean
         Reference frame for erosion_type 7.
+    mantle_velocity : numeric
+        Velocity for mantle movement in fixed-Moho models (mm/yr)
 
     Returns
     -------
@@ -945,9 +992,9 @@ def calculate_erosion_rate(
             f"Bad erosion type: {params['ero_type']}. Must be between 1 and 7."
         )
 
-    # Set velocities below Moho to 0.0 if using crustal uplift only
+    # Set velocities below Moho to mantle velocity if using crustal uplift only
     if params["crustal_uplift"]:
-        vx_array[x > moho_depth] = 0.0
+        vx_array[x > moho_depth] = mantle_velocity
 
     return vx_array, vx_surf, vx_max, fault_depth
 
@@ -1439,6 +1486,7 @@ def init_params(
     ero_option8=0.0,
     ero_option9=0.0,
     ero_option10=0.0,
+    mantle_velocity=0.0,
     calc_ages=True,
     ketch_aft=True,
     madtrax_aft=False,
@@ -1468,6 +1516,10 @@ def init_params(
     plot_ma=True,
     plot_depth_history=False,
     plot_fault_depth_history=False,
+    plot_density=False,
+    plot_elevation_history=False,
+    plot_peclet_number=False,
+    plot_ft_length_dist=False,
     invert_tt_plot=False,
     t_plots=[0.1, 1, 5, 10, 20, 30, 50],
     crust_solidus=False,
@@ -1590,6 +1642,8 @@ def init_params(
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option10 : float or int, default=0.0
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+    mantle_velocity : float or int, default=0.0
+        Velocity for mantle movement in fixed-Moho models (mm/yr)
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
@@ -1648,6 +1702,14 @@ def init_params(
         Plot depth history on thermal history plot.
     plot_fault_depth_history : bool, default=False
         Plot fault depth history on thermal history plot.
+    plot_density : bool, default=False
+        Plot density beside geotherms plot.
+    plot_elevation_history : bool, default=False
+        Plot surface elevation history.
+    plot_peclet_number : bool, default=False
+        Plot Peclet number on erosion history plot.
+    plot_ft_length_dist : bool, default=False
+        Plot apatite fission-track length distribution.
     invert_tt_plot : bool, default=False
         Invert depth/temperature axis on thermal history plot.
     t_plots : list of float or int, default=[0.1, 1, 5, 10, 20, 30, 50]
@@ -1699,6 +1761,10 @@ def init_params(
         "plot_ma": plot_ma,
         "plot_depth_history": plot_depth_history,
         "plot_fault_depth_history": plot_fault_depth_history,
+        "plot_density": plot_density,
+        "plot_elevation_history": plot_elevation_history,
+        "plot_peclet_number": plot_peclet_number,
+        "plot_ft_length_dist": plot_ft_length_dist,
         "invert_tt_plot": invert_tt_plot,
         "run_type": run_type,
         # Batch mode defaults to false and will set itself true if batch parameters exist
@@ -1736,6 +1802,7 @@ def init_params(
         "ero_option8": ero_option8,
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
+        "mantle_velocity": mantle_velocity,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
         "t_total": time,
@@ -1852,6 +1919,7 @@ def prep_model(params):
         "ero_option8",
         "ero_option9",
         "ero_option10",
+        "mantle_velocity",
         "mantle_adiabat",
         "rho_crust",
         "cp_crust",
@@ -1974,9 +2042,9 @@ def log_output(params, batch_mode=False):
     # Define log file name if undefined
     if params["log_file"] == "":
         if batch_mode:
-            params["log_file"] = "TC1D_batch_log.csv"
+            params["log_file"] = "tc1d_batch_log.csv"
         else:
-            params["log_file"] = "TC1D_run_log.csv"
+            params["log_file"] = "tc1d_run_log.csv"
 
     # Create output file path
     outfile = wd / "csv" / params["log_file"]
@@ -2011,11 +2079,11 @@ def log_output(params, batch_mode=False):
                 "Mantle removal end time (Ma),Erosion model type,Erosion model option 1,"
                 "Erosion model option 2,Erosion model option 3,Erosion model option 4,Erosion model option 5,"
                 "Erosion model option 6,Erosion model option 7,Erosion model option 8,"
-                "Erosion model option 9,Erosion model option 10,"
+                "Erosion model option 9,Erosion model option 10,Mantle velocity (mm/yr),"
                 "Initial Moho depth (km),Initial Moho temperature (C),"
-                "Initial surface heat flow (mW m^-2),Initial surface elevation (km),"
+                "Initial surface heat flow (mW m^-2),Initial surface elevation (km),Initial dimensionless heat production,"
                 "Final Moho depth (km),Final Moho temperature (C),Final surface heat flow (mW m^-2),"
-                "Final surface elevation (km),Total exhumation (km),Apatite grain radius (um),Apatite U "
+                "Final surface elevation (km),Final dimensionless heat production,Total exhumation (km),Average Peclet number,Minimum Peclet number, Maximum Peclet number,Apatite grain radius (um),Apatite U "
                 "concentration (ppm), Apatite Th concentration (ppm),Zircon grain radius (um),Zircon U "
                 "concentration (ppm), Zircon Th concentration (ppm),Predicted apatite (U-Th)/He age (Ma),"
                 "Predicted apatite (U-Th)/He closure temperature (C),Measured apatite (U-Th)/He age (Ma),"
@@ -2075,7 +2143,7 @@ def batch_run(params, batch_params):
                     f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                     f"{params['removal_end_time']:.4f},"
                     f"{params['ero_type']},{params['ero_option1']:.4f},"
-                    f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['init_moho_depth']:.4f},,,,,,,,,{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
+                    f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['mantle_velocity']:.4f},{params['init_moho_depth']:.4f},,,,,,,,,,,,,,{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
                     f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},{params['zr_thorium']:.4f},,,,,,,,,,,,,,,\n"
                 )
             failed += 1
@@ -2867,7 +2935,10 @@ def run_model(params):
     # Create coordinates of the grid points
     x = np.linspace(0, max_depth, params["nx"])
     xstag = x[:-1] + dx / 2
+
+    # Create arrays for velocity history, peclet numbers, fault depth history
     vx_hist = np.zeros(nt)
+    peclet = np.zeros(nt)
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
 
@@ -2944,6 +3015,7 @@ def run_model(params):
         kilo2base(params["ero_option4"]),
         moho_depth,
         fw_reference_frame,
+        mmyr2ms(params["mantle_velocity"]),
     )
 
     # Define final fault depth for erosion model 7
@@ -3030,16 +3102,23 @@ def run_model(params):
             obs_zft_depo_indices = np.intersect1d(obs_zft_indices, obs_nz_depo_indices)
 
             # Update indices of different age types to remove samples with nonzero depositional ages
-            obs_ahe_indices = np.intersect1d(obs_ahe_indices, obs_zero_depo_indices)
-            obs_aft_indices = np.intersect1d(obs_aft_indices, obs_zero_depo_indices)
-            obs_zhe_indices = np.intersect1d(obs_zhe_indices, obs_zero_depo_indices)
-            obs_zft_indices = np.intersect1d(obs_zft_indices, obs_zero_depo_indices)
+            # FIXME: Should this be skipped to not exclude depo ages from final plots?
+            # obs_ahe_indices = np.intersect1d(obs_ahe_indices, obs_zero_depo_indices)
+            # obs_aft_indices = np.intersect1d(obs_aft_indices, obs_zero_depo_indices)
+            # obs_zhe_indices = np.intersect1d(obs_zhe_indices, obs_zero_depo_indices)
+            # obs_zft_indices = np.intersect1d(obs_zft_indices, obs_zero_depo_indices)
 
             if params["debug"]:
                 print(f"\n{num_file_ages} ages read from data file.")
 
         # Create array of past ages at which ages should be calculated, if not zero
         if len(obs_unique_depo_ages) > 0:
+            # Issue warning about depositional ages being experimental
+            warnings.warn(
+                "Support for depositional ages is experimental and may produce unexpected results.",
+                stacklevel=2,
+            )
+
             # Issue warning if trying to use depositional ages and a past age increment
             if params["past_age_increment"] > 0.0:
                 warnings.warn(
@@ -3130,6 +3209,33 @@ def run_model(params):
     # Calculate initial heat flow
     init_heat_flow = calculate_heat_flow(temp_init, k, dx)
 
+    # Calculate initial Peclet number
+    if params["ero_type"] == 7:
+        warnings.warn(
+            f"Peclet number calculation is not yet supported for ero_type {params["ero_type"]}. A value of -1.0 will be reported.",
+            stacklevel=2,
+        )
+    init_peclet = calculate_peclet_number(
+        params["ero_type"],
+        vx,
+        x,
+        xstag,
+        k,
+        rho,
+        cp,
+        moho_depth,
+        max_depth,
+        params["crustal_uplift"],
+    )
+
+    # Calculate initial dimensionless heat production
+    init_nd_hp = calculate_nd_heat_prod(
+        heat_prod,
+        k,
+        params["temp_base"],
+        max_depth,
+    )
+
     # Echo thermal model values
     if params["echo_thermal_info"]:
         print(f"- Initial surface heat flow: {init_heat_flow:.1f} mW/m^2")
@@ -3138,6 +3244,8 @@ def run_model(params):
         print(
             f"- Initial LAB depth: {(max_depth - removal_thickness) / kilo2base(1):.1f} km"
         )
+        print(f"- Initial Peclet number: {init_peclet:.2f}")
+        print(f"- Initial dimensionless heat production: {init_nd_hp:.2f}")
 
     # Create arrays to store elevation history
     elev_list = []
@@ -3182,7 +3290,10 @@ def run_model(params):
         plt.style.use("seaborn-v0_8-darkgrid")
 
         # Plot initial temperature field
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+        if params["plot_density"]:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+        else:
+            fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
         if t_plots.max() < t_total - 1.0:
             # Add an extra color for the final temperature if it is not in the
             # list of times for plotting
@@ -3195,7 +3306,8 @@ def run_model(params):
         else:
             time_label = "0.0 Myr"
         ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
-        ax2.plot(density_init, -x / 1000, "k-", label=time_label)
+        if params["plot_density"]:
+            ax2.plot(density_init, -x / 1000, "k-", label=time_label)
 
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
@@ -3234,6 +3346,7 @@ def run_model(params):
             fault_depth,
             moho_depth,
             fw_reference_frame,
+            mmyr2ms(params["mantle_velocity"]),
         )
 
         # Calculate initial densities
@@ -3285,6 +3398,7 @@ def run_model(params):
                     fault_depth,
                     moho_depth,
                     fw_reference_frame,
+                    mmyr2ms(params["mantle_velocity"]),
                 )
                 move_particles = surface_times >= curtime
                 depths[move_particles] -= vx_pts[move_particles] * -dt
@@ -3341,6 +3455,7 @@ def run_model(params):
                 fault_depth,
                 moho_depth,
                 fw_reference_frame,
+                mmyr2ms(params["mantle_velocity"]),
             )
 
         if not params["batch_mode"]:
@@ -3567,6 +3682,7 @@ def run_model(params):
                     fault_depth,
                     moho_depth,
                     fw_reference_frame,
+                    mmyr2ms(params["mantle_velocity"]),
                 )
                 move_particles = surface_times >= curtime
                 depths[move_particles] -= vx_pts[move_particles] * dt
@@ -3626,6 +3742,20 @@ def run_model(params):
                     f"Maximum temp difference at time {curtime / myr2sec(1):.4f} Myr: {max_temp_diff:.4f} °C"
                 )
 
+            # Calculate current Peclet number using surface velocity
+            peclet[idx] = calculate_peclet_number(
+                params["ero_type"],
+                vx_array[0],
+                x,
+                xstag,
+                k,
+                rho,
+                cp,
+                moho_depth,
+                max_depth,
+                params["crustal_uplift"],
+            )
+
             # Update current time and index
             curtime += dt
             idx += 1
@@ -3641,6 +3771,7 @@ def run_model(params):
                 fault_depth,
                 moho_depth,
                 fw_reference_frame,
+                mmyr2ms(params["mantle_velocity"]),
             )
 
             # Plot temperature and density profiles
@@ -3658,12 +3789,13 @@ def run_model(params):
                             label=time_label,
                             color=colors[plotidx],
                         )
-                        ax2.plot(
-                            density_new,
-                            -x / 1000,
-                            label=time_label,
-                            color=colors[plotidx],
-                        )
+                        if params["plot_density"]:
+                            ax2.plot(
+                                density_new,
+                                -x / 1000,
+                                label=time_label,
+                                color=colors[plotidx],
+                            )
                         if plotidx == len(t_plots) - 1:
                             more_plots = False
                         plotidx += 1
@@ -3680,6 +3812,14 @@ def run_model(params):
     final_moho_temp = interp_temp_new(moho_depth)
     final_heat_flow = calculate_heat_flow(temp_new, k, dx)
 
+    # Calculate final dimensionless heat production
+    final_nd_hp = calculate_nd_heat_prod(
+        heat_prod,
+        k,
+        params["temp_base"],
+        max_depth,
+    )
+
     if not params["batch_mode"]:
         print("")
 
@@ -3691,6 +3831,10 @@ def run_model(params):
         print(f"- Final Moho temperature: {final_moho_temp:.1f}°C")
         print(f"- Final Moho depth: {moho_depth / kilo2base(1):.1f} km")
         print(f"- Final LAB depth: {lab_depth / kilo2base(1):.1f} km")
+        print(f"- Final Peclet number: {peclet[-1]:.2f}")
+        print(f"  - Average for all steps: {peclet.mean():.2f}")
+        print(f"  - Range for all steps: {peclet.min():.2f}-{peclet.max():.2f}")
+        print(f"- Final dimensionless heat production: {final_nd_hp:.2f}")
 
     # Calculate ages
     if params["calc_ages"]:
@@ -3847,6 +3991,7 @@ def run_model(params):
                         zr_uranium=params["zr_uranium"],
                         zr_thorium=params["zr_thorium"],
                     )
+                    # FIXME: Should this same calculation be done for a separate array of depo ages and plotted???
                     pred_data_ages[i] = corr_ahe_age + depo_age_now
                     pred_data_temps[i] = calculate_closure_temp(
                         corr_ahe_age,
@@ -4203,94 +4348,104 @@ def run_model(params):
         ax1.axis([xmin, xmax, -max_depth / 1000, 0])
         ax1.set_xlabel("Temperature (°C)")
         ax1.set_ylabel("Depth (km)")
-        # Round density ranges to nearest 50
-        density_base = 50.0
-        xmin = round_to_base(density_new.min(), density_base) - density_base
-        xmax = round_to_base(density_new.max(), density_base) + density_base
-        ax2.plot(
-            density_new,
-            -x / 1000,
-            label=time_label,
-            color=colors[-1],
-        )
-        ax2.plot(
-            [xmin, xmax],
-            [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
-            linestyle="--",
-            color="black",
-            lw=0.5,
-        )
-        ax2.plot(
-            [xmin, xmax],
-            [-params["init_moho_depth"], -params["init_moho_depth"]],
-            linestyle="--",
-            color="gray",
-            lw=0.5,
-        )
-        ax2.axis([xmin, xmax, -max_depth / 1000, 0])
-        ax2.set_xlabel("Density (kg m$^{-3}$)")
-        ax2.set_ylabel("Depth (km)")
-        ax2.legend()
+
+        # Plot density, if requested
+        if params["plot_density"]:
+            # Round density ranges to nearest 50
+            density_base = 50.0
+            xmin = round_to_base(density_new.min(), density_base) - density_base
+            xmax = round_to_base(density_new.max(), density_base) + density_base
+            ax2.plot(
+                density_new,
+                -x / 1000,
+                label=time_label,
+                color=colors[-1],
+            )
+            ax2.plot(
+                [xmin, xmax],
+                [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
+                linestyle="--",
+                color="black",
+                lw=0.5,
+            )
+            ax2.plot(
+                [xmin, xmax],
+                [-params["init_moho_depth"], -params["init_moho_depth"]],
+                linestyle="--",
+                color="gray",
+                lw=0.5,
+            )
+            ax2.axis([xmin, xmax, -max_depth / 1000, 0])
+            ax2.set_xlabel("Density (kg m$^{-3}$)")
+            ax2.set_ylabel("Depth (km)")
+            ax2.legend()
 
         plt.tight_layout()
         if params["save_plots"]:
-            savefile = wd / "png" / "T_rho_hist.png"
+            plot_filename = "temperature_history.png"
+            if params["plot_density"]:
+                plot_filename = "temperature_density_history.png"
+            savefile = wd / "png" / plot_filename
             plt.savefig(savefile, dpi=300)
-            print(f"- Temperature/density history plot written to {savefile}")
+            if params["plot_density"]:
+                print(f"- Temperature/density history plot written to {savefile}")
+            else:
+                print(f"- Temperature history plot written to {savefile}")
         if params["display_plots"]:
             plt.show()
         else:
             plt.close()
 
         # Plot elevation history
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        # ax1.plot(time_list, elev_list, 'k-')
-        if params["plot_ma"]:
-            time_list = [params["t_total"] - time_now for time_now in time_list]
-            time_xlabel = "Time (Ma)"
-            time_xlim = [params["t_total"], 0.0]
-        else:
-            time_xlabel = "Time (Myr)"
-            time_xlim = [0.0, params["t_total"]]
-        ax1.plot(time_list, elev_list)
-        ax1.set_xlabel(time_xlabel)
-        ax1.set_ylabel("Elevation (m)")
-        ax1.set_xlim(time_xlim)
-        ax1.set_title("Elevation history")
-        # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-        # ax1.grid()
+        if params["plot_elevation_history"]:
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            # ax1.plot(time_list, elev_list, 'k-')
+            if params["plot_ma"]:
+                time_list = [params["t_total"] - time_now for time_now in time_list]
+                time_xlabel = "Time (Ma)"
+                time_xlim = [params["t_total"], 0.0]
+            else:
+                time_xlabel = "Time (Myr)"
+                time_xlim = [0.0, params["t_total"]]
+            ax1.plot(time_list, elev_list)
+            ax1.set_xlabel(time_xlabel)
+            ax1.set_ylabel("Elevation (m)")
+            ax1.set_xlim(time_xlim)
+            ax1.set_title("Elevation history")
+            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
+            # ax1.grid()
 
-        if params["plot_ma"]:
-            plot_time = params["t_total"] - time_hists[-1] / myr2sec(1)
-        else:
-            plot_time = time_hists[-1] / myr2sec(1)
-        ax2.plot(plot_time, vx_hist / mmyr2ms(1))
-        ax2.fill_between(
-            plot_time,
-            vx_hist / mmyr2ms(1),
-            0.0,
-            alpha=0.33,
-            color="tab:blue",
-            label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
-        )
-        ax2.set_xlabel(time_xlabel)
-        ax2.set_ylabel("Erosion rate (mm/yr)")
-        ax2.set_xlim(time_xlim)
-        # if params["ero_option1"] >= 0.0:
-        #    ax2.set_ylim(ymin=0.0)
-        # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-        # ax2.grid()
-        ax2.legend()
+            if params["plot_ma"]:
+                plot_time = params["t_total"] - time_hists[-1] / myr2sec(1)
+            else:
+                plot_time = time_hists[-1] / myr2sec(1)
+            ax2.plot(plot_time, vx_hist / mmyr2ms(1))
+            ax2.fill_between(
+                plot_time,
+                vx_hist / mmyr2ms(1),
+                0.0,
+                alpha=0.33,
+                color="tab:blue",
+                label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
+            )
+            ax2.set_xlabel(time_xlabel)
+            ax2.set_ylabel("Erosion rate (mm/yr)")
+            ax2.set_xlim(time_xlim)
+            # if params["ero_option1"] >= 0.0:
+            #    ax2.set_ylim(ymin=0.0)
+            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
+            # ax2.grid()
+            ax2.legend()
 
-        plt.tight_layout()
-        if params["save_plots"]:
-            savefile = wd / "png" / "elev_hist.png"
-            plt.savefig(savefile, dpi=300)
-            print(f"- Surface elevation history plot written to {savefile}")
-        if params["display_plots"]:
-            plt.show()
-        else:
-            plt.close()
+            plt.tight_layout()
+            if params["save_plots"]:
+                savefile = wd / "png" / "elev_hist.png"
+                plt.savefig(savefile, dpi=300)
+                print(f"- Surface elevation history plot written to {savefile}")
+            if params["display_plots"]:
+                plt.show()
+            else:
+                plt.close()
 
         # Plot cooling history and ages only if ages were calculated
         if params["calc_ages"]:
@@ -4302,8 +4457,10 @@ def run_model(params):
             ax1 = fig.add_subplot(gs[0:2, :])
             if params["plot_depth_history"] or params["plot_fault_depth_history"]:
                 ax1b = ax1.twinx()
-            ax2 = fig.add_subplot(gs[2, :-1])
-            ax3 = fig.add_subplot(gs[2, -1])
+            ax2 = fig.add_subplot(gs[2, :])
+            # Add second y axis if plotting Peclet number
+            if params["plot_peclet_number"]:
+                ax2b = ax2.twinx()
 
             # Calculate synthetic uncertainties
             ahe_uncert = 0.1
@@ -4365,6 +4522,37 @@ def run_model(params):
                     va="center",
                     color="gray",
                 )
+
+            # Plot intrusions and their time, if enabled
+            """
+            if "intrusion" in locals():
+                intrusion_start_time_ma = params["t_total"] - intrusion.start_time / myr2sec(1.0)
+                intrusion_end_time_ma = params["t_total"] - intrusion.end_time / myr2sec(1.0)
+                ax1.plot(
+                    [intrusion_start_time_ma, intrusion_start_time_ma],
+                    [params["temp_surf"], params["temp_base"]],
+                    "--",
+                    color="gray",
+                    label="Time of intrusion activity",
+                )
+                if intrusion.duration / myr2sec(1.0) > 2.0:
+                    ax1.plot(
+                        [intrusion_end_time_ma, intrusion_end_time_ma],
+                        [params["temp_surf"], params["temp_base"]],
+                        "-.",
+                        color="gray",
+                        #label="Time of intrusion activity",
+                    )
+                ax1.text(
+                    intrusion_start_time_ma - 0.02 * t_total / myr2sec(1.0),
+                    (temp_hists[-1].max() + temp_hists[-1].min()) / 4.0,
+                    "Intrusion emplaced",
+                    rotation=90,
+                    ha="center",
+                    va="center",
+                    color="gray",
+                )
+            """
 
             # Plot uncertainty error bars and AHe age if no measured ages exist
             if n_obs_ahe == 0:
@@ -4602,7 +4790,8 @@ def run_model(params):
             ax1.set_ylim(params["temp_surf"], 1.05 * temp_hists[-1].max())
             if params["invert_tt_plot"]:
                 ax1.set_ylim(1.05 * temp_hists[-1].max(), params["temp_surf"])
-            ax1.set_xlabel("Time (Ma)")
+            if not params["plot_peclet_number"]:
+                ax1.set_xlabel("Time (Ma)")
             ax1.set_ylabel("Temperature (° C)")
             if params["plot_depth_history"] or params["plot_fault_depth_history"]:
                 # Make left y-axis dimgray
@@ -4656,50 +4845,84 @@ def run_model(params):
             else:
                 ax1.legend()
 
-            ax2.plot(time_ma, vx_hist / mmyr2ms(1))
-            ax2.fill_between(
-                time_ma,
-                vx_hist / mmyr2ms(1),
-                0.0,
-                alpha=0.33,
-                color="tab:blue",
-                label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
-            )
+            if not params["plot_peclet_number"]:
+                ax2.plot(time_ma, vx_hist / mmyr2ms(1))
+                ax2.fill_between(
+                    time_ma,
+                    vx_hist / mmyr2ms(1),
+                    0.0,
+                    alpha=0.33,
+                    color="tab:blue",
+                    label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
+                )
+            else:
+                ax2.plot(
+                    time_ma,
+                    vx_hist / mmyr2ms(1),
+                    color="dimgray",
+                    label=f"Erosion rate (Total exhumation: {exhumation_magnitude:.2f} km)",
+                )
+                ax2b.plot(
+                    time_ma, peclet, "--", color="darkgray", label="Péclet number"
+                )
             ax2.set_xlabel("Time (Ma)")
-            ax2.set_ylabel("Erosion rate (mm/yr)")
+            if not params["plot_peclet_number"]:
+                ax2.set_ylabel("Erosion rate (mm/yr)")
+            else:
+                ax2.set_ylabel("Erosion rate (mm/yr)", color="dimgray")
+                ax2.tick_params(axis="y", colors="dimgray")
+                ax2b.set_ylabel("Péclet number", color="darkgray")
+                ax2b.tick_params(axis="y", colors="darkgray")
             ax2.set_xlim(t_total / myr2sec(1), 0.0)
-            # if params["ero_option1"] >= 0.0:
-            #    ax2.set_ylim(ymin=0.0)
-            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-            # ax2.grid()
-            ax2.legend()
+            if params["plot_peclet_number"]:
+                ax2.grid(None)
+                ax2b.grid(None)
+                lines, labels = ax2.get_legend_handles_labels()
+                lines2, labels2 = ax2b.get_legend_handles_labels()
+                ax2.legend(lines + lines2, labels + labels2)
+            else:
+                ax2.legend()
             ax2.set_title("Erosion history for surface sample")
-
-            ft_lengths = np.genfromtxt(ftl_new, delimiter=",", skip_header=1)
-            length = ft_lengths[:, 0]
-            prob = ft_lengths[:, 1]
-            ax3.plot(length, prob)
-            ax3.plot(
-                [float(aft_mean_ftl), float(aft_mean_ftl)],
-                [0.0, 1.05 * prob.max()],
-                label=f"Mean: {float(aft_mean_ftl):.1f} µm",
-            )
-            ax3.set_xlabel("Track length (um)")
-            ax3.set_ylabel("Probability")
-            ax3.set_xlim([0.0, 20.0])
-            ax3.set_ylim([0.0, 1.05 * prob.max()])
-            ax3.legend()
-            ax3.set_title("Apatite fission-track length distribution")
 
             plt.tight_layout()
             if params["save_plots"]:
-                savefile = wd / "png" / "cooling_hist.png"
+                savefile = wd / "png" / "thermal_history.png"
                 plt.savefig(savefile, dpi=300)
                 print(f"- Thermal history and ages plot written to {savefile}")
             if params["display_plots"]:
                 plt.show()
             else:
                 plt.close()
+
+            if params["plot_ft_length_dist"]:
+                ft_lengths = np.genfromtxt(ftl_new, delimiter=",", skip_header=1)
+                length = ft_lengths[:, 0]
+                prob = ft_lengths[:, 1]
+                fig, ax = plt.subplots(1, 1)
+                ax.plot(length, prob)
+                ax.plot(
+                    [float(aft_mean_ftl), float(aft_mean_ftl)],
+                    [0.0, 1.05 * prob.max()],
+                    label=f"Mean: {float(aft_mean_ftl):.1f} µm",
+                )
+                ax.set_xlabel("Track length (um)")
+                ax.set_ylabel("Probability")
+                ax.set_xlim([0.0, 20.0])
+                ax.set_ylim([0.0, 1.05 * prob.max()])
+                ax.legend()
+                ax.set_title("Apatite fission-track length distribution")
+
+                plt.tight_layout()
+                if params["save_plots"]:
+                    savefile = wd / "png" / "apatite_ft_length_dist.png"
+                    plt.savefig(savefile, dpi=300)
+                    print(
+                        f"- Apatite fission-track length distribution plot written to {savefile}"
+                    )
+                if params["display_plots"]:
+                    plt.show()
+                else:
+                    plt.close()
 
             # Display plot of past ages if more than one surface age is calculated
             if len(surface_times_ma) > 1:
@@ -5017,14 +5240,14 @@ def run_model(params):
         with open(outfile, "a+") as f:
             f.write(
                 f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},"
-                f"{params['temp_surf']:.4f},{params['temp_base']:.4},{params['mantle_adiabat']},"
+                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
                 f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                 f"{params['removal_end_time']:.4f},{params['ero_type']},{params['ero_option1']:.4f},"
                 f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},"
-                f"{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['init_moho_depth']:.4f},{init_moho_temp:.4f},"
-                f"{init_heat_flow:.4f},{elev_list[1] / kilo2base(1):.4f},{moho_depth / kilo2base(1):.4f},"
-                f"{final_moho_temp:.4f},{final_heat_flow:.4f},{elev_list[-1] / kilo2base(1):.4f},"
-                f"{exhumation_magnitude:.4f},{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
+                f"{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['mantle_velocity']:.4f},{params['init_moho_depth']:.4f},{init_moho_temp:.4f},"
+                f"{init_heat_flow:.4f},{elev_list[1] / kilo2base(1):.4f},{init_nd_hp:.4f},{moho_depth / kilo2base(1):.4f},"
+                f"{final_moho_temp:.4f},{final_heat_flow:.4f},{elev_list[-1] / kilo2base(1):.4f},{final_nd_hp:.4f},"
+                f"{exhumation_magnitude:.4f},{peclet.mean():.4f},{peclet.min():.4f},{peclet.max():.4f},{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
                 f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},"
                 f"{params['zr_thorium']:.4f},{corr_ahe_ages[-1]:.4f},"
                 f"{ahe_temps[-1]:.4f},{obs_ahe:.4f},"

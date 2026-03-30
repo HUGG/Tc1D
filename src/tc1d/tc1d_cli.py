@@ -432,6 +432,14 @@ def main():
         default=[0.0],
         type=float,
     )
+    erosion.add_argument(
+        "--mantle-velocity",
+        dest="mantle_velocity",
+        help="Velocity for mantle movement in fixed-Moho models (mm/yr)",
+        nargs="+",
+        default=[0.0],
+        type=float,
+    )
     prediction = parser.add_argument_group(
         "Age prediction options", "Options for age prediction"
     )
@@ -660,6 +668,35 @@ def main():
         default=False,
     )
     plotting.add_argument(
+        "--plot-density",
+        dest="plot_density",
+        help="Plot density beside geotherms plot",
+        action="store_true",
+        default=False,
+    )
+    plotting.add_argument(
+        "--plot-elevation-history",
+        dest="plot_elevation_history",
+        help="Plot surface elevation history",
+        action="store_true",
+        default=False,
+    )
+    plotting.add_argument(
+        "--plot-peclet-number",
+        dest="plot_peclet_number",
+        help="Plot peclet number on erosion history plot",
+        action="store_true",
+        default=False,
+    )
+    plotting.add_argument(
+        "--plot-ft-length-dist",
+        dest="plot_ft_length_dist",
+        help="Plot apatite fission-track length distribution",
+        action="store_true",
+        default=False,
+    )
+
+    plotting.add_argument(
         "--invert-tt-plot",
         dest="invert_tt_plot",
         help="Invert temperature/depth on thermal history plot",
@@ -814,6 +851,10 @@ def main():
         "plot_ma": plot_ma,
         "plot_depth_history": args.plot_depth_history,
         "plot_fault_depth_history": args.plot_fault_depth_history,
+        "plot_density": args.plot_density,
+        "plot_elevation_history": args.plot_elevation_history,
+        "plot_peclet_number": args.plot_peclet_number,
+        "plot_ft_length_dist": args.plot_ft_length_dist,
         "invert_tt_plot": args.invert_tt_plot,
         "run_type": args.run_type,
         "batch_mode": args.batch_mode,
@@ -849,6 +890,7 @@ def main():
         "ero_option8": args.ero_option8,
         "ero_option9": args.ero_option9,
         "ero_option10": args.ero_option10,
+        "mantle_velocity": args.mantle_velocity,
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
         "t_total": args.time,
