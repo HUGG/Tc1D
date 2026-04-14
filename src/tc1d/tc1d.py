@@ -4122,6 +4122,13 @@ def run_model(params):
         params["ero_stages"],
     )
 
+    # Ensure that initial moho depth is greater than exhumation magnitude if using crustal uplift
+    if params["crustal_uplift"]:
+        if exhumation_magnitude > params["init_moho_depth"]:
+            raise ValueError(
+                f"Exhumation magnitude ({exhumation_magnitude:.1f} km) exceeds initial Moho depth ({params["init_moho_depth"]} km)."
+            )
+
     # Create velocity arrays for heat transfer
     vx_init = np.zeros(len(x))
     vx_array = np.zeros(len(x))
@@ -4848,6 +4855,7 @@ def run_model(params):
                     fw_reference_frame,
                     mmyr2ms(params["mantle_velocity"]),
                 )
+                # Determine which particle positions to update
                 move_particles = surface_times >= curtime
                 depths[move_particles] -= vx_pts[move_particles] * dt
 
