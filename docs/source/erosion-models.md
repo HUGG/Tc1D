@@ -125,7 +125,7 @@ The maximum erosion rate $\dot{e}_{\mathrm{max}}$ is calculated as:
 
 $$
 \begin{equation}
-\dot{e}_{\mathrm{max}} = \frac{m}{\uptau - \exp{(-(t_{\mathrm{total}} - t_{\mathrm{start}}) / \uptau)}}.
+\dot{e}_{\mathrm{max}} = \frac{m}{\uptau (1 - \exp{(-(t_{\mathrm{total}} - t_{\mathrm{start}}) / \uptau))}}.
 \end{equation}
 $$
 

@@ -13,6 +13,7 @@ from scipy.linalg import solve
 import shutil
 import subprocess
 import time
+import math
 from typing import Tuple
 import warnings
 
@@ -151,6 +152,7 @@ def echo_model_info(
 
     # Output erosion model
     ero_models = {
+        0: "Erosion model: Multi-stage erosion from YAML (ero_stages)",
         1: "Constant",
         2: "Step-function",
         3: "Exponential decay",
@@ -195,6 +197,50 @@ def calculate_explicit_stability(
         )
 
     return cond_stab, adv_stab
+
+
+# Peclet number calculation
+def calculate_peclet_number(
+    ero_type: int,
+    vx: float,
+    x: np.ndarray,
+    xstag: np.ndarray,
+    k: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    moho_depth: float,
+    max_depth: float,
+    crustal_uplift: bool,
+):
+    """Calculates the Peclet number."""
+    # FIXME: This does not currently support ero type 7
+    if ero_type == 7:
+        peclet = -1.0
+    else:
+        if crustal_uplift:
+            kappa_eff = k[xstag <= moho_depth].mean() / (
+                rho[x <= moho_depth].mean() * cp[x <= moho_depth].mean()
+            )
+            peclet = abs(vx) * moho_depth / kappa_eff
+        else:
+            kappa_eff = k.mean() / (rho.mean() * cp.mean())
+            peclet = abs(vx) * max_depth / kappa_eff
+
+    return peclet
+
+
+# Dimensionless heat production calculation
+def calculate_nd_heat_prod(
+    heat_prod: np.ndarray,
+    k: np.ndarray,
+    reference_temp: float,
+    max_depth: float,
+):
+    """Calculates a dimensionless heat production factor."""
+    # TODO: Handle the fixed temperature at depth better?
+    nd_heat_prod = (heat_prod.mean() * max_depth**2) / (2 * k.mean() * reference_temp)
+
+    return nd_heat_prod
 
 
 # Mantle adiabat from Turcotte and Schubert (eqn 4.254)
@@ -719,6 +765,597 @@ def calculate_ages_and_tcs(
     )
 
 
+def parse_ero_stage_row(row: dict, stage_idx: int = 1) -> dict:
+    """
+    BG: Parse one erosion stage from YAML and build the internal rate-based
+    parameterization used by the forward model (ero_type=0).
+
+    YAML stage schema
+    -----------------
+    Each stage is a dict with:
+      type: "constant" / "linear" / "exponential"
+      unit: "erosion_rate" / "thickness"
+      duration_myr: float > 0
+      p1/p2/p3 (or parameter1/2/3): floats (some optional depending on type/unit)
+
+    Parameter conventions
+    ---------------------
+    - constant + erosion_rate : p1 = r_const
+    - constant + thickness    : p1 = M_total   (converted internally to mean rate)
+
+    - linear + erosion_rate   : p1 = r_start, p2 = r_end
+    - linear + thickness      : p1 = M_total, p2 = s (dimensionless in [-1, 1])
+
+    - exponential + erosion_rate : p1 = r_start, p2 = tau, p3 = r_target
+    - exponential + thickness    : p1 = M_total, p2 = tau, p3 = M_base
+                                   (baseline thickness; internal rates are reconstructed)
+
+    Returns
+    -------
+    stage : dict
+        {
+          "type": str,
+          "unit": str,
+          "duration_myr": float,
+          "dt_sec": float,
+          "params": np.ndarray,      # internal: constant [r], linear [r0,r1], exponential [r0,rt,tau]
+          "input_params": list,      # raw YAML p1/p2/p3 for echo/debug
+        }
+    """
+
+    if not isinstance(row, dict):
+        raise ValueError(f"BG: erosion YAML stage {stage_idx}: stage must be a dict.")
+
+    def _as_float(v, name):
+        # BG: YAML may give float/int directly; also accept strings.
+        if v is None:
+            return None
+        if isinstance(v, (int, float)):
+            return float(v)
+        s = str(v).strip()
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            raise ValueError(
+                f"BG: erosion YAML stage {stage_idx}: {name} must be a float (got {v!r})."
+            )
+
+    stage_type = str(row.get("type", "")).strip().lower()
+    unit = str(row.get("unit", "")).strip().lower()
+
+    if stage_type not in ("constant", "linear", "exponential"):
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: invalid type={stage_type!r}. "
+            "Valid: constant, linear, exponential."
+        )
+
+    if unit not in ("erosion_rate", "thickness"):
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: invalid unit={unit!r}. "
+            "Valid: erosion_rate, thickness."
+        )
+
+    duration_myr = _as_float(row.get("duration_myr", None), "duration_myr")
+    if duration_myr is None or duration_myr <= 0.0:
+        raise ValueError(
+            f"BG: erosion YAML stage {stage_idx}: duration_myr must be > 0 (got {duration_myr})."
+        )
+    dt_stage_myr = duration_myr
+
+    p1 = _as_float(row.get("p1", row.get("parameter1", None)), "p1/parameter1")
+    p2 = _as_float(row.get("p2", row.get("parameter2", None)), "p2/parameter2")
+    p3 = _as_float(row.get("p3", row.get("parameter3", None)), "p3/parameter3")
+    input_params = [p1, p2, p3]
+
+    # ============================
+    # BG: Build internal parameterization (rate-based)
+    # ============================
+
+    if stage_type == "constant":
+        if unit == "erosion_rate":
+            if p1 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: constant + erosion_rate requires parameter1=r_const."
+                )
+            r_const = p1
+        else:  # thickness
+            if p1 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: constant + thickness requires parameter1=M_total."
+                )
+            r_const = p1 / dt_stage_myr  # km/Myr
+        params = np.array([r_const], dtype=float)
+
+    elif stage_type == "linear":
+        if unit == "erosion_rate":
+            if p1 is None or p2 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + erosion_rate requires p1=r_start, p2=r_end."
+                )
+            r_start, r_end = p1, p2
+        else:  # thickness
+            if p1 is None or p2 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + thickness requires p1=M_total, p2=s in [-1,1]."
+                )
+            M_total, s = p1, p2
+            if s < -1.0 or s > 1.0:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: linear + thickness requires s in [-1,1] (got {s})."
+                )
+            r_mean = M_total / dt_stage_myr
+            r_start = r_mean * (1.0 - s)
+            r_end = r_mean * (1.0 + s)
+        params = np.array([r_start, r_end], dtype=float)
+
+    else:  # exponential
+        if p2 is None or p2 <= 0.0:
+            raise ValueError(
+                f"BG: erosion YAML stage {stage_idx}: exponential requires parameter2=tau > 0."
+            )
+        tau = p2
+
+        if unit == "erosion_rate":
+            if p1 is None or p3 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: exponential + erosion_rate requires p1=r_start, p2=tau, p3=r_target."
+                )
+            r_start, r_target = p1, p3
+        else:  # thickness
+            if p1 is None or p3 is None:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: exponential + thickness requires p1=M_total, p2=tau, p3=M_base."
+                )
+            M_total, M_base = p1, p3
+            r_target = M_base / dt_stage_myr
+
+            # BG: enforce strict thickness conservation over the stage duration
+            A = tau * (1.0 - math.exp(-dt_stage_myr / tau))
+            if abs(A) < 1e-12:
+                raise ValueError(
+                    f"BG: erosion YAML stage {stage_idx}: cannot compute r_start (tau too small or duration too small). "
+                    f"tau={tau}, duration={dt_stage_myr}."
+                )
+            r_start = r_target + (M_total - r_target * dt_stage_myr) / A
+
+        params = np.array([r_start, r_target, tau], dtype=float)
+
+    return {
+        "type": stage_type,
+        "unit": unit,
+        "duration_myr": dt_stage_myr,
+        "dt_sec": myr2sec(dt_stage_myr),
+        "params": params,
+        "input_params": input_params,
+    }
+
+
+def read_ero_stages_from_yaml(ero_stages_input) -> list:
+    """
+    BG: Read and validate YAML erosion stages for ero_type=0.
+
+    Parameters
+    ----------
+    ero_stages_input : list of dict
+        Raw YAML list under:
+          erosion_model:
+            ero_stages: [...]
+
+    Returns
+    -------
+    stages : list of dict
+        Parsed stages with internal 'params' representation (rate-based).
+    """
+    if ero_stages_input is None:
+        raise ValueError(
+            "BG: ero_type=0 requires erosion_model.ero_stages in the YAML input file."
+        )
+
+    if not isinstance(ero_stages_input, list) or len(ero_stages_input) == 0:
+        raise ValueError("BG: erosion_model.ero_stages must be a non-empty list.")
+
+    stages = []
+    for i, row in enumerate(ero_stages_input, start=1):
+        stages.append(parse_ero_stage_row(row, stage_idx=i))
+
+    return stages
+
+
+def _stage_idx_from_na_param_name(pname):
+    """
+    BG: Extract 1-based stage index from NA param name like:
+        'ero_stage01_duration_myr' or 'ero_stage01_p2'
+    Returns int stage index (1-based).
+    """
+    try:
+        token = pname.split("_")[1]  # "stage01"
+        idx = int(token.replace("stage", ""))
+    except Exception as exc:
+        raise ValueError(
+            f"BG: cannot parse erosion stage index from {pname!r}."
+        ) from exc
+    return idx
+
+
+def _get_stage_param_value(st, key):
+    """
+    BG: Read stage parameter with backward-compatible YAML keys.
+    Accept both p1/p2/p3 and parameter1/2/3.
+    """
+    if key == "p1":
+        return st.get("p1", st.get("parameter1", None))
+    if key == "p2":
+        return st.get("p2", st.get("parameter2", None))
+    if key == "p3":
+        return st.get("p3", st.get("parameter3", None))
+    raise ValueError(f"BG: unknown stage parameter key {key!r}.")
+
+
+def _collect_ero_stage_duration_bounds(ero_stages_template):
+    """
+    BG: Collect duration bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion:
+        duration_myr: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_duration_myr": [2.0, 6.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        dur = st.get("duration_myr", None)
+
+        # BG: inversion syntax uses a 2-item range [min, max]
+        if isinstance(dur, (list, tuple)) and len(dur) == 2:
+            dmin = float(dur[0])
+            dmax = float(dur[1])
+
+            if dmin <= 0.0 or dmax <= 0.0 or dmax <= dmin:
+                raise ValueError(
+                    f"BG: erosion YAML stage {i}: duration_myr bounds must satisfy "
+                    f"0 < min < max (got {dur})."
+                )
+
+            key = f"ero_stage{i:02d}_duration_myr"
+            bounds[key] = [dmin, dmax]
+
+    return bounds
+
+
+def _collect_ero_stage_param_bounds(ero_stages_template):
+    """
+    BG: Collect p1/p2/p3 bounds from YAML ero_stages (raw template).
+
+    Expected syntax for inversion (either key style supported):
+        p1: [min, max]   or  parameter1: [min, max]
+        p2: [min, max]   or  parameter2: [min, max]
+        p3: [min, max]   or  parameter3: [min, max]
+
+    Returns
+    -------
+    dict mapping NA param name -> [min, max]
+        e.g. "ero_stage01_p1": [0.0, 2.0]
+    """
+    bounds = {}
+    if not ero_stages_template:
+        return bounds
+
+    for i, st in enumerate(ero_stages_template, start=1):
+        for key in ("p1", "p2", "p3"):
+            v = _get_stage_param_value(st, key)
+
+            # BG: inversion syntax uses a 2-item range [min, max]
+            if isinstance(v, (list, tuple)) and len(v) == 2:
+                vmin = float(v[0])
+                vmax = float(v[1])
+
+                if vmax <= vmin:
+                    raise ValueError(
+                        f"BG: erosion YAML stage {i}: {key} bounds must satisfy "
+                        f"min < max (got {v})."
+                    )
+
+                pname = f"ero_stage{i:02d}_{key}"
+                bounds[pname] = [vmin, vmax]
+
+    return bounds
+
+
+def _apply_na_stage_durations(
+    ero_stages_template,
+    duration_param_names,
+    x,
+    t_total_myr,
+    balance=True,
+):
+    """
+    BG: Apply NA-sampled durations into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    duration_param_names : list[str]
+        Names like 'ero_stage01_duration_myr' in order matching x.
+    x : array-like
+        NA sampled values.
+    t_total_myr : float
+        Total model duration in Myr.
+    balance : bool
+        If True, adjust one non-inverted stage to keep sum(durations)=t_total_myr.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    # BG: Map x values to stage index
+    inverted_stage_idxs = set()
+    for pname, val in zip(duration_param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: duration param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        inverted_stage_idxs.add(idx)
+        stages[idx - 1]["duration_myr"] = float(val)
+
+    # BG: Balancing to ensure sum durations == t_total
+    if balance:
+        # pick last stage not inverted (preferably)
+        balance_idx = None
+        for j in range(nst, 0, -1):
+            if j not in inverted_stage_idxs:
+                balance_idx = j
+                break
+
+        if balance_idx is not None:
+            current_sum = 0.0
+            for k, st in enumerate(stages, start=1):
+                if k == balance_idx:
+                    continue
+                current_sum += float(st.get("duration_myr", 0.0))
+
+            remainder = float(t_total_myr) - current_sum
+
+            # BG: invalid draw -> let objective penalize it (no crash)
+            if remainder <= 0.0:
+                return None
+
+            stages[balance_idx - 1]["duration_myr"] = remainder
+
+    return stages
+
+
+def _apply_na_stage_params(
+    ero_stages_template,
+    param_names,
+    x,
+):
+    """
+    BG: Apply NA-sampled p1/p2/p3 into a copy of erosion stages.
+
+    Parameters
+    ----------
+    ero_stages_template : list[dict]
+        Raw YAML stages (no dt_sec cache).
+    param_names : list[str]
+        Names like 'ero_stage01_p1' in order matching x.
+    x : array-like
+        NA sampled values.
+
+    Returns
+    -------
+    new_stages : list[dict]
+        Updated stages (still raw YAML dicts).
+    """
+    stages = copy.deepcopy(ero_stages_template)
+    nst = len(stages)
+
+    for pname, val in zip(param_names, x):
+        idx = _stage_idx_from_na_param_name(pname)
+
+        if idx < 1 or idx > nst:
+            raise ValueError(
+                f"BG: stage param {pname!r} refers to stage {idx}, "
+                f"but only {nst} stages exist."
+            )
+
+        # pname: ero_stageXX_pY -> last token is 'p1'/'p2'/'p3'
+        key = pname.split("_")[-1]
+        if key not in ("p1", "p2", "p3"):
+            raise ValueError(
+                f"BG: stage param name {pname!r} does not end with p1/p2/p3."
+            )
+
+        # BG: write canonical keys (p1/p2/p3); parse_ero_stage_row supports fallback
+        stages[idx - 1][key] = float(val)
+
+    return stages
+
+
+def _rebuild_ero_stages_from_sample(params_local: dict, sample_dict: dict) -> bool:
+    """
+    BG: Rebuild parsed erosion stages for ero_type=0 using YAML template and sampled
+    stage parameters (duration_myr and/or p1/p2/p3).
+
+    Conservative behavior:
+    - No duration balancing (balance=False).
+    - If sum(durations) > t_total: erosion is naturally truncated by forward model.
+    - If sum(durations) < t_total: erosion naturally drops to 0 after last stage.
+
+    Parameters
+    ----------
+    params_local : dict
+        Local copy of params used for this MCMC evaluation.
+        Must contain 'ero_stages_template' for ero_type=0 stage inversion.
+    sample_dict : dict
+        Sampled parameter values for this evaluation (floats).
+
+    Returns
+    -------
+    bool
+        True if stages were rebuilt (or not needed), False if invalid (reject sample).
+    """
+    # BG: robust ero_type scalar
+    ero_type_val = params_local.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+    if not ero_type0:
+        return True
+
+    # BG: Only rebuild if sample includes any stage parameters
+    duration_param_names = [
+        k
+        for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith("_duration_myr")
+    ]
+    stage_p_param_names = [
+        k
+        for k in sample_dict.keys()
+        if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+    ]
+
+    if len(duration_param_names) == 0 and len(stage_p_param_names) == 0:
+        return True  # nothing to do
+
+    template = params_local.get("ero_stages_template", None)
+    if template is None:
+        raise ValueError(
+            "BG: ero_type=0 stage inversion requires params['ero_stages_template'] "
+            "(raw YAML erosion_model.ero_stages)."
+        )
+
+    new_template = copy.deepcopy(template)
+
+    # ---- durations (NO balance) ----
+    if len(duration_param_names) > 0:
+        x_dur = [float(sample_dict[k]) for k in duration_param_names]
+        new_template = _apply_na_stage_durations(
+            new_template,
+            duration_param_names,
+            x_dur,
+            t_total_myr=float(params_local["t_total"]),
+            balance=False,  # BG: key choice for truncate/drop-to-zero behavior
+        )
+        if new_template is None:
+            return False
+
+    # ---- p1/p2/p3 ----
+    if len(stage_p_param_names) > 0:
+        x_p = [float(sample_dict[k]) for k in stage_p_param_names]
+        new_template = _apply_na_stage_params(
+            new_template,
+            stage_p_param_names,
+            x_p,
+        )
+
+    # BG: Parse and cache for forward model usage
+    params_local["ero_stages"] = read_ero_stages_from_yaml(new_template)
+    params_local["ero_total_stage_sec"] = sum(
+        st["dt_sec"] for st in params_local["ero_stages"]
+    )
+
+    return True
+
+
+def erosion_constant(t_local_myr: float, r_const: float) -> float:
+    """
+    BG: Constant erosion rate over a stage.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage, in Myr.
+    r_const : float
+        Constant erosion rate [km/Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr (always r_const).
+    """
+    return r_const
+
+
+def erosion_linear(
+    t_local_myr: float, r_start: float, r_end: float, dt_stage_myr: float
+) -> float:
+    """
+    BG: Linear change in erosion rate over a stage.
+
+    Rate evolves linearly from r_start (at t_local=0) to r_end
+    (at t_local = dt_stage_myr).
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Erosion rate at the start of the stage [km/Myr].
+    r_end : float
+        Erosion rate at the end of the stage [km/Myr].
+    dt_stage_myr : float
+        Duration of the stage [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if dt_stage_myr <= 0.0:
+        return r_start
+    t = min(max(t_local_myr, 0.0), dt_stage_myr)
+    return r_start + (r_end - r_start) * (t / dt_stage_myr)
+
+
+def erosion_exponential(
+    t_local_myr: float, r_start: float, r_target: float, tau_myr: float
+) -> float:
+    """
+    BG: Exponential change in erosion rate over a stage.
+
+    Rate follows an exponential relaxation from r_start towards r_target
+    with timescale tau_myr.
+
+    Parameters
+    ----------
+    t_local_myr : float
+        Time since the start of the stage [Myr].
+    r_start : float
+        Initial erosion rate at stage start [km/Myr].
+    r_target : float
+        Target erosion rate [km/Myr].
+    tau_myr : float
+        Characteristic timescale [Myr].
+
+    Returns
+    -------
+    float
+        Erosion rate [km/Myr] at t_local_myr.
+    """
+    if tau_myr <= 0.0:
+        return r_start
+    t = max(t_local_myr, 0.0)
+    return r_target + (r_start - r_target) * math.exp(-t / tau_myr)
+
+
 def calculate_erosion_rate(
     params,
     dt,
@@ -729,11 +1366,13 @@ def calculate_erosion_rate(
     fault_depth,
     moho_depth,
     fw_reference_frame,
+    mantle_velocity,
 ):
     """Defines the way in which erosion should be applied.
 
     Erosion model types:
 
+    0. Multi-stage erosion defined from the YAML input file (BG)
     1. Constant erosion rate
     2. Constant rate with a step-function change at a specified time
     3. Exponential decay
@@ -762,6 +1401,8 @@ def calculate_erosion_rate(
         Moho depth.
     fw_reference_frame : Boolean
         Reference frame for erosion_type 7.
+    mantle_velocity : numeric
+        Velocity for mantle movement in fixed-Moho models (mm/yr)
 
     Returns
     -------
@@ -778,9 +1419,101 @@ def calculate_erosion_rate(
     # Split the code below into separate functions?
     # Could have tests integrated more easily that way.
 
+    # BG: Normalize ero_type to a scalar int (CLI stores lists; YAML may also store lists).
+    ero_type = (
+        params["ero_type"][0]
+        if isinstance(params.get("ero_type", None), (list, tuple, np.ndarray))
+        else int(params["ero_type"])
+    )
+
+    # BG: Multi-stage erosion model (ero_type = 0)
+    if ero_type == 0:
+        # BG: Multi-stage erosion from YAML stages (ero_type=0).
+        stages = params.get("ero_stages", None)
+
+        # BG: YAML-only: ero_type=0 must provide erosion stages in params.
+        if not isinstance(stages, list) or len(stages) == 0:
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' in params (from YAML input file). "
+            )
+
+        if (
+            stages is not None
+            and (len(stages) > 0)
+            and isinstance(stages[0], dict)
+            and ("dt_sec" not in stages[0])
+        ):
+            # BG: YAML pathway: parse + validate stages once (raw YAML list -> internal stage dicts).
+            stages = read_ero_stages_from_yaml(stages)
+            params["ero_stages"] = (
+                stages  # BG: cache parsed stages to avoid re-parsing every timestep
+            )
+            params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in stages)
+
+        else:
+            # BG: stages already parsed/cached in params (dt_sec exists)
+            stages = params["ero_stages"]
+            if "ero_total_stage_sec" not in params:
+                params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in stages)
+
+        # 2) Find which stage we are currently in, using current_time [s]
+        t = current_time  # current model time [s] since start
+        t0 = 0.0
+        found = False
+
+        for i, st in enumerate(stages):
+            t1 = t0 + st["dt_sec"]
+            is_last = i == len(stages) - 1
+
+            if (t >= t0) and (t < t1 or (is_last and t <= t1)):
+                # Local time since stage start in Myr
+                t_local_myr = (t - t0) / myr2sec(1.0)
+
+                stage_type = st["type"]
+                dt_stage_myr = st["duration_myr"]
+                p = st["params"]
+
+                # 3) Compute instantaneous erosion rate [km/Myr] for this stage
+                if stage_type == "constant":
+                    rate_km_myr = erosion_constant(t_local_myr, p[0])
+
+                elif stage_type == "linear":
+                    rate_km_myr = erosion_linear(t_local_myr, p[0], p[1], dt_stage_myr)
+
+                elif stage_type == "exponential":
+                    rate_km_myr = erosion_exponential(t_local_myr, p[0], p[1], p[2])
+
+                else:
+                    raise ValueError(f"Unknown erosion stage type: {stage_type}")
+
+                found = True
+                break
+
+            t0 = t1
+
+        if not found:
+            # BG: If stages end before t_total, set erosion rate to zero after the last stage.
+            total_stage_sec = params.get(
+                "ero_total_stage_sec", sum(st["dt_sec"] for st in stages)
+            )
+            eps_sec = max(1.0e-6, 2.0 * abs(dt))
+
+            if t >= total_stage_sec - eps_sec:
+                rate_km_myr = 0.0
+            else:
+                raise ValueError(
+                    "current_time is outside erosion stages (unexpected). "
+                    "Check erosion stages durations and time handling."
+                )
+
+        # 4) Convert rate [km/Myr] to velocity [m/s]
+        vx_array[:] = mmyr2ms(rate_km_myr)
+        vx_surf = vx_array[0]
+        vx_max = abs(vx_surf)
+
     # Constant erosion rate
     # Convert to inputting rate directly?
-    if params["ero_type"] == 1:
+    elif params["ero_type"] == 1:
         vx_array[:] = kilo2base(params["ero_option1"]) / t_total
         vx_surf = vx_array[0]
         vx_max = vx_surf
@@ -942,12 +1675,12 @@ def calculate_erosion_rate(
     # Catch bad cases
     else:
         raise ValueError(
-            f"Bad erosion type: {params['ero_type']}. Must be between 1 and 7."
+            f"Bad erosion type: {params['ero_type']}. Must be 0 (multi-stage) or between 1 and 7."
         )
 
-    # Set velocities below Moho to 0.0 if using crustal uplift only
+    # Set velocities below Moho to mantle velocity if using crustal uplift only
     if params["crustal_uplift"]:
-        vx_array[x > moho_depth] = 0.0
+        vx_array[x > moho_depth] = mantle_velocity
 
     return vx_array, vx_surf, vx_max, fault_depth
 
@@ -965,14 +1698,99 @@ def calculate_exhumation_magnitude(
     ero_option9,
     ero_option10,
     t_total,
+    ero_stages=None,
 ):
-    """Calculates erosion magnitude in kilometers."""
+    """
+    Calculates total erosion / exhumation magnitude over the full model run.
+
+    For ero_type = 0 (YAML-defined multi-stage erosion), the magnitude is computed
+    by analytically integrating the erosion rate over each stage, using the
+    internal rate-based parameterization reconstructed by read_ero_stages_from_yaml().
+
+    If the total duration of erosion stages exceeds t_total, only the portion
+    within t_total is integrated. If stages are shorter than t_total, no erosion
+    is applied beyond the last stage.
+
+    Returns erosion magnitude in kilometers.
+    """
 
     # Initialize fw_ref_frame Boolean for ero types != 7
     fw_ref_frame = False
 
+    # BG: Normalize ero_type to scalar (CLI/YAML can pass list-like)
+    ero_type = (
+        ero_type[0]
+        if isinstance(ero_type, (list, tuple, np.ndarray))
+        else int(ero_type)
+    )
+
+    # BG: Multi-stage erosion from YAML stages (ero_type = 0)
+    if ero_type == 0:
+        stages = ero_stages
+        if not isinstance(stages, list) or len(stages) == 0:
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' (from YAML input file)."
+            )
+
+        if isinstance(stages[0], dict) and ("dt_sec" not in stages[0]):
+            stages = read_ero_stages_from_yaml(stages)
+
+        thickness_km = 0.0
+        # Convert total model time from seconds to Myr
+        t_total_myr = t_total / myr2sec(1.0)
+        remaining_myr = t_total_myr
+        total_stage_myr = sum(st["duration_myr"] for st in stages)
+
+        # BG: warn if stages extend beyond model time (magnitude will be truncated)
+        if total_stage_myr > t_total_myr + 1.0e-12:
+            warnings.warn(
+                "Sum of erosion stage durations exceeds t_total. "
+                "Exhumation magnitude will be computed only up to the model time (t_total).",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+
+        for st in stages:
+            dt_stage = st["duration_myr"]  # Myr
+            dt = min(dt_stage, remaining_myr)
+            if dt <= 0.0:
+                break
+
+            p = st["params"]
+            stage_type = st["type"]
+
+            if stage_type == "constant":
+                r_const = p[0]
+                thickness_km += r_const * dt
+
+            elif stage_type == "linear":
+                r_start, r_end = p[0], p[1]
+                # Integral of a linear erosion rate from r_start to r_end over dt
+                thickness_km += (
+                    r_start * dt + 0.5 * (r_end - r_start) * (dt**2) / dt_stage
+                )
+
+            elif stage_type == "exponential":
+                r_start, r_target, tau = p[0], p[1], p[2]
+                # Integral of r(t) = r_target + (r_start - r_target)*exp(-t/tau)
+                thickness_km += r_target * dt + (r_start - r_target) * tau * (
+                    1.0 - math.exp(-dt / tau)
+                )
+
+            else:
+                raise ValueError(f"Unknown stage erosion type: {stage_type}")
+
+            remaining_myr -= dt
+
+        if total_stage_myr < t_total_myr - 1.0e-12:
+            # BG: If stages are shorter than t_total, erosion is set to zero afterwards
+            # (no additional exhumation beyond what is prescribed in the file).
+            pass
+
+        magnitude = thickness_km
+
     # Constant erosion rate
-    if ero_type == 1:
+    elif ero_type == 1:
         magnitude = ero_option1
 
     elif ero_type == 2:
@@ -1055,7 +1873,9 @@ def calculate_exhumation_magnitude(
         magnitude /= kilo2base(1.0)
 
     else:
-        raise ValueError(f"Bad erosion type: {ero_type}. Must be between 1 and 7.")
+        raise ValueError(
+            f"Bad erosion type: {ero_type}. Must be 0 (multi-stage) or between 1 and 7."
+        )
 
     # Return values in km
     return magnitude, fw_ref_frame
@@ -1326,6 +2146,7 @@ def read_age_data_file(file, params):
                 depo_age[np_index] = 0.0
 
         # Sort arrays in reverse order using depositional ages (if there are nonzero depo ages)
+        # TODO: Make this a function?
         if depo_age.any() > 0.0:
             rev_depo_indices = np.argsort(depo_age)[::-1]
             age_type = age_type[rev_depo_indices]
@@ -1438,6 +2259,7 @@ def init_params(
     ero_option8=0.0,
     ero_option9=0.0,
     ero_option10=0.0,
+    mantle_velocity=0.0,
     calc_ages=True,
     ketch_aft=True,
     madtrax_aft=False,
@@ -1462,11 +2284,27 @@ def init_params(
     obs_age_file="",
     misfit_num_params=0,
     misfit_type=1,
+    # BG: Neighbourhood Algorithm (NA) parameters
+    na_ns=24,  # BG: samples per iteration (default: 24)
+    na_nr=12,  # BG: number of Voronoi cells to resample (default: 12)
+    na_ni=50,  # BG: size of initial random search (default: 50)
+    na_n=6,  # BG: number of NA iterations (default: 6)
+    na_n_resample=2000,  # BG: NA appraiser - total new samples
+    na_n_walkers=5,  # BG: NA appraiser - parallel walkers
+    # BG: MCMC (emcee) parameters
+    mcmc_nwalkers=30,  # BG: number of walkers in the ensemble (default: 30)
+    mcmc_nsteps=150,  # BG: number of steps per walker (default: 150)
+    mcmc_discard=50,  # BG: burn-in steps to discard (default: 50)
+    mcmc_thin=3,  # BG: thinning factor (default: 3)
     plot_results=True,
     display_plots=True,
     plot_ma=True,
     plot_depth_history=False,
     plot_fault_depth_history=False,
+    plot_density=False,
+    plot_elevation_history=False,
+    plot_peclet_number=False,
+    plot_ft_length_dist=False,
     invert_tt_plot=False,
     t_plots=[0.1, 1, 5, 10, 20, 30, 50],
     crust_solidus=False,
@@ -1568,7 +2406,7 @@ def init_params(
     vx_init : float or int, default=0.0
         Initial steady-state advection velocity in mm/yr.
     ero_type : int, default=1
-        Type of erosion model (1, 2, 3, 4, 5, 6, 7 - see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+        Type of erosion model (0, 1, 2, 3, 4, 5, 6, 7 - see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option1 : float or int, default=0.0
         Erosion model option 1 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option2 : float or int, default=0.0
@@ -1589,6 +2427,8 @@ def init_params(
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option10 : float or int, default=0.0
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+    mantle_velocity : float or int, default=0.0
+        Velocity for mantle movement in fixed-Moho models (mm/yr)
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
@@ -1647,6 +2487,14 @@ def init_params(
         Plot depth history on thermal history plot.
     plot_fault_depth_history : bool, default=False
         Plot fault depth history on thermal history plot.
+    plot_density : bool, default=False
+        Plot density beside geotherms plot.
+    plot_elevation_history : bool, default=False
+        Plot surface elevation history.
+    plot_peclet_number : bool, default=False
+        Plot Peclet number on erosion history plot.
+    plot_ft_length_dist : bool, default=False
+        Plot apatite fission-track length distribution.
     invert_tt_plot : bool, default=False
         Invert depth/temperature axis on thermal history plot.
     t_plots : list of float or int, default=[0.1, 1, 5, 10, 20, 30, 50]
@@ -1698,9 +2546,13 @@ def init_params(
         "plot_ma": plot_ma,
         "plot_depth_history": plot_depth_history,
         "plot_fault_depth_history": plot_fault_depth_history,
+        "plot_density": plot_density,
+        "plot_elevation_history": plot_elevation_history,
+        "plot_peclet_number": plot_peclet_number,
+        "plot_ft_length_dist": plot_ft_length_dist,
         "invert_tt_plot": invert_tt_plot,
         "run_type": run_type,
-        # Batch mode not supported when called as a function
+        # Batch mode defaults to false and will set itself true if batch parameters exist
         "batch_mode": False,
         # Inverse mode not supported when called as a function
         "inverse_mode": False,
@@ -1735,6 +2587,7 @@ def init_params(
         "ero_option8": ero_option8,
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
+        "mantle_velocity": mantle_velocity,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
         "t_total": time,
@@ -1778,6 +2631,18 @@ def init_params(
         "obs_age_file": obs_age_file,
         "misfit_num_params": misfit_num_params,
         "misfit_type": misfit_type,
+        # BG: Neighbourhood Algorithm (NA) hyper-parameters
+        "na_ns": na_ns,  # BG: NA - samples per iteration
+        "na_nr": na_nr,  # BG: NA - cells to resample
+        "na_ni": na_ni,  # BG: NA - initial random search size
+        "na_n": na_n,  # BG: NA - number of iterations
+        "na_n_resample": na_n_resample,  # BG: NA appraiser - total new samples
+        "na_n_walkers": na_n_walkers,  # BG: NA appraiser - parallel walkers
+        # BG: MCMC (emcee) hyper-parameters
+        "mcmc_nwalkers": mcmc_nwalkers,  # BG: MCMC - number of walkers
+        "mcmc_nsteps": mcmc_nsteps,  # BG: MCMC - steps per walker
+        "mcmc_discard": mcmc_discard,  # BG: MCMC - burn-in steps to discard
+        "mcmc_thin": mcmc_thin,  # BG: MCMC - thinning factor
         "log_output": log_output,
         "log_file": log_file,
         "model_id": model_id,
@@ -1851,6 +2716,7 @@ def prep_model(params):
         "ero_option8",
         "ero_option9",
         "ero_option10",
+        "mantle_velocity",
         "mantle_adiabat",
         "rho_crust",
         "cp_crust",
@@ -1973,9 +2839,9 @@ def log_output(params, batch_mode=False):
     # Define log file name if undefined
     if params["log_file"] == "":
         if batch_mode:
-            params["log_file"] = "TC1D_batch_log.csv"
+            params["log_file"] = "tc1d_batch_log.csv"
         else:
-            params["log_file"] = "TC1D_run_log.csv"
+            params["log_file"] = "tc1d_run_log.csv"
 
     # Create output file path
     outfile = wd / "csv" / params["log_file"]
@@ -2010,11 +2876,11 @@ def log_output(params, batch_mode=False):
                 "Mantle removal end time (Ma),Erosion model type,Erosion model option 1,"
                 "Erosion model option 2,Erosion model option 3,Erosion model option 4,Erosion model option 5,"
                 "Erosion model option 6,Erosion model option 7,Erosion model option 8,"
-                "Erosion model option 9,Erosion model option 10,"
+                "Erosion model option 9,Erosion model option 10,Mantle velocity (mm/yr),"
                 "Initial Moho depth (km),Initial Moho temperature (C),"
-                "Initial surface heat flow (mW m^-2),Initial surface elevation (km),"
+                "Initial surface heat flow (mW m^-2),Initial surface elevation (km),Initial dimensionless heat production,"
                 "Final Moho depth (km),Final Moho temperature (C),Final surface heat flow (mW m^-2),"
-                "Final surface elevation (km),Total exhumation (km),Apatite grain radius (um),Apatite U "
+                "Final surface elevation (km),Final dimensionless heat production,Total exhumation (km),Average Peclet number,Minimum Peclet number, Maximum Peclet number,Apatite grain radius (um),Apatite U "
                 "concentration (ppm), Apatite Th concentration (ppm),Zircon grain radius (um),Zircon U "
                 "concentration (ppm), Zircon Th concentration (ppm),Predicted apatite (U-Th)/He age (Ma),"
                 "Predicted apatite (U-Th)/He closure temperature (C),Measured apatite (U-Th)/He age (Ma),"
@@ -2074,7 +2940,7 @@ def batch_run(params, batch_params):
                     f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                     f"{params['removal_end_time']:.4f},"
                     f"{params['ero_type']},{params['ero_option1']:.4f},"
-                    f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['init_moho_depth']:.4f},,,,,,,,,{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
+                    f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['mantle_velocity']:.4f},{params['init_moho_depth']:.4f},,,,,,,,,,,,,,{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
                     f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},{params['zr_thorium']:.4f},,,,,,,,,,,,,,,\n"
                 )
             failed += 1
@@ -2093,11 +2959,75 @@ def batch_run_na(params, batch_params):
     print(f"{27 * '-'} Starting NA inverse mode {27 * '-'}\n")
     exec_start = time.time()
 
+    # BG: robust ero_type scalar for NA (CLI often stores lists)
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
     # Objective function to be minimised, run for misfit
     def objective(x):
         # Map sampled values x to the corresponding parameter names
-        for key, value in zip(filtered_params, x):
+        for key, value in zip(param_names, x):
             filtered_params[key] = value
+
+        # ------------------------------------------------------------
+        # BG: If NA is inverting YAML ero_type=0 stage durations and/or p1/p2/p3,
+        # rebuild params['ero_stages'] (parsed)
+        # ------------------------------------------------------------
+        duration_param_names = [
+            k
+            for k in param_names
+            if k.startswith("ero_stage") and k.endswith("_duration_myr")
+        ]
+
+        stage_p_param_names = [
+            k
+            for k in param_names
+            if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+        ]
+
+        if ero_type0 and (
+            len(duration_param_names) > 0 or len(stage_p_param_names) > 0
+        ):
+            # BG: start from raw YAML template
+            new_template = copy.deepcopy(params["ero_stages_template"])
+
+            # ---- durations (with balance) ----
+            if len(duration_param_names) > 0:
+                x_dur = [filtered_params[k] for k in duration_param_names]
+
+                new_template = _apply_na_stage_durations(
+                    new_template,  # raw YAML template
+                    duration_param_names,
+                    x_dur,
+                    t_total_myr=float(params["t_total"]),
+                    balance=True,
+                )
+
+                # BG: reject invalid duration combinations (no crash)
+                if new_template is None:
+                    return 1e9
+
+            # ---- p1/p2/p3 ----
+            if len(stage_p_param_names) > 0:
+                x_p = [filtered_params[k] for k in stage_p_param_names]
+                new_template = _apply_na_stage_params(
+                    new_template,
+                    stage_p_param_names,
+                    x_p,
+                )
+
+            # Parsed stages used by the forward model
+            params["ero_stages"] = read_ero_stages_from_yaml(new_template)
+            params["ero_total_stage_sec"] = sum(
+                st["dt_sec"] for st in params["ero_stages"]
+            )
+
+            # Optional: keep for debug
+            # params["ero_stages_current_template"] = new_template
 
         # BG: Get erosion parameters with default fallback from global params
         ero1 = filtered_params.get("ero_option1", params.get("ero_option1", 0.0))
@@ -2146,7 +3076,21 @@ def batch_run_na(params, batch_params):
             print("Rejected: model would place the sample above surface.")
             return 1e10  # Or some large misfit to reject the model
 
-        misfit = run_model(params)
+        # ------------------------------------------------------------
+        # BG: Silence forward-model verbosity during NA evaluations
+        # by forcing batch_mode=True just for this run_model() call.
+        # This prevents printing:
+        #   --- Calculating initial thermal model ---
+        #   --- Calculating transient thermal model ---
+        #   - Step ...
+        # ------------------------------------------------------------
+        _prev_batch_mode = params.get("batch_mode", False)
+        params["batch_mode"] = True
+        try:
+            misfit = run_model(params)
+        finally:
+            params["batch_mode"] = _prev_batch_mode
+
         print(f"The current misfit is: {misfit}\n")
         return misfit
 
@@ -2173,16 +3117,51 @@ def batch_run_na(params, batch_params):
         if len(value) > 1:
             filtered_params[key] = value
 
-    # Bounds of the parameter space
-    bounds = list(filtered_params.values())
+    # ------------------------------------------------------------
+    # BG: Add NA bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: NA duration inversion requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
 
-    # Initialize NA searcher
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+
+        # Merge duration bounds into filtered_params (do not overwrite)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: Add NA bounds for YAML ero_type=0 stage p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+
+        # Merge param bounds into filtered_params
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: NA param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: freeze parameter order once for NA mapping (critical)
+    param_names = list(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
+
+    # BG: Read Neighbourhood Algorithm (NA) parameters from params
+    na_ns = int(params["na_ns"])  # BG: NA - samples per iteration
+    na_nr = int(params["na_nr"])  # BG: NA - number of Voronoi cells to resample
+    na_ni = int(params["na_ni"])  # BG: NA - size of initial random search
+    na_n = int(params["na_n"])  # BG: NA - number of NA iterations
+
+    # Initialize NA searcher (BG: controlled by CLI flags)
     searcher = NASearcher(
         objective,
-        ns=8,  # 16 #100, # number of samples per iteration #10
-        nr=4,  # 8 #10, # number of cells to resample #1
-        ni=20,  # 100, # size of initial random search #1
-        n=5,  # 20, # number of iterations #1
+        ns=na_ns,
+        nr=na_nr,
+        ni=na_ni,
+        n=na_n,
         bounds=bounds,
     )
 
@@ -2239,12 +3218,17 @@ def batch_run_na(params, batch_params):
 
         i[:] = [param_dict[k] for k in filtered_params.keys()]
 
+    # BG: Read NA appraiser settings from params (BG)
+    na_n_resample = int(params["na_n_resample"])  # BG: total new samples
+    na_n_walkers = int(params["na_n_walkers"])  # BG: parallel walkers
+
+    # Initialize NA appraiser (BG: controlled by CLI flags)
     appraiser = NAAppraiser(
         initial_ensemble=searcher.samples,  # points of parameter space already sampled
         log_ppd=-searcher.objectives,  # objective function values
         bounds=bounds,
-        n_resample=2000,  # number of desired new samples #100
-        n_walkers=5,  # number of parallel walkers #1
+        n_resample=na_n_resample,  # BG: number of desired new samples
+        n_walkers=na_n_walkers,  # BG: number of parallel walkers
     )
 
     appraiser.run()  # Results stored in appraiser.samples
@@ -2256,6 +3240,45 @@ def batch_run_na(params, batch_params):
     # BG: Safely extract best parameter set using param names
     best = searcher.samples[np.argmin(searcher.objectives)]
     best_dict = dict(zip(filtered_params.keys(), best))
+
+    # ------------------------------------------------------------
+    # BG: Rebuild ero_stages for best model if durations, p1, p2, p3 are inverted
+    # ------------------------------------------------------------
+    duration_param_names = [
+        k
+        for k in param_names
+        if k.startswith("ero_stage") and k.endswith("_duration_myr")
+    ]
+    stage_p_param_names = [
+        k
+        for k in param_names
+        if k.startswith("ero_stage") and k.endswith(("_p1", "_p2", "_p3"))
+    ]
+
+    if ero_type0 and (len(duration_param_names) > 0 or len(stage_p_param_names) > 0):
+        new_template_best = copy.deepcopy(params["ero_stages_template"])
+
+        if len(duration_param_names) > 0:
+            x_dur_best = [best_dict[k] for k in duration_param_names]
+            new_template_best = _apply_na_stage_durations(
+                new_template_best,
+                duration_param_names,
+                x_dur_best,
+                t_total_myr=float(params["t_total"]),
+                balance=True,
+            )
+
+        if len(stage_p_param_names) > 0:
+            x_p_best = [best_dict[k] for k in stage_p_param_names]
+            new_template_best = _apply_na_stage_params(
+                new_template_best,
+                stage_p_param_names,
+                x_p_best,
+            )
+
+        params["ero_stages"] = read_ero_stages_from_yaml(new_template_best)
+        params["ero_total_stage_sec"] = sum(st["dt_sec"] for st in params["ero_stages"])
+
     ero1 = best_dict.get("ero_option1", 0.0)
     # FIXME: Delete line below???
     ero3 = best_dict.get("ero_option3", 0.0)
@@ -2546,6 +3569,38 @@ def log_prior(x):
         if not (low <= val <= high):
             return -np.inf
 
+    # BG: robust ero_type scalar
+    ero_type_val = global_params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
+    # BG: For ero_type=0, skip ero_option* cumulative constraints
+    # BG: (they apply to ero_type>0 only).
+    # BG: Apply only stage-based constraints (e.g., sum of sampled stage durations <= t_total).
+    if ero_type0:
+        # Reject samples where sum(duration) > t_total
+        t_total = global_params.get("t_total", 0.0)
+        t_total = float(
+            t_total[0] if isinstance(t_total, (list, tuple, np.ndarray)) else t_total
+        )
+
+        param_dict = dict(zip(global_param_names, x))
+
+        # BG: collect all sampled stage durations automatically
+        durs = [
+            float(v)
+            for k, v in param_dict.items()
+            if isinstance(k, str) and k.endswith("_duration_myr")
+        ]
+
+        if durs and sum(durs) > t_total:
+            return -np.inf
+
+        return 0.0
+
     param_dict = dict(zip(global_param_names, x))
     ero1 = param_dict.get("ero_option1", global_params.get("ero_option1", 0.0))
     ero3 = param_dict.get("ero_option3", global_params.get("ero_option3", 0.0))
@@ -2581,7 +3636,7 @@ def log_prior(x):
         if not (lower <= ero9 <= upper):
             return -np.inf
 
-    # Total thickness must remain ≥ 0 km (cannot end above surface)
+    # Total thickness must remain >= 0 km (cannot end above surface)
     cumulative = ero1 + ero3 + ero5 + ero7 + ero9
     if cumulative < 0.0:
         return -np.inf
@@ -2592,22 +3647,53 @@ def log_prior(x):
 def log_likelihood(x):
     param_dict = dict(zip(global_param_names, x))
     new_dict = {}
+
     for k, v in param_dict.items():
         try:
             new_dict[k] = float(v[0]) if isinstance(v, list) else float(v)
         except (ValueError, TypeError):
             print(f"[WARNING] Could not convert {k}={v} to float.")
             return -np.inf
+
     params_local = copy.deepcopy(global_params)
     params_local.update(new_dict)
+
+    # BG: Force MCMC/inverse context (safety belt)
+    params_local["inverse_mode"] = True
+    params_local["run_type"] = "mcmc"
+
     cleaned_dict = {k: float(v) for k, v in new_dict.items()}
     print(f"[MCMC] Testing params: {cleaned_dict}")
+
+    # BG: Rebuild YAML ero_type=0 stages if stage params are sampled in this MCMC step
+    ok = _rebuild_ero_stages_from_sample(params_local, cleaned_dict)
+    if not ok:
+        return -np.inf
+
     try:
-        misfit = run_model(params_local)
+        # BG: Silence forward-model verbosity during MCMC evaluations
+        _prev_batch_mode = params_local.get("batch_mode", False)
+        params_local["batch_mode"] = True
+        try:
+            misfit = run_model(params_local)
+        finally:
+            params_local["batch_mode"] = _prev_batch_mode
+
+        if not np.isfinite(misfit):
+            return -np.inf
+
         print(f"Misfit: {misfit}")
-        return -misfit
+
+        # BG: Standard Gaussian log-likelihood assuming independent normal
+        # BG: errors and using chi-square misfit.
+        return -0.5 * misfit
+
     except Exception as e:
         print(f"[ERROR] run_model failed: {e}")
+        if params_local.get("debug", False):
+            import traceback
+
+            traceback.print_exc()
         return -np.inf
 
 
@@ -2615,7 +3701,11 @@ def log_probability(x):
     lp = log_prior(x)
     if not np.isfinite(lp):
         return -np.inf
+
     ll = log_likelihood(x)
+    if not np.isfinite(ll):
+        return -np.inf
+
     return lp + ll
 
 
@@ -2627,24 +3717,78 @@ def batch_run_mcmc(params, batch_params):
     # print("--- Starting MCMC inverse mode ---\n")
     log_output(params, batch_mode=True)
 
-    # FIXME: Are the lines below needed???
-    param_list = list(ParameterGrid(batch_params))
-    # print(f"--- Starting batch processor for {len(param_list)} models ---\n")
-    # success = 0
-    # failed = 0
+    # ------------------------------------------------------------
+    # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
+    #     The previous code only used ParameterGrid(batch_params)[0] to
+    #     inject fixed values into `params`. We preserve the same intent
+    #     without building an unnecessary cartesian product.
+    # ------------------------------------------------------------
 
-    # BG: Extract parameters with more than one value (i.e., varied ones) to define search space
-    filtered_params = {k: v for k, v in batch_params.items() if len(v) > 1}
-    bounds = list(filtered_params.values())
-    param_names = list(filtered_params.keys())
+    # BG: Extract parameters with more than one value (i.e., varied ones)
+    #     These define the MCMC search space (bounds).
+    filtered_params = {
+        k: v
+        for k, v in batch_params.items()
+        if isinstance(v, (list, tuple, np.ndarray)) and len(v) > 1
+    }
+
+    # BG: Inject fixed batch params (scalars or singletons) into base `params`.
+    #     This preserves the previous behavior where the "first grid point"
+    #     was used as the base model for non-inverted params.
+    for k, v in batch_params.items():
+        if isinstance(v, (list, tuple, np.ndarray)):
+            if len(v) == 1:
+                params[k] = v[0]
+        else:
+            params[k] = v
+
+    # BG: ero_type scalar for MCMC
+    ero_type_val = params.get("ero_type", None)
+    ero_type0 = (
+        ero_type_val[0]
+        if isinstance(ero_type_val, (list, tuple, np.ndarray))
+        else ero_type_val
+    ) == 0
+
+    # ------------------------------------------------------------
+    # BG: Add MCMC bounds for YAML ero_type=0 stage durations and/or p1/p2/p3
+    #     (same conservative logic as NA)
+    # ------------------------------------------------------------
+    if ero_type0:
+        ero_stages_template = params.get("ero_stages_template", None)
+        if ero_stages_template is None:
+            raise ValueError(
+                "BG: MCMC inversion for ero_type=0 requires params['ero_stages_template'] "
+                "(raw YAML erosion_model.ero_stages)."
+            )
+
+        # BG: duration_myr bounds -> ero_stageXX_duration_myr
+        duration_bounds = _collect_ero_stage_duration_bounds(ero_stages_template)
+        for k, v in duration_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+        # BG: p1/p2/p3 bounds -> ero_stageXX_p1/p2/p3
+        param_bounds = _collect_ero_stage_param_bounds(ero_stages_template)
+        for k, v in param_bounds.items():
+            if k in filtered_params:
+                raise ValueError(f"BG: MCMC param name conflict for {k}.")
+            filtered_params[k] = v
+
+    # BG: Keep deterministic ordering for reproducibility and safer x<->name mapping
+    param_names = sorted(filtered_params.keys())
+    bounds = [filtered_params[k] for k in param_names]
+
     ndim = len(param_names)  # Number of parameters to invert
-    max_exhumation = 35.0  # BG: Maximum total exhumation constraint
-    max_burial = 15.0
+    if ndim == 0:
+        raise ValueError(
+            "BG: MCMC requires at least one parameter range to invert (ndim=0)."
+        )
 
-    # BG: Use the first parameter set to update the base parameters
-    model = param_list[0]  # BG: Start from the first parameter combination
-    for key in batch_params:
-        params[key] = model[key]
+    # BG: Conservative physical constraints (prior guards)
+    max_exhumation = 35.0  # km (or equivalent model unit, consistent with your prior)
+    max_burial = 15.0  # km (or equivalent model unit)
 
     # BG: Set global variables for MPI pickling compatibility
     global \
@@ -2655,15 +3799,20 @@ def batch_run_mcmc(params, batch_params):
         global_max_burial
     global_bounds = bounds
     global_param_names = param_names
-    global_params = params
+    global_params = copy.deepcopy(params)
     global_max_exhumation = max_exhumation
     global_max_burial = max_burial
 
     # BG: MCMC setup - number of walkers and initial positions sampled from uniform priors
-    nwalkers = 16
-    nsteps = 200
-    discard = 30
-    thin = 3
+    mcmc_nwalkers = int(params["mcmc_nwalkers"])  # BG: number of walkers
+    mcmc_nsteps = int(params["mcmc_nsteps"])  # BG: steps per walker
+    mcmc_discard = int(params["mcmc_discard"])  # BG: burn-in steps
+    mcmc_thin = int(params["mcmc_thin"])  # BG: thinning factor
+
+    nwalkers = mcmc_nwalkers
+    nsteps = mcmc_nsteps
+    discard = mcmc_discard
+    thin = mcmc_thin
 
     p0 = [
         [np.random.uniform(low, high) for (low, high) in bounds]
@@ -2686,61 +3835,82 @@ def batch_run_mcmc(params, batch_params):
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
         exec_start = time.time()
 
-    # BG: Create the sampler and run the MCMC
+    # BG: Build sampler (optionally parallelized with an emcee pool)
     sampler = emcee.EnsembleSampler(
         nwalkers=nwalkers,
         ndim=ndim,
         log_prob_fn=log_probability,
         pool=pool,
     )
-    sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
-    if pool is not None:
-        pool.close()
 
-    # BG: Post-processing with legacy-compatible attributes
-    chain = sampler.chain
-    log_probs = sampler.lnprobability
+    # BG: Always close the pool, even if the MCMC run errors out
+    try:
+        sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
+    finally:
+        if pool is not None:
+            pool.close()
 
-    # BG: Flatten chains manually (legacy emcee version does not support .get_chain())
+    # BG: Post-processing compatible with emcee v2 and v3
+    if hasattr(sampler, "get_chain"):
+        # emcee v3 returns (nsteps, nwalkers, ndim) -> convert to (nwalkers, nsteps, ndim)
+        chain = sampler.get_chain()
+        chain = np.transpose(chain, (1, 0, 2))
+
+        log_probs = sampler.get_log_prob()
+        log_probs = np.transpose(log_probs, (1, 0))
+    else:
+        # emcee v2 returns (nwalkers, nsteps, ndim) directly
+        chain = sampler.chain
+        log_probs = sampler.lnprobability
+
+    # BG: Flatten chains after burn-in and thinning
     flat_samples = chain[:, discard::thin, :].reshape(-1, ndim)
     flat_log_probs = log_probs[:, discard::thin].reshape(-1)
 
+    if flat_log_probs.size == 0:
+        raise RuntimeError(
+            "No valid samples after burn-in/thinning. Aborting analysis."
+        )
+
+    # BG: With the current uniform hard-bound prior, valid samples have log_prior = 0,
+    # BG: so log_probability = log_likelihood = -0.5 * misfit.
+    # BG: This allows exact reconstruction of the chi-square misfit from flat_log_probs.
+    flat_misfits = -2.0 * flat_log_probs
+
     # Write sample results to file
     outfile = wd / "csv" / "mcmc_searcher_results.csv"
-    header = param_names + ["log probability"]
-    combined_array = np.column_stack((flat_samples, flat_log_probs))
+    header = param_names + ["log_probability", "misfit"]
+    combined_array = np.column_stack((flat_samples, flat_log_probs, flat_misfits))
     with open(outfile, "w") as f:
         writer = csv.writer(f)
         writer.writerow(header)
         writer.writerows(combined_array)
 
-    # BG: Check if any valid samples remain after burn-in
-    if len(log_probs) == 0:
-        raise RuntimeError("No valid samples after burn-in. Aborting analysis.")
-
-    # BG: Identify and print the best parameter set (lowest misfit)
-    best_idx = np.argmax(flat_log_probs)
+    # BG: Identify and print the best parameter set (minimum misfit)
+    best_idx = np.argmin(flat_misfits)
     best = flat_samples[best_idx]
-    best_dict = dict(zip(param_names, best))  # Manquait ici
+    best_dict = dict(zip(param_names, best))
     print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
+    print(f"Best misfit: {float(flat_misfits[best_idx])}")
+    print(f"Best log probability: {float(flat_log_probs[best_idx])}")
 
     # Stop timer before displaying plots if plots are to be displayed
     if params["display_plots"]:
         exec_end = time.time()
 
-    # BG: Plot evolution of misfit values
+    # BG: Plot evolution of negative log-posterior values
     plt.figure()
     neg_log_probs = -flat_log_probs
     plt.plot(neg_log_probs, ".", markersize=2)
     plt.scatter(best_idx, neg_log_probs[best_idx], c="g", s=10)
     plt.xlabel("Sample Index")
-    plt.ylabel("Misfit")
-    plt.title("MCMC Misfit Values")
+    plt.ylabel(r"$-\log P$")
+    plt.title("MCMC Negative Log-Posterior Values")
     plt.yscale("log")
     if params["save_plots"]:
-        savefile = wd / "png" / "mcmc_misfit.png"
+        savefile = wd / "png" / "mcmc_neg_log_posterior.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC misfit plot written to {savefile}")
+        print(f"- MCMC negative log-posterior plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -2761,6 +3931,23 @@ def batch_run_mcmc(params, batch_params):
         savefile = wd / "png" / "mcmc_chains.png"
         plt.savefig(savefile, dpi=300)
         print(f"- MCMC chain plot written to {savefile}")
+    if params["display_plots"]:
+        plt.show()
+    else:
+        plt.close()
+
+    # BG: Plot evolution of misfit values
+    plt.figure()
+    plt.plot(flat_misfits, ".", markersize=2)
+    plt.scatter(best_idx, flat_misfits[best_idx], c="g", s=10)
+    plt.xlabel("Sample Index")
+    plt.ylabel("Misfit")
+    plt.title("MCMC Misfit Values")
+    plt.yscale("log")
+    if params["save_plots"]:
+        savefile = wd / "png" / "mcmc_misfit.png"
+        plt.savefig(savefile, dpi=300)
+        print(f"- MCMC misfit plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -2793,7 +3980,7 @@ def batch_run_mcmc(params, batch_params):
         ax_histx = fig.add_subplot(gs[0, :-1], sharex=ax)
         ax_histy = fig.add_subplot(gs[1:, -1], sharey=ax)
 
-        sc = ax.scatter(x, y, c=neg_log_probs, cmap="viridis", marker="x")
+        sc = ax.scatter(x, y, c=flat_misfits, cmap="viridis", marker="x")
         ax.scatter(best[i], best[j], color="red", marker="x", label="Best")
         ax.set_xlabel(param_names[i])
         ax.set_ylabel(param_names[j])
@@ -2866,9 +4053,57 @@ def run_model(params):
     # Create coordinates of the grid points
     x = np.linspace(0, max_depth, params["nx"])
     xstag = x[:-1] + dx / 2
+
+    # Create arrays for velocity history, peclet numbers, fault depth history
     vx_hist = np.zeros(nt)
+    peclet = np.zeros(nt)
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
+
+    # BG: Preload multi-stage erosion stages from YAML (ero_type = 0)
+    ero_type = (
+        params["ero_type"][0]
+        if isinstance(params.get("ero_type", None), (list, tuple))
+        else int(params["ero_type"])
+    )
+
+    if ero_type == 0:
+        stages = params.get("ero_stages", None)
+        if stages is None or (isinstance(stages, list) and len(stages) == 0):
+            raise ValueError(
+                "BG: ero_type=0 requires 'ero_stages' from YAML input file."
+            )
+
+        # BG: Parse once if raw YAML (no dt_sec), otherwise assume already parsed
+        if (
+            isinstance(stages, list)
+            and len(stages) > 0
+            and isinstance(stages[0], dict)
+            and ("dt_sec" not in stages[0])
+        ):
+            stages = read_ero_stages_from_yaml(stages)
+            params["ero_stages"] = stages  # cache parsed
+
+        # BG: Validate total duration vs t_total (seconds)
+        total_stage_sec = sum(st["dt_sec"] for st in params["ero_stages"])
+        eps_sec = max(
+            1.0e-6, 2.0 * dt
+        )  # dt is model timestep [s] (already converted in run_model)
+
+        if total_stage_sec > t_total + eps_sec:
+            total_stage_myr = total_stage_sec / myr2sec(1.0)
+            t_total_myr = t_total / myr2sec(1.0)
+
+            warnings.warn(
+                f"The cumulative erosion duration ({total_stage_myr:.2f} Myr) "
+                f"exceeds the model time ({t_total_myr:.2f} Myr).\n"
+                "Tc1D will apply erosion stages only until the model end time. "
+                "Any erosion defined after this time will be ignored.",
+                RuntimeWarning,
+            )
+
+        # Total duration of all erosion stages (seconds), used for tail handling
+        params["ero_total_stage_sec"] = total_stage_sec
 
     # Calculate exhumation magnitude
     exhumation_magnitude, fw_reference_frame = calculate_exhumation_magnitude(
@@ -2884,7 +4119,15 @@ def run_model(params):
         params["ero_option9"],
         params["ero_option10"],
         t_total,
+        params["ero_stages"],
     )
+
+    # Ensure that initial moho depth is greater than exhumation magnitude if using crustal uplift
+    if params["crustal_uplift"]:
+        if exhumation_magnitude > params["init_moho_depth"]:
+            raise ValueError(
+                f"Exhumation magnitude ({exhumation_magnitude:.1f} km) exceeds initial Moho depth ({params['init_moho_depth']} km)."
+            )
 
     # Create velocity arrays for heat transfer
     vx_init = np.zeros(len(x))
@@ -2943,6 +4186,7 @@ def run_model(params):
         kilo2base(params["ero_option4"]),
         moho_depth,
         fw_reference_frame,
+        mmyr2ms(params["mantle_velocity"]),
     )
 
     # Define final fault depth for erosion model 7
@@ -3029,16 +4273,23 @@ def run_model(params):
             obs_zft_depo_indices = np.intersect1d(obs_zft_indices, obs_nz_depo_indices)
 
             # Update indices of different age types to remove samples with nonzero depositional ages
-            obs_ahe_indices = np.intersect1d(obs_ahe_indices, obs_zero_depo_indices)
-            obs_aft_indices = np.intersect1d(obs_aft_indices, obs_zero_depo_indices)
-            obs_zhe_indices = np.intersect1d(obs_zhe_indices, obs_zero_depo_indices)
-            obs_zft_indices = np.intersect1d(obs_zft_indices, obs_zero_depo_indices)
+            # FIXME: Should this be skipped to not exclude depo ages from final plots?
+            # obs_ahe_indices = np.intersect1d(obs_ahe_indices, obs_zero_depo_indices)
+            # obs_aft_indices = np.intersect1d(obs_aft_indices, obs_zero_depo_indices)
+            # obs_zhe_indices = np.intersect1d(obs_zhe_indices, obs_zero_depo_indices)
+            # obs_zft_indices = np.intersect1d(obs_zft_indices, obs_zero_depo_indices)
 
             if params["debug"]:
                 print(f"\n{num_file_ages} ages read from data file.")
 
         # Create array of past ages at which ages should be calculated, if not zero
         if len(obs_unique_depo_ages) > 0:
+            # Issue warning about depositional ages being experimental
+            warnings.warn(
+                "Support for depositional ages is experimental and may produce unexpected results.",
+                stacklevel=2,
+            )
+
             # Issue warning if trying to use depositional ages and a past age increment
             if params["past_age_increment"] > 0.0:
                 warnings.warn(
@@ -3129,6 +4380,33 @@ def run_model(params):
     # Calculate initial heat flow
     init_heat_flow = calculate_heat_flow(temp_init, k, dx)
 
+    # Calculate initial Peclet number
+    if params["ero_type"] == 7:
+        warnings.warn(
+            f"Peclet number calculation is not yet supported for ero_type {params['ero_type']}. A value of -1.0 will be reported.",
+            stacklevel=2,
+        )
+    init_peclet = calculate_peclet_number(
+        params["ero_type"],
+        vx,
+        x,
+        xstag,
+        k,
+        rho,
+        cp,
+        moho_depth,
+        max_depth,
+        params["crustal_uplift"],
+    )
+
+    # Calculate initial dimensionless heat production
+    init_nd_hp = calculate_nd_heat_prod(
+        heat_prod,
+        k,
+        params["temp_base"],
+        max_depth,
+    )
+
     # Echo thermal model values
     if params["echo_thermal_info"]:
         print(f"- Initial surface heat flow: {init_heat_flow:.1f} mW/m^2")
@@ -3137,6 +4415,8 @@ def run_model(params):
         print(
             f"- Initial LAB depth: {(max_depth - removal_thickness) / kilo2base(1):.1f} km"
         )
+        print(f"- Initial Peclet number: {init_peclet:.2f}")
+        print(f"- Initial dimensionless heat production: {init_nd_hp:.2f}")
 
     # Create arrays to store elevation history
     elev_list = []
@@ -3181,7 +4461,10 @@ def run_model(params):
         plt.style.use("seaborn-v0_8-darkgrid")
 
         # Plot initial temperature field
-        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+        if params["plot_density"]:
+            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+        else:
+            fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
         if t_plots.max() < t_total - 1.0:
             # Add an extra color for the final temperature if it is not in the
             # list of times for plotting
@@ -3194,7 +4477,8 @@ def run_model(params):
         else:
             time_label = "0.0 Myr"
         ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
-        ax2.plot(density_init, -x / 1000, "k-", label=time_label)
+        if params["plot_density"]:
+            ax2.plot(density_init, -x / 1000, "k-", label=time_label)
 
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
@@ -3233,6 +4517,7 @@ def run_model(params):
             fault_depth,
             moho_depth,
             fw_reference_frame,
+            mmyr2ms(params["mantle_velocity"]),
         )
 
         # Calculate initial densities
@@ -3284,6 +4569,7 @@ def run_model(params):
                     fault_depth,
                     moho_depth,
                     fw_reference_frame,
+                    mmyr2ms(params["mantle_velocity"]),
                 )
                 move_particles = surface_times >= curtime
                 depths[move_particles] -= vx_pts[move_particles] * -dt
@@ -3340,6 +4626,7 @@ def run_model(params):
                 fault_depth,
                 moho_depth,
                 fw_reference_frame,
+                mmyr2ms(params["mantle_velocity"]),
             )
 
         if not params["batch_mode"]:
@@ -3566,7 +4853,9 @@ def run_model(params):
                     fault_depth,
                     moho_depth,
                     fw_reference_frame,
+                    mmyr2ms(params["mantle_velocity"]),
                 )
+                # Determine which particle positions to update
                 move_particles = surface_times >= curtime
                 depths[move_particles] -= vx_pts[move_particles] * dt
 
@@ -3625,6 +4914,20 @@ def run_model(params):
                     f"Maximum temp difference at time {curtime / myr2sec(1):.4f} Myr: {max_temp_diff:.4f} °C"
                 )
 
+            # Calculate current Peclet number using surface velocity
+            peclet[idx] = calculate_peclet_number(
+                params["ero_type"],
+                vx_array[0],
+                x,
+                xstag,
+                k,
+                rho,
+                cp,
+                moho_depth,
+                max_depth,
+                params["crustal_uplift"],
+            )
+
             # Update current time and index
             curtime += dt
             idx += 1
@@ -3640,6 +4943,7 @@ def run_model(params):
                 fault_depth,
                 moho_depth,
                 fw_reference_frame,
+                mmyr2ms(params["mantle_velocity"]),
             )
 
             # Plot temperature and density profiles
@@ -3657,12 +4961,13 @@ def run_model(params):
                             label=time_label,
                             color=colors[plotidx],
                         )
-                        ax2.plot(
-                            density_new,
-                            -x / 1000,
-                            label=time_label,
-                            color=colors[plotidx],
-                        )
+                        if params["plot_density"]:
+                            ax2.plot(
+                                density_new,
+                                -x / 1000,
+                                label=time_label,
+                                color=colors[plotidx],
+                            )
                         if plotidx == len(t_plots) - 1:
                             more_plots = False
                         plotidx += 1
@@ -3679,6 +4984,14 @@ def run_model(params):
     final_moho_temp = interp_temp_new(moho_depth)
     final_heat_flow = calculate_heat_flow(temp_new, k, dx)
 
+    # Calculate final dimensionless heat production
+    final_nd_hp = calculate_nd_heat_prod(
+        heat_prod,
+        k,
+        params["temp_base"],
+        max_depth,
+    )
+
     if not params["batch_mode"]:
         print("")
 
@@ -3690,6 +5003,10 @@ def run_model(params):
         print(f"- Final Moho temperature: {final_moho_temp:.1f}°C")
         print(f"- Final Moho depth: {moho_depth / kilo2base(1):.1f} km")
         print(f"- Final LAB depth: {lab_depth / kilo2base(1):.1f} km")
+        print(f"- Final Peclet number: {peclet[-1]:.2f}")
+        print(f"  - Average for all steps: {peclet.mean():.2f}")
+        print(f"  - Range for all steps: {peclet.min():.2f}-{peclet.max():.2f}")
+        print(f"- Final dimensionless heat production: {final_nd_hp:.2f}")
 
     # Calculate ages
     if params["calc_ages"]:
@@ -3846,6 +5163,7 @@ def run_model(params):
                         zr_uranium=params["zr_uranium"],
                         zr_thorium=params["zr_thorium"],
                     )
+                    # FIXME: Should this same calculation be done for a separate array of depo ages and plotted???
                     pred_data_ages[i] = corr_ahe_age + depo_age_now
                     pred_data_temps[i] = calculate_closure_temp(
                         corr_ahe_age,
@@ -4202,94 +5520,104 @@ def run_model(params):
         ax1.axis([xmin, xmax, -max_depth / 1000, 0])
         ax1.set_xlabel("Temperature (°C)")
         ax1.set_ylabel("Depth (km)")
-        # Round density ranges to nearest 50
-        density_base = 50.0
-        xmin = round_to_base(density_new.min(), density_base) - density_base
-        xmax = round_to_base(density_new.max(), density_base) + density_base
-        ax2.plot(
-            density_new,
-            -x / 1000,
-            label=time_label,
-            color=colors[-1],
-        )
-        ax2.plot(
-            [xmin, xmax],
-            [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
-            linestyle="--",
-            color="black",
-            lw=0.5,
-        )
-        ax2.plot(
-            [xmin, xmax],
-            [-params["init_moho_depth"], -params["init_moho_depth"]],
-            linestyle="--",
-            color="gray",
-            lw=0.5,
-        )
-        ax2.axis([xmin, xmax, -max_depth / 1000, 0])
-        ax2.set_xlabel("Density (kg m$^{-3}$)")
-        ax2.set_ylabel("Depth (km)")
-        ax2.legend()
+
+        # Plot density, if requested
+        if params["plot_density"]:
+            # Round density ranges to nearest 50
+            density_base = 50.0
+            xmin = round_to_base(density_new.min(), density_base) - density_base
+            xmax = round_to_base(density_new.max(), density_base) + density_base
+            ax2.plot(
+                density_new,
+                -x / 1000,
+                label=time_label,
+                color=colors[-1],
+            )
+            ax2.plot(
+                [xmin, xmax],
+                [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
+                linestyle="--",
+                color="black",
+                lw=0.5,
+            )
+            ax2.plot(
+                [xmin, xmax],
+                [-params["init_moho_depth"], -params["init_moho_depth"]],
+                linestyle="--",
+                color="gray",
+                lw=0.5,
+            )
+            ax2.axis([xmin, xmax, -max_depth / 1000, 0])
+            ax2.set_xlabel("Density (kg m$^{-3}$)")
+            ax2.set_ylabel("Depth (km)")
+            ax2.legend()
 
         plt.tight_layout()
         if params["save_plots"]:
-            savefile = wd / "png" / "T_rho_hist.png"
+            plot_filename = "temperature_history.png"
+            if params["plot_density"]:
+                plot_filename = "temperature_density_history.png"
+            savefile = wd / "png" / plot_filename
             plt.savefig(savefile, dpi=300)
-            print(f"- Temperature/density history plot written to {savefile}")
+            if params["plot_density"]:
+                print(f"- Temperature/density history plot written to {savefile}")
+            else:
+                print(f"- Temperature history plot written to {savefile}")
         if params["display_plots"]:
             plt.show()
         else:
             plt.close()
 
         # Plot elevation history
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
-        # ax1.plot(time_list, elev_list, 'k-')
-        if params["plot_ma"]:
-            time_list = [params["t_total"] - time_now for time_now in time_list]
-            time_xlabel = "Time (Ma)"
-            time_xlim = [params["t_total"], 0.0]
-        else:
-            time_xlabel = "Time (Myr)"
-            time_xlim = [0.0, params["t_total"]]
-        ax1.plot(time_list, elev_list)
-        ax1.set_xlabel(time_xlabel)
-        ax1.set_ylabel("Elevation (m)")
-        ax1.set_xlim(time_xlim)
-        ax1.set_title("Elevation history")
-        # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-        # ax1.grid()
+        if params["plot_elevation_history"]:
+            fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 8))
+            # ax1.plot(time_list, elev_list, 'k-')
+            if params["plot_ma"]:
+                time_list = [params["t_total"] - time_now for time_now in time_list]
+                time_xlabel = "Time (Ma)"
+                time_xlim = [params["t_total"], 0.0]
+            else:
+                time_xlabel = "Time (Myr)"
+                time_xlim = [0.0, params["t_total"]]
+            ax1.plot(time_list, elev_list)
+            ax1.set_xlabel(time_xlabel)
+            ax1.set_ylabel("Elevation (m)")
+            ax1.set_xlim(time_xlim)
+            ax1.set_title("Elevation history")
+            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
+            # ax1.grid()
 
-        if params["plot_ma"]:
-            plot_time = params["t_total"] - time_hists[-1] / myr2sec(1)
-        else:
-            plot_time = time_hists[-1] / myr2sec(1)
-        ax2.plot(plot_time, vx_hist / mmyr2ms(1))
-        ax2.fill_between(
-            plot_time,
-            vx_hist / mmyr2ms(1),
-            0.0,
-            alpha=0.33,
-            color="tab:blue",
-            label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
-        )
-        ax2.set_xlabel(time_xlabel)
-        ax2.set_ylabel("Erosion rate (mm/yr)")
-        ax2.set_xlim(time_xlim)
-        # if params["ero_option1"] >= 0.0:
-        #    ax2.set_ylim(ymin=0.0)
-        # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-        # ax2.grid()
-        ax2.legend()
+            if params["plot_ma"]:
+                plot_time = params["t_total"] - time_hists[-1] / myr2sec(1)
+            else:
+                plot_time = time_hists[-1] / myr2sec(1)
+            ax2.plot(plot_time, vx_hist / mmyr2ms(1))
+            ax2.fill_between(
+                plot_time,
+                vx_hist / mmyr2ms(1),
+                0.0,
+                alpha=0.33,
+                color="tab:blue",
+                label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
+            )
+            ax2.set_xlabel(time_xlabel)
+            ax2.set_ylabel("Erosion rate (mm/yr)")
+            ax2.set_xlim(time_xlim)
+            # if params["ero_option1"] >= 0.0:
+            #    ax2.set_ylim(ymin=0.0)
+            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
+            # ax2.grid()
+            ax2.legend()
 
-        plt.tight_layout()
-        if params["save_plots"]:
-            savefile = wd / "png" / "elev_hist.png"
-            plt.savefig(savefile, dpi=300)
-            print(f"- Surface elevation history plot written to {savefile}")
-        if params["display_plots"]:
-            plt.show()
-        else:
-            plt.close()
+            plt.tight_layout()
+            if params["save_plots"]:
+                savefile = wd / "png" / "elev_hist.png"
+                plt.savefig(savefile, dpi=300)
+                print(f"- Surface elevation history plot written to {savefile}")
+            if params["display_plots"]:
+                plt.show()
+            else:
+                plt.close()
 
         # Plot cooling history and ages only if ages were calculated
         if params["calc_ages"]:
@@ -4301,8 +5629,10 @@ def run_model(params):
             ax1 = fig.add_subplot(gs[0:2, :])
             if params["plot_depth_history"] or params["plot_fault_depth_history"]:
                 ax1b = ax1.twinx()
-            ax2 = fig.add_subplot(gs[2, :-1])
-            ax3 = fig.add_subplot(gs[2, -1])
+            ax2 = fig.add_subplot(gs[2, :])
+            # Add second y axis if plotting Peclet number
+            if params["plot_peclet_number"]:
+                ax2b = ax2.twinx()
 
             # Calculate synthetic uncertainties
             ahe_uncert = 0.1
@@ -4364,6 +5694,37 @@ def run_model(params):
                     va="center",
                     color="gray",
                 )
+
+            # Plot intrusions and their time, if enabled
+            """
+            if "intrusion" in locals():
+                intrusion_start_time_ma = params["t_total"] - intrusion.start_time / myr2sec(1.0)
+                intrusion_end_time_ma = params["t_total"] - intrusion.end_time / myr2sec(1.0)
+                ax1.plot(
+                    [intrusion_start_time_ma, intrusion_start_time_ma],
+                    [params["temp_surf"], params["temp_base"]],
+                    "--",
+                    color="gray",
+                    label="Time of intrusion activity",
+                )
+                if intrusion.duration / myr2sec(1.0) > 2.0:
+                    ax1.plot(
+                        [intrusion_end_time_ma, intrusion_end_time_ma],
+                        [params["temp_surf"], params["temp_base"]],
+                        "-.",
+                        color="gray",
+                        #label="Time of intrusion activity",
+                    )
+                ax1.text(
+                    intrusion_start_time_ma - 0.02 * t_total / myr2sec(1.0),
+                    (temp_hists[-1].max() + temp_hists[-1].min()) / 4.0,
+                    "Intrusion emplaced",
+                    rotation=90,
+                    ha="center",
+                    va="center",
+                    color="gray",
+                )
+            """
 
             # Plot uncertainty error bars and AHe age if no measured ages exist
             if n_obs_ahe == 0:
@@ -4601,7 +5962,8 @@ def run_model(params):
             ax1.set_ylim(params["temp_surf"], 1.05 * temp_hists[-1].max())
             if params["invert_tt_plot"]:
                 ax1.set_ylim(1.05 * temp_hists[-1].max(), params["temp_surf"])
-            ax1.set_xlabel("Time (Ma)")
+            if not params["plot_peclet_number"]:
+                ax1.set_xlabel("Time (Ma)")
             ax1.set_ylabel("Temperature (° C)")
             if params["plot_depth_history"] or params["plot_fault_depth_history"]:
                 # Make left y-axis dimgray
@@ -4655,50 +6017,84 @@ def run_model(params):
             else:
                 ax1.legend()
 
-            ax2.plot(time_ma, vx_hist / mmyr2ms(1))
-            ax2.fill_between(
-                time_ma,
-                vx_hist / mmyr2ms(1),
-                0.0,
-                alpha=0.33,
-                color="tab:blue",
-                label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
-            )
+            if not params["plot_peclet_number"]:
+                ax2.plot(time_ma, vx_hist / mmyr2ms(1))
+                ax2.fill_between(
+                    time_ma,
+                    vx_hist / mmyr2ms(1),
+                    0.0,
+                    alpha=0.33,
+                    color="tab:blue",
+                    label=f"Total erosional exhumation: {exhumation_magnitude:.2f} km",
+                )
+            else:
+                ax2.plot(
+                    time_ma,
+                    vx_hist / mmyr2ms(1),
+                    color="dimgray",
+                    label=f"Erosion rate (Total exhumation: {exhumation_magnitude:.2f} km)",
+                )
+                ax2b.plot(
+                    time_ma, peclet, "--", color="darkgray", label="Péclet number"
+                )
             ax2.set_xlabel("Time (Ma)")
-            ax2.set_ylabel("Erosion rate (mm/yr)")
+            if not params["plot_peclet_number"]:
+                ax2.set_ylabel("Erosion rate (mm/yr)")
+            else:
+                ax2.set_ylabel("Erosion rate (mm/yr)", color="dimgray")
+                ax2.tick_params(axis="y", colors="dimgray")
+                ax2b.set_ylabel("Péclet number", color="darkgray")
+                ax2b.tick_params(axis="y", colors="darkgray")
             ax2.set_xlim(t_total / myr2sec(1), 0.0)
-            # if params["ero_option1"] >= 0.0:
-            #    ax2.set_ylim(ymin=0.0)
-            # plt.axis([0.0, t_total/myr2sec(1), 0, 750])
-            # ax2.grid()
-            ax2.legend()
+            if params["plot_peclet_number"]:
+                ax2.grid(None)
+                ax2b.grid(None)
+                lines, labels = ax2.get_legend_handles_labels()
+                lines2, labels2 = ax2b.get_legend_handles_labels()
+                ax2.legend(lines + lines2, labels + labels2)
+            else:
+                ax2.legend()
             ax2.set_title("Erosion history for surface sample")
-
-            ft_lengths = np.genfromtxt(ftl_new, delimiter=",", skip_header=1)
-            length = ft_lengths[:, 0]
-            prob = ft_lengths[:, 1]
-            ax3.plot(length, prob)
-            ax3.plot(
-                [float(aft_mean_ftl), float(aft_mean_ftl)],
-                [0.0, 1.05 * prob.max()],
-                label=f"Mean: {float(aft_mean_ftl):.1f} µm",
-            )
-            ax3.set_xlabel("Track length (um)")
-            ax3.set_ylabel("Probability")
-            ax3.set_xlim([0.0, 20.0])
-            ax3.set_ylim([0.0, 1.05 * prob.max()])
-            ax3.legend()
-            ax3.set_title("Apatite fission-track length distribution")
 
             plt.tight_layout()
             if params["save_plots"]:
-                savefile = wd / "png" / "cooling_hist.png"
+                savefile = wd / "png" / "thermal_history.png"
                 plt.savefig(savefile, dpi=300)
                 print(f"- Thermal history and ages plot written to {savefile}")
             if params["display_plots"]:
                 plt.show()
             else:
                 plt.close()
+
+            if params["plot_ft_length_dist"]:
+                ft_lengths = np.genfromtxt(ftl_new, delimiter=",", skip_header=1)
+                length = ft_lengths[:, 0]
+                prob = ft_lengths[:, 1]
+                fig, ax = plt.subplots(1, 1)
+                ax.plot(length, prob)
+                ax.plot(
+                    [float(aft_mean_ftl), float(aft_mean_ftl)],
+                    [0.0, 1.05 * prob.max()],
+                    label=f"Mean: {float(aft_mean_ftl):.1f} µm",
+                )
+                ax.set_xlabel("Track length (um)")
+                ax.set_ylabel("Probability")
+                ax.set_xlim([0.0, 20.0])
+                ax.set_ylim([0.0, 1.05 * prob.max()])
+                ax.legend()
+                ax.set_title("Apatite fission-track length distribution")
+
+                plt.tight_layout()
+                if params["save_plots"]:
+                    savefile = wd / "png" / "apatite_ft_length_dist.png"
+                    plt.savefig(savefile, dpi=300)
+                    print(
+                        f"- Apatite fission-track length distribution plot written to {savefile}"
+                    )
+                if params["display_plots"]:
+                    plt.show()
+                else:
+                    plt.close()
 
             # Display plot of past ages if more than one surface age is calculated
             if len(surface_times_ma) > 1:
@@ -5016,14 +6412,14 @@ def run_model(params):
         with open(outfile, "a+") as f:
             f.write(
                 f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},"
-                f"{params['temp_surf']:.4f},{params['temp_base']:.4},{params['mantle_adiabat']},"
+                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
                 f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                 f"{params['removal_end_time']:.4f},{params['ero_type']},{params['ero_option1']:.4f},"
                 f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},"
-                f"{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['init_moho_depth']:.4f},{init_moho_temp:.4f},"
-                f"{init_heat_flow:.4f},{elev_list[1] / kilo2base(1):.4f},{moho_depth / kilo2base(1):.4f},"
-                f"{final_moho_temp:.4f},{final_heat_flow:.4f},{elev_list[-1] / kilo2base(1):.4f},"
-                f"{exhumation_magnitude:.4f},{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
+                f"{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['mantle_velocity']:.4f},{params['init_moho_depth']:.4f},{init_moho_temp:.4f},"
+                f"{init_heat_flow:.4f},{elev_list[1] / kilo2base(1):.4f},{init_nd_hp:.4f},{moho_depth / kilo2base(1):.4f},"
+                f"{final_moho_temp:.4f},{final_heat_flow:.4f},{elev_list[-1] / kilo2base(1):.4f},{final_nd_hp:.4f},"
+                f"{exhumation_magnitude:.4f},{peclet.mean():.4f},{peclet.min():.4f},{peclet.max():.4f},{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
                 f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},"
                 f"{params['zr_thorium']:.4f},{corr_ahe_ages[-1]:.4f},"
                 f"{ahe_temps[-1]:.4f},{obs_ahe:.4f},"
@@ -5042,17 +6438,24 @@ def run_model(params):
         # Use sample IDs from data file, or None otherwise
         if ages_from_data_file:
             # Fill in age types
-            obs_age_types = (
-                ["AHe"] * n_obs_ahe
-                + ["AFT"] * n_obs_aft
-                + ["ZHe"] * n_obs_zhe
-                + ["ZFT"] * n_obs_zft
-            )
+            obs_age_types = obs_age_type_file
+            # Set eU and grain radii to None for FT ages
+            obs_eu[obs_age_types == "AFT"] = None
+            obs_eu[obs_age_types == "ZFT"] = None
+            obs_eu = obs_eu.astype("str")
+            obs_eu[obs_eu == "nan"] = ""
+            obs_radius[obs_age_types == "AFT"] = None
+            obs_radius[obs_age_types == "ZFT"] = None
+            obs_radius = obs_radius.astype("str")
+            obs_radius[obs_radius == "nan"] = ""
             # Use sample IDs from data file
             sample_id_out = obs_sample_id_file
+            # Use depo ages from file
+            depo_age_out = obs_depo_age_file
             # Store predicted age eU, grain radius
             pred_eu = obs_eu
             pred_radius = obs_radius
+
         else:
             # Fill in age types
             obs_age_types = (
@@ -5064,6 +6467,8 @@ def run_model(params):
             obs_age_types = np.array(obs_age_types)
             # Use empty sample IDs
             sample_id_out = np.array([""] * len(obs_ages))
+            # Use empty depositional ages
+            depo_age_out = np.array([""] * len(obs_ages))
             # Create array of predicted age eU values
             pred_eu = np.empty(len(obs_ages))
             if len(params["obs_ahe"]) > 0:
@@ -5102,6 +6507,7 @@ def run_model(params):
                 obs_eu,
                 obs_radius,
                 sample_id_out,
+                depo_age_out,
                 pred_ages.round(2),
                 pred_eu,
                 pred_radius,
@@ -5111,7 +6517,7 @@ def run_model(params):
             savefile,
             summary_ages,
             delimiter=",",
-            header="Age type, Observed age (Ma), Observed age stdev (Ma), Observed age eU (ppm), Observed age grain radius (um), Sample ID, Predicted age (Ma), Predicted age eU (ppm), Predicted age grain radius (um)",
+            header="Age type,Measured age (Ma),Measured age stdev (Ma),Measured age eU (ppm),Measured age grain radius (um),Sample ID,Depositional age (Ma),Predicted age (Ma),Predicted age eU (ppm),Predicted age grain radius (um)",
             comments="",
             fmt="%s",
         )
