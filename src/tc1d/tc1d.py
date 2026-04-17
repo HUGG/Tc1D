@@ -4126,7 +4126,7 @@ def run_model(params):
     if params["crustal_uplift"]:
         if exhumation_magnitude > params["init_moho_depth"]:
             raise ValueError(
-                f"Exhumation magnitude ({exhumation_magnitude:.1f} km) exceeds initial Moho depth ({params["init_moho_depth"]} km)."
+                f"Exhumation magnitude ({exhumation_magnitude:.1f} km) exceeds initial Moho depth ({params['init_moho_depth']} km)."
             )
 
     # Create velocity arrays for heat transfer
