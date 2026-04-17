@@ -4383,7 +4383,7 @@ def run_model(params):
     # Calculate initial Peclet number
     if params["ero_type"] == 7:
         warnings.warn(
-            f"Peclet number calculation is not yet supported for ero_type {params["ero_type"]}. A value of -1.0 will be reported.",
+            f"Peclet number calculation is not yet supported for ero_type {params['ero_type']}. A value of -1.0 will be reported.",
             stacklevel=2,
         )
     init_peclet = calculate_peclet_number(
