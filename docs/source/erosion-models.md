@@ -11,7 +11,7 @@ Options for the erosion rate calculation include:
 4. [Emplacement and erosional removal of a thrust sheet](#type-4-emplacement-and-erosional-removal-of-a-thrust-sheet)
 5. [Tectonic exhumation and erosion](#type-5-tectonic-exhumation-and-erosion)
 6. [Linear increase in erosion rate from a specified starting time](#type-6-linear-change-in-erosion-rate-from-a-specified-time)
-7. [Extensional tectonics](#type-7-extensional-tectonics)
+7. [Convergent/extensional faulting](#type-7-convergent-extensional-faulting)
 
 Below is a general description of how erosion is implemented in the code as well as details about how each option works.
 
