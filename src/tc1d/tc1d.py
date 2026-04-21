@@ -1022,13 +1022,11 @@ def _get_transdimensional_cfg(params: dict) -> dict:
                 f"(got {bounds})."
             )
 
-        # BG: Erosion-rate bounds may be zero, but not negative in the current
-        # BG: RJMCMC v1 setup.
-        if name in ("r_start_bounds", "r_target_bounds") and lo < 0.0:
-            raise ValueError(
-                f"BG: transdimensional.{name} must have min >= 0 "
-                f"(got {bounds})."
-            )
+        # BG: Signed erosion-rate bounds are allowed in RJMCMC so that
+        # negative values can represent burial. Physical non-sensical
+        # histories are filtered later inside batch_run_rjmcmc().
+        if name in ("r_start_bounds", "r_target_bounds"):
+            return (lo, hi)
 
         return (lo, hi)
 
@@ -4316,6 +4314,11 @@ def batch_run_rjmcmc(params, batch_params, td_cfg):
 
     lambda_k = float(rj_cfg["lambda_k"])
 
+    # BG: Physical guards for signed erosion histories in RJMCMC.
+    # Keep values consistent with the existing NA and fixed-dimension MCMC logic.
+    max_exhumation = 35.0
+    max_burial = 15.0
+
     print(
         f"[RJMCMC v1] config: nsteps={nsteps}, burnin={burnin}, thin={thin}, "
         f"moves={p_within:.2f}/{p_birth:.2f}/{p_death:.2f}"
@@ -4490,6 +4493,62 @@ def batch_run_rjmcmc(params, batch_params, td_cfg):
             )
         return tuple(key)
 
+    def _integrate_stage_signed_displacement_km(stage):
+        """
+        BG: Return the signed vertical displacement [km] contributed by one exponential erosion stage.
+        Positive = exhumation / erosion
+        Negative = burial
+        """
+        dur = float(stage["duration_myr"])
+        r0 = float(stage["r_start"])
+        tau = float(stage["tau"])
+        rt = float(stage["r_target"])
+
+        if dur <= 0.0:
+            return 0.0
+
+        if tau <= 0.0:
+            return np.inf
+
+        # BG: Integral of:
+        # BG: r(t) = rt + (r0 - rt) * exp(-t / tau)
+        disp = rt * dur + (r0 - rt) * tau * (1.0 - np.exp(-dur / tau))
+        return float(disp)
+
+    def _reject_nonphysical_signed_history(state):
+        """
+        BG: Reject RJMCMC states with excessive cumulative burial/exhumation or a final negative cumulative erosion balance.
+
+        BG: This mirrors the existing NA / fixed-dimension MCMC philosophy:
+        - cannot exhume too much
+        - cannot bury too much
+        - cannot end with a negative cumulative erosion balance
+        """
+        cumulative = 0.0
+
+        for stage in state["stages"]:
+            disp = _integrate_stage_signed_displacement_km(stage)
+
+            if not np.isfinite(disp):
+                return True
+
+            cumulative += disp
+
+            # BG: Reject too much total exhumation at any point.
+            if cumulative > max_exhumation:
+                return True
+
+            # BG: Reject too much total burial at any point.
+            if cumulative < -max_burial:
+                return True
+
+        # BG: Keep consistency with existing NA / MCMC logic:
+        # BG: final cumulative erosion must not be negative.
+        if cumulative < 0.0:
+            return True
+
+        return False
+
     def _eval_misfit(state):
         """
         BG: Evaluate the forward-model misfit for one RJ state.
@@ -4499,6 +4558,12 @@ def batch_run_rjmcmc(params, batch_params, td_cfg):
         """
         total_duration = sum(float(stage["duration_myr"]) for stage in state["stages"])
         if total_duration > t_total:
+            return np.inf
+
+        # BG: Reject non-physical signed erosion/burial histories before running the forward model. This keeps
+        # RJMCMC robust without changing NA, fixed-dimension MCMC, or forward behavior.
+
+        if _reject_nonphysical_signed_history(state):
             return np.inf
 
         key = _state_key(state)
@@ -4520,11 +4585,27 @@ def batch_run_rjmcmc(params, batch_params, td_cfg):
         _prev_batch_mode = params_local.get("batch_mode", False)
         params_local["batch_mode"] = True
         try:
-            misfit = run_model(params_local)
+            try:
+                misfit = run_model(params_local)
+            except Exception as exc:
+                # BG: In RJMCMC, non-physical or numerically unstable forward
+                # models must be rejected, not crash the full inversion.
+                if params_local.get("debug", False):
+                    print(
+                        f"[RJMCMC] rejected invalid forward model: "
+                        f"{type(exc).__name__}: {exc}"
+                    )
+                misfit = np.inf
         finally:
             params_local["batch_mode"] = _prev_batch_mode
 
-        misfit_value = float(misfit)
+        # BG: Treat None / NaN / inf as invalid RJMCMC proposals.
+        if misfit is None:
+            misfit_value = np.inf
+        else:
+            misfit_value = float(misfit)
+            if not np.isfinite(misfit_value):
+                misfit_value = np.inf
 
         if len(misfit_cache) >= misfit_cache_max:
             misfit_cache.pop(next(iter(misfit_cache)))
