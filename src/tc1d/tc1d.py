@@ -16,6 +16,7 @@ import time
 import math
 from typing import Tuple
 import warnings
+from ctypes import *
 
 # Batch mode libraries
 from sklearn.model_selection import ParameterGrid
@@ -499,7 +500,7 @@ def check_execs() -> None:
     """Checks whether all required executables exist."""
 
     # Check that executables are in $PATH
-    for executable in ("RDAAM_He", "ketch_aft"):
+    for executable in ("ketch_aft",):
         exec_path = shutil.which(executable)
         if exec_path is None:
             raise FileNotFoundError(
@@ -511,7 +512,9 @@ def check_execs() -> None:
 
 # TODO: Sort out why type hinting is problematic for this function
 def he_ages(
-    file,
+    params,
+    time_history,
+    temp_history,
     ap_rad,
     ap_uranium,
     ap_thorium,
@@ -521,41 +524,40 @@ def he_ages(
 ):
     """Calculates (U-Th)/He ages."""
 
-    # Run executable to calculate age
-    exec_path = shutil.which("RDAAM_He")
-    command = (
-        exec_path
-        + " "
-        + file
-        + " "
-        + str(ap_rad)
-        + " "
-        + str(ap_uranium)
-        + " "
-        + str(ap_thorium)
-        + " "
-        + str(zr_rad)
-        + " "
-        + str(zr_uranium)
-        + " "
-        + str(zr_thorium)
+    rdaam = CDLL("/home/saskeli/Tc1D/libRDAAM.so")
+    pa = rdaam.make_path()
+    time_ma = tt_hist_to_ma(time_history)
+    write_increment = get_write_increment(params, time_ma)
+
+    for i in range(len(time_ma) - 1, -1, -1):
+        rdaam.path_push(c_double(time_ma[i]), c_double(temp_history[i]))
+    if params["pad_time"] > 0.0:
+        pad_times = np.arange(time_ma.max(), time_ma.max(), + params["pad_time"] + 0.1, 1.0)
+        for pad_time in pad_times:
+            rdaam.path_push(c_double(pad_time), c_double(temp_history[i]))
+    
+    ap_age = c_double(0.0)
+    ap_corrAge = c_double(0.0)
+    zr_age = c_double(0.0)
+    zr_corrAge = c_double(0.0)
+    ap_success = c_int(0)
+    zr_success = c_int(0)
+
+    rdaam.run_RDAAM_He(
+        pa, c_double(ap_rad), c_double(ap_uranium), c_double(ap_thorium), 
+        pointer(ap_age), pointer(ap_corrAge), c_double(0.0), c_double(zr_rad),
+        c_double(zr_uranium), c_double(zr_thorium), pointer(zr_age), pointer(zr_corrAge),
+        pointer(ap_success), pointer(zr_success)
     )
-    p = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    )
 
-    stdout = p.stdout.readlines()
+    rdaam.del_path(pa)
 
-    ahe_age = float(stdout[0].split()[3][:-1].decode("UTF-8"))
-    corr_ahe_age = float(stdout[0].split()[7].decode("UTF-8"))
-    zhe_age = float(stdout[1].split()[3][:-1].decode("UTF-8"))
-    corr_zhe_age = float(stdout[1].split()[7].decode("UTF-8"))
+    if ap_success != 1:
+        print("RDAAM_calculate for ap failed!")
+    if zr_success != 1:
+        print("RDAAM_calculate for zr failed!")
 
-    retval = p.wait()
-    if retval != 0:
-        print(f"RDAAM_He execution failed with return code: {retval}!")
-
-    return ahe_age, corr_ahe_age, zhe_age, corr_zhe_age
+    return ap_age, ap_corrAge, zr_age, zr_corrAge
 
 
 # TODO: Sort out why type hinting is problematic for this function
@@ -716,7 +718,7 @@ def calculate_ages_and_tcs(
     )
 
     # Write time-temperature history to file for (U-Th)/He, Ketcham AFT age calculation
-    write_tt_history(params, tt_filename, time_history, temp_history)
+    #write_tt_history(params, tt_filename, time_history, temp_history)
 
     # Write pressure-time-temperature-depth history to file for reference
     write_ttdp_history(
@@ -729,7 +731,9 @@ def calculate_ages_and_tcs(
     )
 
     ahe_age, corr_ahe_age, zhe_age, corr_zhe_age = he_ages(
-        file=tt_filename,
+        params=params,
+        time_history=time_history,
+        temp_history=temp_history,
         ap_rad=params["ap_rad"],
         ap_uranium=params["ap_uranium"],
         ap_thorium=params["ap_thorium"],
