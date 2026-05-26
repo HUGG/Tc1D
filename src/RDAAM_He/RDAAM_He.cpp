@@ -18,6 +18,9 @@ extern "C" void path_push(TTPath* path, double time, double temperature) {
 }
 
 extern "C" void del_path(TTPath* path) {
+  if (path == nullptr) {
+    return;
+  }
   delete path;
 }
 
@@ -30,11 +33,12 @@ extern "C" void run_RDAAM_He(
 
     // After RDAAM_Init is run, run this as many times as you want for each path to model
     // Set final parameter (optimize) to true for geological histories, false for degassing
-    *ap_success = RDAAM_Calculate(path, *ap_age, *ap_corrAge, total_He, false);
+    int ap_succ = RDAAM_Calculate(path, *ap_age, *ap_corrAge, total_He, false);
+    ap_success[0] = ap_succ;
 
     // For zircon, just change the first letter
     ZRDAAM_Init(HE_PREC_BEST, zr_rad, zr_U, zr_Th, 0.0); // precision, radius, U, Th, Sm
-    *zr_success = RDAAM_Calculate(path, *zr_age, *zr_corrAge, total_He, false);
+    zr_success[0] = RDAAM_Calculate(path, *zr_age, *zr_corrAge, total_He, false);
 
     // Once you are done with this calculation, run this to clean up.
     RDAAM_FreeCalcArrays();

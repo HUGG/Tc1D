@@ -6,6 +6,7 @@
 #include "RDAAM.h"
 #include <stdio.h>
 #include <cstdlib>
+#include <iostream>
 
 //---------------------------------------------------------------------------
 
@@ -180,7 +181,6 @@ bool RDAAM_CheckParameters()
 {
 	paramsOK = true;
 	paramsOK = paramsOK && (radius > 0);
-
 	return paramsOK;
 }
 
