@@ -11,12 +11,13 @@ from pathlib import Path
 from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.linalg import solve
 import shutil
-import subprocess
 import time
 import math
 from typing import Tuple
 import warnings
 from ctypes import *
+from importlib.resources import files
+import platform
 
 # Batch mode libraries
 from sklearn.model_selection import ParameterGrid
@@ -36,7 +37,20 @@ import sys  # TODO: Could this be removed?
 # Versioning
 import importlib.metadata
 
+
 __version__ = importlib.metadata.version("tc1d")
+
+# Shared object loading
+def load_lib(base_name = "RDAAM"): # or "ketch"
+    root = files("tc1d")
+    system = platform.system().lower()
+    if system == "linux":
+        libname = f"lib{base_name}.so"
+    elif system == "darwin":
+        libname = f"lib{base_name}.dylib"
+    else:
+        libname = f"{base_name}.dll"
+    return CDLL(os.fspath(root.joinpath(libname)))
 
 
 # Exceptions
@@ -582,7 +596,7 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     if retval != 0:
         print(f"ketch_aft execution failed with return code: {retval}!")"""
     
-    ketch = CDLL("/home/saskeli/Tc1D/libketch.so")
+    ketch = load_lib("ketch")
 
     ntime = c_int(n)
     alo = c_double(16.3)
@@ -751,7 +765,7 @@ def calculate_ages_and_tcs(
         pressure_history,
     )
 
-    rdaam = CDLL("/home/saskeli/Tc1D/libRDAAM.so")
+    rdaam = load_lib("RDAAM")
     pa = rdaam.make_path()
     time_ma = tt_hist_to_ma(time_history)
     write_increment = get_write_increment(params, time_ma)
@@ -5184,7 +5198,7 @@ def run_model(params):
             # Loop over all ages in age data file can calculate predicted age equivalents
             tt_hist_index = -1
             depo_age_old = 5000.0
-            rdaam = CDLL("/home/saskeli/Tc1D/libRDAAM.so")
+            rdaam = load_lib("RDAAM")
             pa = pointer()
             for i in range(len(obs_ages_file)):
                 # Increment time-temperature history index whenever it changes, write new tt-history file

@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "scikit-build-core"]
 build-backend = "hatchling.build"
 
 [project]
@@ -49,6 +49,16 @@ dependencies = [
     "scipy",
     "scikit-learn",
 ]
+
+[tool.hatch.build.targets.wheel.hooks.scikit-build]
+experimental = true
+
+[tool.scikit-build]
+wheel.expand-macos-universal-tags = true
+build-dir = "build"
+cmake.minimum-version = "3.18"
+cmake.source-dir = "."
+cmake.build-type = "Release"
 
 [project.optional-dependencies]
 lint = ["mypy", "ruff"]
