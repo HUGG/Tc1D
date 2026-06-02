@@ -16,12 +16,12 @@ jobs:
         with:
           persist-credentials: false
       
-      - name: Setup macOS
-        if: matrix.buildplat[0] == 'macos-15-intel' || matrix.buildplat[0] == 'macos-14'
-        run: |
-          brew update
-          brew install cmake ninja pkg-config
-          python -m pip install --upgrade pip setuptools wheel build scikit-build-core
+      #- name: Setup macOS
+      #  if: matrix.buildplat[0] == 'macos-15-intel' || matrix.buildplat[0] == 'macos-14'
+      #  run: |
+      #    brew update
+      #    brew install cmake ninja pkg-config
+      #    python -m pip install --upgrade pip setuptools wheel build scikit-build-core
 
       - name: Build wheels
         uses: pypa/cibuildwheel@v3.4.1
