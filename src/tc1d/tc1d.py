@@ -50,7 +50,6 @@ def load_lib(base_name = "RDAAM"): # or "ketch"
         libname = f"lib{base_name}.dylib"
     else:
         libname = f"{base_name}.dll"
-        return WinDLL(os.fspath(root.joinpath(libname)))
     return CDLL(os.fspath(root.joinpath(libname)))
 
 

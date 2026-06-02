@@ -9,22 +9,28 @@
 
 //---------------------------------------------------------------------------
 
-extern "C" TTPath* make_path() {
+#if defined(_WIN32) || defined(_WIN64)
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT extern "C"
+#endif
+
+EXPORT TTPath* make_path() {
   return new TTPath();
 }
 
-extern "C" void path_push(TTPath* path, double time, double temperature) {
+EXPORT void path_push(TTPath* path, double time, double temperature) {
   path->push_back({time, temperature});
 }
 
-extern "C" void del_path(TTPath* path) {
+EXPORT void del_path(TTPath* path) {
   if (path == nullptr) {
     return;
   }
   delete path;
 }
 
-extern "C" void run_RDAAM_He(
+EXPORT void run_RDAAM_He(
     TTPath* path, double ap_rad, double ap_U, double ap_Th, double* ap_age, 
     double* ap_corrAge, double total_He, double zr_rad, double zr_U, double zr_Th,
     double* zr_age, double* zr_corrAge, int* ap_success, int* zr_success) {
