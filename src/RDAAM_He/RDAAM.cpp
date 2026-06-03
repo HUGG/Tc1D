@@ -709,6 +709,7 @@ void RDAAM_CalcHeAge(bool optimize)
 	double A, new238, new235, new232, new147, exp238, exp235, exp232, exp147, t1, newHe;
 	double **annealingTraps = NULL; // 2D matrix to hold trap info if there's annealing
 	double invRadCubed;
+	diff = 0;
 
 // Stuff for Guenthner et al model
 	bool isZircon = (psiUnits == PSI_D0N17_1_SEC);
