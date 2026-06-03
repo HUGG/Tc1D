@@ -10,7 +10,7 @@
 //---------------------------------------------------------------------------
 
 #if defined(_WIN32) || defined(_WIN64)
-#define EXPORT __declspec(dllexport)
+#define EXPORT extern "C" __declspec(dllexport)
 #else
 #define EXPORT extern "C"
 #endif

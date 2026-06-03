@@ -135,7 +135,13 @@ int  ForwardModel(
                     int       *numPopulations,   /* Number of interpolated time steps used in which f-t lengths were non-zero */
                     ttPathPtr    tTDef);             /* Time-temperature path definition, youngest age first */
 
-void ketch_main(
+#if defined(_WIN32) || defined(_WIN64)
+#define EXPORT __declspec(dllexport)
+#else
+#define EXPORT
+#endif
+
+EXPORT void ketch_main(
   int *ntime,
   float ketchtime[],
   float ketchtemp[],
