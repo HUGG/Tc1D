@@ -48,7 +48,7 @@ dependencies = [
     "schwimmbad",
     "scipy",
     "scikit-learn",
-    "impi-rt;platform_system==Windows"
+    'impi-rt;platform_system=="Windows"'
 ]
 
 [tool.hatch.build.targets.wheel.hooks.scikit-build]
