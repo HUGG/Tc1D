@@ -47,7 +47,7 @@ def load_lib(base_name = "RDAAM"): # or "ketch"
     if system == "linux":
         libname = f"lib{base_name}.so"
     elif system == "darwin":
-        libname = f"lib{base_name}.dylib"
+        libname = f"lib{base_name}.so"
     else:
         libname = f"{base_name}.dll"
     return CDLL(os.fspath(root.joinpath(libname)))
