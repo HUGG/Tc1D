@@ -52,6 +52,36 @@ def load_lib(base_name = "RDAAM"): # or "ketch"
         libname = f"{base_name}.dll"
     return CDLL(os.fspath(root.joinpath(libname)))
 
+def load_rdaam():
+    rdaam = load_lib("RDAAM")
+    rdaam.make_path.restype = c_void_p
+    rdaam.path_push.argtypes = [c_void_p, c_double, c_double]
+    rdaam.path_push.restype = None
+    rdaam.del_path.argtypes = [c_void_p]
+    rdaam.del_path.restype = None
+    rdaam.run_RDAAM_He.argtypes = [
+        c_void_p,  # TTPath*
+        c_double,  # ap_rad
+        c_double,  # ap_U
+        c_double,  # ap_Th
+        POINTER(c_double),  # ap_age*
+        POINTER(c_double),  # ap_corrAge*
+        c_double,  # total_He
+        c_double,  # zr_rad
+        c_double,  # zr_U
+        c_double,  # zr_Th
+        POINTER(c_double),  # zr_age*
+        POINTER(c_double),  # zr_corrAge*
+        POINTER(c_int),     # ap_success*
+        POINTER(c_int),     # zr_success*
+    ]
+    rdaam.run_RDAAM_He.restype = None
+    return rdaam
+
+def load_ketch():
+    ketch = load_lib("ketch")
+    return ketch
+
 
 # Exceptions
 class UnstableSolutionError(Exception):
@@ -596,7 +626,7 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     if retval != 0:
         print(f"ketch_aft execution failed with return code: {retval}!")"""
     
-    ketch = load_lib("ketch")
+    ketch = load_ketch()
 
     ntime = c_int(n)
     alo = c_double(16.3)
@@ -765,7 +795,7 @@ def calculate_ages_and_tcs(
         pressure_history,
     )
 
-    rdaam = load_lib("RDAAM")
+    rdaam = load_rdaam()
     pa = rdaam.make_path()
     time_ma = tt_hist_to_ma(time_history)
     write_increment = get_write_increment(params, time_ma)
@@ -5198,7 +5228,7 @@ def run_model(params):
             # Loop over all ages in age data file can calculate predicted age equivalents
             tt_hist_index = -1
             depo_age_old = 5000.0
-            rdaam = load_lib("RDAAM")
+            rdaam = load_rdaam()
             pa = pointer()
             for i in range(len(obs_ages_file)):
                 # Increment time-temperature history index whenever it changes, write new tt-history file
