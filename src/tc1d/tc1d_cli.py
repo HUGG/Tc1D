@@ -164,15 +164,20 @@ def _apply_yaml_to_args(args, y: dict) -> None:
     # ---- thermal_model
     th = y.get("thermal_model", {})
     if isinstance(th, dict):
-        if "explicit" in th:
-            args.explicit = _as_bool(th["explicit"])
-        if "mantle_adiabat" in th:
-            # CLI stores this as a list (nargs='+'), keep that storage but parse the boolean safely.
-            args.mantle_adiabat = _as_list(_as_bool(th["mantle_adiabat"]))
+        if "solution_type" in th:
+            args.solution_type = _as_list(int(th["solution_type"]))
+        if "no_mantle_adiabat" in th:
+            args.no_mantle_adiabat = _as_bool(th["no_mantle_adiabat"])
+        if "bc_type" in th:
+            args.bc_type = _as_list(int(th["bc_type"]))
         if "temp_surf" in th:
             args.temp_surf = _as_list(float(th["temp_surf"]))
         if "temp_base" in th:
             args.temp_base = _as_list(float(th["temp_base"]))
+        if "flux_base" in th:
+            args.flux_base = _as_list(float(th["flux_base"]))
+        if "temp_adiabat_ref" in th:
+            args.temp_adiabat_ref = _as_list(float(th["temp_adiabat_ref"]))
 
     # ---- intrusion_model
     intr = y.get("intrusion_model", {})
@@ -736,11 +741,20 @@ def main():
     )
     # TODO: Fix this so it works with gooey
     thermal.add_argument(
-        "--explicit",
-        help="Use explicit instead of implicit finite-difference calculation",
-        dest="explicit",
-        action="store_true",
-        default=False,
+        "--solution-type",
+        dest="solution_type",
+        help="Finite-difference solution type (1 = explicit, 2 = implicit, 3 = Crank-Nicolson)",
+        nargs="+",
+        default=[3],
+        type=int,
+    )
+    thermal.add_argument(
+        "--bc-type",
+        dest="bc_type",
+        help="Basal boundary condition type (1=constant temperature, 2=heat flux)",
+        nargs="+",
+        default=[1],
+        type=int,
     )
     thermal.add_argument(
         "--temp-surf",
@@ -758,13 +772,29 @@ def main():
         default=[1300.0],
         type=float,
     )
+    thermal.add_argument(
+        "--flux-base",
+        dest="flux_base",
+        help="Basal boundary condition heat flux (mW/m^2)",
+        nargs="+",
+        default=[20.0],
+        type=float,
+    )
     # Does the following option work?
     thermal.add_argument(
-        "--mantle_adiabat",
-        help="Use adiabat for asthenosphere temperature",
+        "--no-mantle-adiabat",
+        dest="no_mantle_adiabat",
+        help="Do not use adiabat for asthenosphere temperature",
+        action="store_true",
+        default=False,
+    )
+    thermal.add_argument(
+        "--temp-adiabat-ref",
+        dest="temp_adiabat_ref",
+        help="Reference temperature (C) for mantle adiabat calculation",
         nargs="+",
-        default=[True],
-        type=bool,
+        default=[1300.0],
+        type=float,
     )
     intrusion = parser.add_argument_group(
         "Magmatic intrusion options", "Options for the intrusion model"
@@ -1398,6 +1428,7 @@ def main():
     # Function call expects
     # - echo_info = True for basic model info to be displayed
     # - echo_thermal_info = True for thermal model info to be displayed
+    # - mantle_adiabat = True if mantle adiabat should be used for asthenosphere temperatures
     # - calc_ages = True if thermochronometer ages should be calculated
     # - echo_ages = True if thermochronometer ages should be displayed on the screen
     # - plot_results = True if plots of temperatures and densities should be created
@@ -1405,7 +1436,7 @@ def main():
     # - plot_ma = True if plots should be in millions of years ago (Ma)
     echo_info = not args.no_echo_info
     echo_thermal_info = not args.no_echo_thermal_info
-    implicit = not args.explicit
+    mantle_adiabat = not args.no_mantle_adiabat
     calc_ages = not args.no_calc_ages
     echo_ages = not args.no_echo_ages
     plot_results = not args.no_plot_results
@@ -1433,8 +1464,8 @@ def main():
         "run_type": args.run_type,
         "batch_mode": args.batch_mode,
         "inverse_mode": args.inverse_mode,
-        "mantle_adiabat": args.mantle_adiabat,
-        "implicit": implicit,
+        "mantle_adiabat": mantle_adiabat,
+        "solution_type": args.solution_type,
         "read_temps": args.read_temps,
         "compare_temps": args.compare_temps,
         "write_temps": args.write_temps,
@@ -1471,8 +1502,11 @@ def main():
             getattr(args, "ero_stages", None)
         ),  # BG: raw YAML template for NA duration inversion
         "mantle_velocity": args.mantle_velocity,
+        "bc_type": args.bc_type,
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
+        "flux_base": args.flux_base,
+        "temp_adiabat_ref": args.temp_adiabat_ref,
         "t_total": args.time,
         "dt": args.dt,
         "vx_init": args.vx_init,

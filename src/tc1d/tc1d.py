@@ -121,7 +121,8 @@ def echo_model_info(
     nt: int,
     dt: float,
     t_total: float,
-    implicit: bool,
+    solution_type: int,
+    bc_type: int,
     ero_type: int,
     exhumation_magnitude: float,
     cond_stab: float,
@@ -136,19 +137,27 @@ def echo_model_info(
     print(f"- Total simulation time: {t_total / myr2sec(1):.1f} million years")
     print(f"- Time steps: {nt} @ {dt / yr2sec(1):.1f} years each")
 
-    if implicit:
-        print("- Solution type: Implicit")
-    else:
-        print("- Solution type: Explicit")
+    # Output thermal calculation type
+    solution_types = {
+        1: "Explicit",
+        2: "Implicit",
+        3: "Crank-Nicolson",
+    }
+    print(f"- Solution type: {solution_types[solution_type]}")
 
+    boundary_condition_types = {
+        1: "Constant temperature (Dirichlet)",
+        2: "Constant heat flux (Neumann)",
+    }
     # Check stability conditions
-    if not implicit:
+    if solution_type == 1:
         print(
             f"- Conductive stability: {(cond_stab < cond_crit)} ({cond_stab:.3f} < {cond_crit:.4f})"
         )
         print(
             f"- Advective stability: {(adv_stab < adv_crit)} ({adv_stab:.3f} < {adv_crit:.4f})"
         )
+    print(f"- Basal boundary condition: {boundary_condition_types[bc_type]}")
 
     # Output erosion model
     ero_models = {
@@ -254,6 +263,8 @@ def adiabat(alphav: float, temp: float, cp: float) -> float:
 def temp_ss_implicit(
     nx: int,
     dx: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
     temp_surf: float,
     temp_base: float,
     vx: np.ndarray,
@@ -263,15 +274,11 @@ def temp_ss_implicit(
     heat_prod: np.ndarray,
 ) -> np.ndarray:
     """Calculates a steady-state thermal solution."""
-    # Create the empty (zero) coefficient and right hand side arrays
-    a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
-    b = np.zeros(nx)
-
     # Set B.C. values in the coefficient array and in the r.h.s. array
     a_matrix[0, 0] = 1
-    b[0] = temp_surf
+    b_vector[0] = temp_surf
     a_matrix[nx - 1, nx - 1] = 1
-    b[nx - 1] = temp_base
+    b_vector[nx - 1] = temp_base
 
     # Matrix loop
     for ix in range(1, nx - 1):
@@ -280,9 +287,9 @@ def temp_ss_implicit(
         ] / dx**2
         a_matrix[ix, ix] = k[ix] / dx**2 + k[ix - 1] / dx**2
         a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b[ix] = heat_prod[ix]
+        b_vector[ix] = heat_prod[ix]
 
-    temp = solve(a_matrix, b)
+    temp = solve(a_matrix, b_vector)
     return temp
 
 
@@ -385,15 +392,18 @@ def init_ero_types(
     return temp_prev, moho_depth, rho, cp, k, heat_prod, alphav
 
 
+# TODO: Add support for basal flux boundary condition
 def temp_transient_explicit(
-    temp_prev: np.ndarray,
-    temp_new: np.ndarray,
-    temp_surf: float,
-    temp_base: float,
     nx: int,
     dx: float,
-    vx: np.ndarray,
     dt: float,
+    temp_prev: np.ndarray,
+    temp_new: np.ndarray,
+    bc_type: int,
+    temp_surf: float,
+    temp_base: float,
+    flux_base: float,
+    vx: np.ndarray,
     rho: np.ndarray,
     cp: np.ndarray,
     k: np.ndarray,
@@ -402,7 +412,15 @@ def temp_transient_explicit(
     """Updates a transient thermal solution."""
     # Set boundary conditions
     temp_new[0] = temp_surf
-    temp_new[nx - 1] = temp_base
+    if bc_type == 1:
+        # Assign constant basal temperature
+        temp_new[nx - 1] = temp_base
+    elif bc_type == 2:
+        temp_new[nx - 1] = temp_prev[-1] + (2 * k[-1] * dt) / (
+            rho[-1] * cp[-1] * dx**2
+        ) * (temp_prev[-2] - temp_prev[-1] + (flux_base * dx) / k[-1])
+    else:
+        raise ValueError(f"Bad boundary condition type: {bc_type}. Must be 1 or 2.")
 
     # Calculate internal grid point temperatures
     # Use upwinding
@@ -439,26 +457,16 @@ def temp_transient_implicit(
     nx: int,
     dx: float,
     dt: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
     temp_prev: np.ndarray,
-    temp_surf: float,
-    temp_base: float,
     vx: np.ndarray,
     rho: np.ndarray,
     cp: np.ndarray,
     k: np.ndarray,
     heat_prod: np.ndarray,
 ) -> np.ndarray:
-    """Calculates a steady-state thermal solution."""
-    # Create the empty (zero) coefficient and right hand side arrays
-    a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
-    b = np.zeros(nx)
-
-    # Set B.C. values in the coefficient array and in the r.h.s. array
-    a_matrix[0, 0] = 1
-    b[0] = temp_surf
-    a_matrix[nx - 1, nx - 1] = 1
-    b[nx - 1] = temp_base
-
+    """Calculates a transient implicit thermal solution."""
     # Matrix loop
     for ix in range(1, nx - 1):
         a_matrix[ix, ix - 1] = (
@@ -466,9 +474,47 @@ def temp_transient_implicit(
         )
         a_matrix[ix, ix] = (rho[ix] * cp[ix]) / dt + k[ix] / dx**2 + k[ix - 1] / dx**2
         a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b[ix] = heat_prod[ix] + ((rho[ix] * cp[ix]) / dt) * temp_prev[ix]
+        b_vector[ix] = heat_prod[ix] + ((rho[ix] * cp[ix]) / dt) * temp_prev[ix]
 
-    temp = solve(a_matrix, b)
+    temp = solve(a_matrix, b_vector)
+    return temp
+
+
+# Transient heat transfer equation solved using Crank-Nicolson method
+def temp_transient_crank_nicolson(
+    nx: int,
+    dx: float,
+    dt: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
+    temp_prev: np.ndarray,
+    vx: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    k: np.ndarray,
+    heat_prod: np.ndarray,
+) -> np.ndarray:
+    """Calculates a steady-state thermal solution."""
+    # Matrix loop
+    for ix in range(1, nx - 1):
+        a_matrix[ix, ix - 1] = -k[ix - 1] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (
+            2 * dx
+        )
+        a_matrix[ix, ix] = (
+            k[ix] / dx**2 + k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt
+        )
+        a_matrix[ix, ix + 1] = -k[ix] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx)
+        b_vector[ix] = (
+            (k[ix] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
+            * temp_prev[ix + 1]
+            + (-k[ix] / dx**2 - k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt)
+            * temp_prev[ix]
+            + (k[ix - 1] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
+            * temp_prev[ix - 1]
+            + 2 * heat_prod[ix]
+        )
+
+    temp = solve(a_matrix, b_vector)
     return temp
 
 
@@ -2238,9 +2284,12 @@ def init_params(
     alphav_mantle=3.0e-5,
     rho_a=3250.0,
     k_a=20.0,
-    implicit=True,
+    solution_type=3,
+    bc_type=1,
     temp_surf=0.0,
     temp_base=1300.0,
+    flux_base=20.0,
+    temp_adiabat_ref=1300.0,
     mantle_adiabat=True,
     intrusion_temperature=750.0,
     intrusion_start_time=-1.0,
@@ -2385,12 +2434,18 @@ def init_params(
         Mantle asthenosphere density in kg/m^3.
     k_a : float or int, default=20.0
         Mantle asthenosphere thermal conductivity in W/m/K.
-    implicit : bool, default=True
-        Use implicit instead of explicit finite-difference calculation.
+    solution_type : int, default=3
+        Finite-difference solution type (1 = explicit, 2 = implicit, 3 = Crank-Nicolson).
+    bc_type : int, default=1
+        Basal boundary condition type (1 = constant temperature, 2 = constant heat flux).
     temp_surf : float or int, default=0.0
         Surface boundary condition temperature in °C.
     temp_base : float or int, default=1300.0
         Basal boundary condition temperature in °C.
+    flux_base : float or int, default=20.0
+        Basal heat flux in mW/m^2.
+    temp_adiabat_ref : float or int, default=1300.0
+        Reference temperature for mantle adiabat calculation
     mantle_adiabat : bool, default=True
         Use adiabat for asthenosphere temperature.
     intrusion_temperature : float or int, default=750.0
@@ -2557,7 +2612,7 @@ def init_params(
         # Inverse mode not supported when called as a function
         "inverse_mode": False,
         "mantle_adiabat": mantle_adiabat,
-        "implicit": implicit,
+        "solution_type": solution_type,
         "read_temps": read_temps,
         "compare_temps": compare_temps,
         "write_temps": write_temps,
@@ -2588,8 +2643,11 @@ def init_params(
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
         "mantle_velocity": mantle_velocity,
+        "bc_type": bc_type,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
+        "flux_base": flux_base,
+        "temp_adiabat_ref": temp_adiabat_ref,
         "t_total": time,
         "dt": dt,
         "vx_init": vx_init,
@@ -2696,8 +2754,12 @@ def prep_model(params):
     batch_keys = [
         "max_depth",
         "nx",
+        "solution_type",
+        "bc_type",
         "temp_surf",
         "temp_base",
+        "flux_base",
+        "temp_adiabat_ref",
         "t_total",
         "dt",
         "vx_init",
@@ -2717,7 +2779,6 @@ def prep_model(params):
         "ero_option9",
         "ero_option10",
         "mantle_velocity",
-        "mantle_adiabat",
         "rho_crust",
         "cp_crust",
         "k_crust",
@@ -2935,8 +2996,8 @@ def batch_run(params, batch_params):
             # Should this also be handled in log_output()?
             with open(outfile, "a+") as f:
                 f.write(
-                    f"{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},"
-                    f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
+                    f"{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},{params['bc_type']},"
+                    f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                     f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                     f"{params['removal_end_time']:.4f},"
                     f"{params['ero_type']},{params['ero_option1']:.4f},"
@@ -4199,7 +4260,7 @@ def run_model(params):
     # Calculate explicit model stability conditions
     cond_stab = 0.0
     adv_stab = 0.0
-    if not params["implicit"]:
+    if params["solution_type"] == 1:
         cond_stab, adv_stab = calculate_explicit_stability(
             vx_max,
             params["k_crust"],
@@ -4222,7 +4283,8 @@ def run_model(params):
             nt,
             dt,
             t_total,
-            params["implicit"],
+            params["solution_type"],
+            params["bc_type"],
             params["ero_type"],
             exhumation_magnitude,
             cond_stab,
@@ -4332,13 +4394,13 @@ def run_model(params):
     if params["mantle_adiabat"]:
         adiabat_m = adiabat(
             alphav=params["alphav_mantle"],
-            temp=params["temp_base"] + 273.15,
+            temp=params["temp_adiabat_ref"] + 273.15,
             cp=params["cp_mantle"],
         )
-        temp_adiabat = params["temp_base"] + (xstag - max_depth) * adiabat_m
+        temp_adiabat = params["temp_adiabat_ref"] + (xstag - max_depth) * adiabat_m
     else:
         adiabat_m = 0.0
-        temp_adiabat = params["temp_base"]
+        temp_adiabat = params["temp_adiabat_ref"]
 
     # Create material property arrays
     rho = np.ones(len(x)) * params["rho_crust"]
@@ -4360,9 +4422,18 @@ def run_model(params):
         print("")
         print("--- Calculating initial thermal model ---")
         print("")
+
+    # Create the empty (zero) coefficient and right hand side arrays for temperature calculations
+    a_matrix = np.zeros(
+        (params["nx"], params["nx"])
+    )  # 2-dimensional array, ny rows, ny columns
+    b_vector = np.zeros(params["nx"])
+
     temp_init = temp_ss_implicit(
         params["nx"],
         dx,
+        a_matrix,
+        b_vector,
         params["temp_surf"],
         params["temp_base"],
         vx_init,
@@ -4482,6 +4553,28 @@ def run_model(params):
 
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
+
+    # Assign basal boundary condition for implicit and Crank-Nicolson solutions
+    # NOTE: This assumes the boundary conditions do NOT change with time
+    # FIXME: Should handle cases where b/cs change somehow...
+    # Constant surface temperature
+    a_matrix[0, 0] = 1
+    b_vector[0] = params["temp_surf"]
+
+    if params["bc_type"] == 1:
+        # Assign constant basal temperature
+        a_matrix[-1, -1] = 1
+        b_vector[-1] = params["temp_base"]
+    elif params["bc_type"] == 2:
+        # Assign constant basal heat flux
+        a_matrix[-1, -3] = 1.0
+        a_matrix[-1, -2] = -4.0
+        a_matrix[-1, -1] = 3.0
+        b_vector[-1] = 2 * milli2base(params["flux_base"]) * dx / k[-1]
+    else:
+        raise ValueError(
+            f"Bad boundary condition type: {params['bc_type']}. Must be 1 or 2."
+        )
 
     # Loop over number of required passes
     for j in range(num_pass):
@@ -4763,14 +4856,45 @@ def run_model(params):
             )
 
             # Calculate updated temperatures
-            if params["implicit"]:
-                temp_new[:] = temp_transient_implicit(
+            if params["solution_type"] == 1:
+                temp_new[:] = temp_transient_explicit(
                     params["nx"],
                     dx,
                     dt,
                     temp_prev,
+                    temp_new,
+                    params["bc_type"],
                     params["temp_surf"],
                     params["temp_base"],
+                    milli2base(params["flux_base"]),
+                    vx_array,
+                    rho,
+                    cp,
+                    k,
+                    heat_prod,
+                )
+            elif params["solution_type"] == 2:
+                temp_new[:] = temp_transient_implicit(
+                    params["nx"],
+                    dx,
+                    dt,
+                    a_matrix,
+                    b_vector,
+                    temp_prev,
+                    vx_array,
+                    rho,
+                    cp,
+                    k,
+                    heat_prod,
+                )
+            elif params["solution_type"] == 3:
+                temp_new[:] = temp_transient_crank_nicolson(
+                    params["nx"],
+                    dx,
+                    dt,
+                    a_matrix,
+                    b_vector,
+                    temp_prev,
                     vx_array,
                     rho,
                     cp,
@@ -4778,21 +4902,9 @@ def run_model(params):
                     heat_prod,
                 )
             else:
-                temp_new[:] = temp_transient_explicit(
-                    temp_prev,
-                    temp_new,
-                    params["temp_surf"],
-                    params["temp_base"],
-                    params["nx"],
-                    dx,
-                    vx_array,
-                    dt,
-                    rho,
-                    cp,
-                    k,
-                    heat_prod,
+                raise ValueError(
+                    f"Bad solution type: {params['solution_type']}. Must be 1, 2 or 3."
                 )
-
             # Calculate maximum temperature difference if using debug output
             if params["debug"]:
                 max_temp_diff = abs(temp_prev - temp_new).max()
@@ -6411,8 +6523,8 @@ def run_model(params):
         # Open log file for writing
         with open(outfile, "a+") as f:
             f.write(
-                f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},"
-                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
+                f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},{params['bc_type']},"
+                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                 f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                 f"{params['removal_end_time']:.4f},{params['ero_type']},{params['ero_option1']:.4f},"
                 f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},"
