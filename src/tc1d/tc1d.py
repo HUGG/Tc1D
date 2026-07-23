@@ -4060,6 +4060,10 @@ def run_model(params):
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
 
+    # Set ero_stages to None if not using ero_type == 0
+    if params["ero_type"] != 0:
+        params["ero_stages"] = None
+
     # BG: Preload multi-stage erosion stages from YAML (ero_type = 0)
     ero_type = (
         params["ero_type"][0]
