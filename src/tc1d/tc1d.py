@@ -2259,6 +2259,7 @@ def init_params(
     ero_option8=0.0,
     ero_option9=0.0,
     ero_option10=0.0,
+    ero_stages=None,
     mantle_velocity=0.0,
     calc_ages=True,
     ketch_aft=True,
@@ -2427,6 +2428,8 @@ def init_params(
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
     ero_option10 : float or int, default=0.0
         Erosion model option 8 (see https://tc1d.readthedocs.io/en/latest/erosion-models.html).
+    ero_stages : list of dict, default=None
+        Erosion stages from YAML input file for ero_type 0
     mantle_velocity : float or int, default=0.0
         Velocity for mantle movement in fixed-Moho models (mm/yr)
     calc_ages : bool, default=True
@@ -2587,6 +2590,7 @@ def init_params(
         "ero_option8": ero_option8,
         "ero_option9": ero_option9,
         "ero_option10": ero_option10,
+        "ero_stages": ero_stages,
         "mantle_velocity": mantle_velocity,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
@@ -4059,10 +4063,6 @@ def run_model(params):
     peclet = np.zeros(nt)
     if params["plot_fault_depth_history"]:
         fault_depth_history = np.zeros(nt)
-
-    # Set ero_stages to None if not using ero_type == 0
-    if params["ero_type"] != 0:
-        params["ero_stages"] = None
 
     # BG: Preload multi-stage erosion stages from YAML (ero_type = 0)
     ero_type = (
