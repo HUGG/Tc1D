@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "tc1d"
-version = "0.4.0"
+version = "0.4.1"
 authors = [
     {name = "Dave Whipp", email = "david.whipp@helsinki.fi"},
     {name= "Benjamin Gérard", email = "benjamin.gerard@helsinki.fi"},
@@ -30,6 +30,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Programming Language :: Python :: 3 :: Only",
     "Operating System :: OS Independent",
     "Topic :: Scientific/Engineering",
@@ -43,6 +44,7 @@ dependencies = [
     "neighpy",
     "numpy",
     "openmpi",
+    "pyyaml",
     "schwimmbad",
     "scipy",
     "scikit-learn",
@@ -110,22 +112,3 @@ docstring-code-line-length = "dynamic"
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"  # Accepts: "google", "numpy", or "pep257".
-
-[tool.pixi.workspace]
-channels = ["conda-forge"]
-platforms = ["osx-arm64"]
-
-[tool.pixi.pypi-dependencies]
-tc1d = { path = ".", editable = true }
-
-[tool.pixi.tasks]
-
-[tool.pixi.dependencies]
-jupyterlab = ">=4.4.7,<5"
-ruff = ">=0.12.12,<0.13"
-hatchling = ">=1.27.0,<2"
-mypy = ">=1.17.1,<2"
-pip = ">=25.2,<26"
-pre-commit = ">=4.3.0,<5"
-types-pyyaml = ">=6.0.12.20250915,<7"
-pyyaml = ">=6.0.3,<7"
