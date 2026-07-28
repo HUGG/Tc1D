@@ -2315,7 +2315,7 @@ def init_params(
     madtrax_aft=False,
     madtrax_aft_kinetic_model=1,
     madtrax_zft_kinetic_model=1,
-    ap_rad=45.0,
+    ap_rad=60.0,
     ap_uranium=10.0,
     ap_thorium=40.0,
     zr_rad=60.0,
@@ -2498,7 +2498,7 @@ def init_params(
         Kinetic model to use for AFT age prediction with MadTrax (see https://tc1d.readthedocs.io).
     madtrax_zft_kinetic_model : int, default=1
         Kinetic model to use for ZFT age prediction with MadTrax (see https://tc1d.readthedocs.io).
-    ap_rad : float or int, default=45.0
+    ap_rad : float or int, default=60.0
         Apatite grain radius in um.
     ap_uranium : float or int, default=10.0
         Apatite U concentration in ppm.

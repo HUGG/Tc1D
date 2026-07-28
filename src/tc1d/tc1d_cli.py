@@ -993,7 +993,7 @@ def main():
         dest="ap_rad",
         help="Apatite grain radius (um)",
         nargs="+",
-        default=[45.0],
+        default=[60.0],
         type=float,
     )
     prediction.add_argument(
