@@ -272,6 +272,7 @@ def _apply_yaml_to_args(args, y: dict) -> None:
             "plot_depth_history",
             "plot_fault_depth_history",
             "invert_tt_plot",
+            "watch_it_exhume",
             "crust_solidus",
             "mantle_solidus",
             "solidus_ranges",
@@ -358,6 +359,7 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("plotting", "plot_fault_depth_history"): "plot_fault_depth_history",
         ("plotting", "invert_tt_plot"): "invert_tt_plot",
         ("plotting", "t_plots"): "t_plots",
+        ("plotting", "watch_it_exhume"): "watch_it_exhume",
         ("plotting", "crust_solidus"): "crust_solidus",
         ("plotting", "crust_solidus_comp"): "crust_solidus_comp",
         ("plotting", "mantle_solidus"): "mantle_solidus",
@@ -1281,7 +1283,6 @@ def main():
         action="store_true",
         default=False,
     )
-
     plotting.add_argument(
         "--invert-tt-plot",
         dest="invert_tt_plot",
@@ -1296,6 +1297,13 @@ def main():
         nargs="+",
         default=[0.1, 1, 5, 10, 20, 30, 50],
         type=float,
+    )
+    plotting.add_argument(
+        "--watch-it-exhume",
+        dest="watch_it_exhume",
+        help="Use animation plot for thermal history rather than static plotting",
+        action="store_true",
+        default=False,
     )
     plotting.add_argument(
         "--crust-solidus",
@@ -1461,6 +1469,7 @@ def main():
         "plot_peclet_number": args.plot_peclet_number,
         "plot_ft_length_dist": args.plot_ft_length_dist,
         "invert_tt_plot": args.invert_tt_plot,
+        "watch_it_exhume": args.watch_it_exhume,
         "run_type": args.run_type,
         "batch_mode": args.batch_mode,
         "inverse_mode": args.inverse_mode,

@@ -2356,6 +2356,7 @@ def init_params(
     plot_ft_length_dist=False,
     invert_tt_plot=False,
     t_plots=[0.1, 1, 5, 10, 20, 30, 50],
+    watch_it_exhume=False,
     crust_solidus=False,
     crust_solidus_comp="wet_intermediate",
     mantle_solidus=False,
@@ -2554,6 +2555,8 @@ def init_params(
         Invert depth/temperature axis on thermal history plot.
     t_plots : list of float or int, default=[0.1, 1, 5, 10, 20, 30, 50]
         Output times for temperature plotting in Myr. Treated as increment if only one value given.
+    watch_it_exhume : bool, default=False
+        Use animation plot for thermal history rather than static plotting
     crust_solidus : bool, default=False
         Calculate and plot a crustal solidus.
     crust_solidus_comp : str, default="wet_intermediate"
@@ -2606,6 +2609,7 @@ def init_params(
         "plot_peclet_number": plot_peclet_number,
         "plot_ft_length_dist": plot_ft_length_dist,
         "invert_tt_plot": invert_tt_plot,
+        "watch_it_exhume": watch_it_exhume,
         "run_type": run_type,
         # Batch mode defaults to false and will set itself true if batch parameters exist
         "batch_mode": False,
@@ -4526,31 +4530,6 @@ def run_model(params):
                 temp_prev[ix] = params["temp_base"] + (x[ix] - max_depth) * adiabat_m
         delaminated = True
 
-    # Set plot parameters if plotting requested
-    if params["plot_results"]:
-        # Set plot style
-        plt.style.use("seaborn-v0_8-darkgrid")
-
-        # Plot initial temperature field
-        if params["plot_density"]:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
-        else:
-            fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
-        if t_plots.max() < t_total - 1.0:
-            # Add an extra color for the final temperature if it is not in the
-            # list of times for plotting
-            colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots) + 1))
-        else:
-            colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots)))
-        ax1.plot(temp_init, -x / 1000, "k:", label="Initial")
-        if params["plot_ma"]:
-            time_label = f"{params['t_total']:.1f} Ma"
-        else:
-            time_label = "0.0 Myr"
-        ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
-        if params["plot_density"]:
-            ax2.plot(density_init, -x / 1000, "k-", label=time_label)
-
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
 
@@ -4721,6 +4700,64 @@ def run_model(params):
                 fw_reference_frame,
                 mmyr2ms(params["mantle_velocity"]),
             )
+
+        # Create initial plots and set plot parameters if plotting requested
+        if params["plot_results"]:
+            # Set plot style
+            plt.style.use("seaborn-v0_8-darkgrid")
+
+            # Plot animation of temperatures and particle depth, if requested
+            if params["watch_it_exhume"]:
+                n_anim_steps = 200
+                anim_plot_increment = int(round(nt / n_anim_steps, 0))
+                plt.ion()
+                fig_anim, (ax1_anim, ax2_anim) = plt.subplots(1, 2, figsize=(12, 8))
+                # Create initial temperature plot
+                (temp_line,) = ax1_anim.plot(
+                    temp_init, -x / 1000.0, label="Current temp."
+                )
+                particle_temp = np.interp(depths[0], x, temp_init)
+                (particle,) = ax1_anim.plot(
+                    particle_temp, -depths[0] / 1000.0, "o", label="Tracking particle"
+                )
+                time_text = ax1_anim.text(
+                    0.05 * params["temp_base"],
+                    -0.95 * max_depth / 1000.0,
+                    f"Time: {t_total / myr2sec(1):.1f} Ma",
+                )
+                ax1_anim.legend()
+
+                # Create initial thermal history plot
+                (thist_line,) = ax2_anim.plot(
+                    t_total, particle_temp, "o", label="Thermal history"
+                )
+                ax2_anim.xaxis.set_inverted(True)
+                ax2_anim.yaxis.set_inverted(True)
+
+                # Use tight layout
+                plt.tight_layout()
+
+            # Create static plots otherwise
+            else:
+                # Plot initial temperature field
+                if params["plot_density"]:
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+                else:
+                    fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
+                if t_plots.max() < t_total - 1.0:
+                    # Add an extra color for the final temperature if it is not in the
+                    # list of times for plotting
+                    colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots) + 1))
+                else:
+                    colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots)))
+                ax1.plot(temp_init, -x / 1000, "k:", label="Initial")
+                if params["plot_ma"]:
+                    time_label = f"{params['t_total']:.1f} Ma"
+                else:
+                    time_label = "0.0 Myr"
+                ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
+                if params["plot_density"]:
+                    ax2.plot(density_init, -x / 1000, "k-", label=time_label)
 
         if not params["batch_mode"]:
             print("")
@@ -5021,6 +5058,46 @@ def run_model(params):
                                 f"Temp for surface time {i}: {temp_hists[i][idx]:.1f} °C"
                             )
 
+                if params["plot_results"] and params["watch_it_exhume"]:
+                    if idx % anim_plot_increment == 0:
+                        # Update geotherm plot
+                        temp_line.set_data(temp_new, -x / 1000.0)
+                        particle_temp = np.interp(depths[0], x, temp_new)
+                        particle.set_data([particle_temp], [-depths[0] / 1000.0])
+                        time_text.set_text(
+                            f"Time: {(t_total - curtime) / myr2sec(1):.1f} Ma"
+                        )
+
+                        # Update thermal history plot
+                        thist_line.set_data(
+                            (t_total - time_hists[-1][:idx]) / myr2sec(1.0),
+                            temp_hists[-1][:idx],
+                        )
+
+                        # Rescale axes
+                        ax1_anim.relim()
+                        ax1_anim.autoscale_view()
+                        ax2_anim.relim()
+                        ax2_anim.autoscale_view()
+
+                        # Add axis labels
+                        ax1_anim.set_xlabel("Temperature (°C)")
+                        ax1_anim.set_ylabel("Depth (km)")
+                        ax2_anim.set_xlabel("Time (Ma)")
+                        ax2_anim.set_ylabel("Temperature (°C)")
+
+                        # Redraw
+                        fig_anim.canvas.draw()
+                        fig_anim.canvas.flush_events()
+
+                    if idx % (40 * anim_plot_increment) == 0:
+                        ax1_anim.plot(
+                            temp_new,
+                            -x / 1000.0,
+                            label=f"{(t_total - curtime) / myr2sec(1):.1f} Ma",
+                        )
+                        ax1_anim.legend()
+
             if params["debug"]:
                 print(
                     f"Maximum temp difference at time {curtime / myr2sec(1):.4f} Myr: {max_temp_diff:.4f} °C"
@@ -5061,32 +5138,37 @@ def run_model(params):
             # Plot temperature and density profiles
             if j == num_pass - 1:
                 if params["plot_results"] and more_plots:
-                    if curtime > t_plots[plotidx]:
-                        if params["plot_ma"]:
-                            time_label = f"{(params['t_total'] - t_plots[plotidx] / myr2sec(1)):.1f} Ma"
-                        else:
-                            time_label = f"{t_plots[plotidx] / myr2sec(1):.1f} Myr"
-                        ax1.plot(
-                            temp_new,
-                            -x / 1000,
-                            "-",
-                            label=time_label,
-                            color=colors[plotidx],
-                        )
-                        if params["plot_density"]:
-                            ax2.plot(
-                                density_new,
+                    if not params["watch_it_exhume"]:
+                        if curtime > t_plots[plotidx]:
+                            if params["plot_ma"]:
+                                time_label = f"{(params['t_total'] - t_plots[plotidx] / myr2sec(1)):.1f} Ma"
+                            else:
+                                time_label = f"{t_plots[plotidx] / myr2sec(1):.1f} Myr"
+                            ax1.plot(
+                                temp_new,
                                 -x / 1000,
+                                "-",
                                 label=time_label,
                                 color=colors[plotidx],
                             )
-                        if plotidx == len(t_plots) - 1:
-                            more_plots = False
-                        plotidx += 1
-                        # tplot = t_plots[plotidx]
+                            if params["plot_density"]:
+                                ax2.plot(
+                                    density_new,
+                                    -x / 1000,
+                                    label=time_label,
+                                    color=colors[plotidx],
+                                )
+                            if plotidx == len(t_plots) - 1:
+                                more_plots = False
+                            plotidx += 1
+                            # tplot = t_plots[plotidx]
 
         if not params["batch_mode"]:
             print("")
+
+    if params["watch_it_exhume"]:
+        plt.ioff()
+        # plt.show()
 
     # Calculate final densities
     density_new = update_density(rho, alphav, temp_new)
@@ -5491,194 +5573,234 @@ def run_model(params):
             time_label = "0.0 Ma"
         else:
             time_label = f"{curtime / myr2sec(1):.1f} Myr"
-        ax1.plot(
-            temp_new,
-            -x / 1000,
-            "-",
-            label=time_label,
-            color=colors[-1],
-        )
-        ax1.plot(
-            [xmin, xmax],
-            [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
-            linestyle="--",
-            color="black",
-            lw=0.5,
-        )
-        ax1.plot(
-            [xmin, xmax],
-            [-params["init_moho_depth"], -params["init_moho_depth"]],
-            linestyle="--",
-            color="gray",
-            lw=0.5,
-        )
+        # Update plot and plot final geotherm if using watch it exhume mode
+        if params["watch_it_exhume"]:
+            # Update geotherm plot
+            temp_line.set_data(temp_new, -x / 1000.0)
+            particle_temp = np.interp(depths[0], x, temp_new)
+            particle.set_data([particle_temp], [-depths[0] / 1000.0])
+            time_text.set_text(f"Time: {(t_total - curtime) / myr2sec(1):.1f} Ma")
 
-        if params["crust_solidus"]:
-            crust_solidus_comp_text = {
-                "wet_felsic": "Wet felsic",
-                "wet_intermediate": "Wet intermediate",
-                "wet_basalt": "Wet basalt",
-                "dry_felsic": "Dry felsic",
-                "dry_basalt": "Dry basalt",
-            }
-            crust_slice = x / 1000.0 <= moho_depth / kilo2base(1)
-            pressure = calculate_pressure(density_new, dx)
-            crust_pressure = pressure[crust_slice]
-            crust_solidus = calculate_crust_solidus(
-                params["crust_solidus_comp"], crust_pressure
+            # Update thermal history plot
+            thist_line.set_data(
+                (t_total - time_hists[-1][:idx]) / myr2sec(1.0), temp_hists[-1][:idx]
             )
-            crust_solidus_plot_text = crust_solidus_comp_text[
-                params["crust_solidus_comp"]
-            ]
+
+            # Rescale axes
+            ax1_anim.relim()
+            ax1_anim.autoscale_view()
+            ax2_anim.relim()
+            ax2_anim.autoscale_view()
+
+            # Redraw
+            fig_anim.canvas.draw()
+            fig_anim.canvas.flush_events()
+
+            # Plot final geotherm
+            ax1_anim.plot(temp_new, -x / 1000.0, label=time_label)
+            ax1_anim.legend()
+
+            # Use tight layout
+            plt.tight_layout()
+
+        # Plot final geotherm on static plot
+        else:
             ax1.plot(
-                crust_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle=":",
-                lw=1.5,
-                label=f"Crust solidus ({crust_solidus_plot_text})",
-            )
-
-        if params["mantle_solidus"]:
-            mantle_slice = x / 1000 >= moho_depth / kilo2base(1)
-            pressure = calculate_pressure(density_new, dx)
-            mantle_solidus = calculate_mantle_solidus(
-                pressure / 1.0e9, xoh=params["mantle_solidus_xoh"]
-            )
-            ax1.plot(
-                mantle_solidus[mantle_slice],
-                -x[mantle_slice] / 1000,
-                color="gray",
-                linestyle="--",
-                lw=1.5,
-                label=f"Mantle solidus ({params['mantle_solidus_xoh']:.1f} μg/g H$_{2}$O)",
-            )
-
-        if params["solidus_ranges"]:
-            # Crust solidii
-            crust_solidus_comp_text = {
-                "wet_felsic": "Wet felsic",
-                "wet_intermediate": "Wet intermediate",
-                "wet_basalt": "Wet basalt",
-                "dry_felsic": "Dry felsic",
-                "dry_basalt": "Dry basalt",
-            }
-            crust_thickness = max(params["init_moho_depth"], moho_depth / kilo2base(1))
-            crust_slice = x / kilo2base(1) <= crust_thickness
-            pressure = calculate_pressure(density_new, dx)
-            crust_pressure = pressure[crust_slice]
-            wet_felsic_solidus = calculate_crust_solidus("wet_felsic", crust_pressure)
-            dry_basalt_solidus = calculate_crust_solidus("dry_basalt", crust_pressure)
-            wet_felsic_solidus_plot_text = crust_solidus_comp_text["wet_felsic"]
-            dry_basalt_solidus_plot_text = crust_solidus_comp_text["dry_basalt"]
-
-            # Mantle solidii
-            min_moho_depth = min(params["init_moho_depth"], moho_depth / kilo2base(1))
-            mantle_slice = x / 1000 >= min_moho_depth
-            mantle_pressure = pressure[mantle_slice]
-            # TODO: Find a suitable value for xoh
-            wet_mantle_solidus = calculate_mantle_solidus(
-                mantle_pressure / 1.0e9, xoh=100000.0
-            )
-            dry_mantle_solidus = calculate_mantle_solidus(
-                mantle_pressure / 1.0e9, xoh=0.0
-            )
-
-            # Plots
-            ax1.plot(
-                wet_felsic_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle="--",
-                lw=1.5,
-                label=f"{wet_felsic_solidus_plot_text} solidus",
-            )
-            ax1.plot(
-                dry_basalt_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle="-.",
-                lw=1.5,
-                label=f"{dry_basalt_solidus_plot_text} solidus",
-            )
-            ax1.fill_betweenx(
-                -x[crust_slice] / 1000.0,
-                wet_felsic_solidus,
-                dry_basalt_solidus,
-                color="tab:olive",
-                alpha=0.5,
-                lw=1.5,
-                # label=f"Crust solidus: {wet_felsic_solidus_plot_text}, {dry_basalt_solidus_plot_text}",
-            )
-            ax1.fill_betweenx(
-                -x[mantle_slice] / 1000.0,
-                wet_mantle_solidus,
-                dry_mantle_solidus,
-                color="tab:gray",
-                alpha=0.5,
-                lw=1.5,
-                label="Mantle solidus",
-            )
-
-        ax1.text(20.0, (-moho_depth + 0.01 * x.max()) / kilo2base(1), "Final Moho")
-        if moho_depth < x.max():
-            ax1.text(
-                20.0,
-                -params["init_moho_depth"] - (0.025 * x.max()) / kilo2base(1),
-                "Initial Moho",
-                color="gray",
-            )
-        ax1.legend()
-        ax1.axis([xmin, xmax, -max_depth / 1000, 0])
-        ax1.set_xlabel("Temperature (°C)")
-        ax1.set_ylabel("Depth (km)")
-
-        # Plot density, if requested
-        if params["plot_density"]:
-            # Round density ranges to nearest 50
-            density_base = 50.0
-            xmin = round_to_base(density_new.min(), density_base) - density_base
-            xmax = round_to_base(density_new.max(), density_base) + density_base
-            ax2.plot(
-                density_new,
+                temp_new,
                 -x / 1000,
+                "-",
                 label=time_label,
                 color=colors[-1],
             )
-            ax2.plot(
+            ax1.plot(
                 [xmin, xmax],
                 [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
                 linestyle="--",
                 color="black",
                 lw=0.5,
             )
-            ax2.plot(
+            ax1.plot(
                 [xmin, xmax],
                 [-params["init_moho_depth"], -params["init_moho_depth"]],
                 linestyle="--",
                 color="gray",
                 lw=0.5,
             )
-            ax2.axis([xmin, xmax, -max_depth / 1000, 0])
-            ax2.set_xlabel("Density (kg m$^{-3}$)")
-            ax2.set_ylabel("Depth (km)")
-            ax2.legend()
 
-        plt.tight_layout()
-        if params["save_plots"]:
-            plot_filename = "temperature_history.png"
+            if params["crust_solidus"]:
+                crust_solidus_comp_text = {
+                    "wet_felsic": "Wet felsic",
+                    "wet_intermediate": "Wet intermediate",
+                    "wet_basalt": "Wet basalt",
+                    "dry_felsic": "Dry felsic",
+                    "dry_basalt": "Dry basalt",
+                }
+                crust_slice = x / 1000.0 <= moho_depth / kilo2base(1)
+                pressure = calculate_pressure(density_new, dx)
+                crust_pressure = pressure[crust_slice]
+                crust_solidus = calculate_crust_solidus(
+                    params["crust_solidus_comp"], crust_pressure
+                )
+                crust_solidus_plot_text = crust_solidus_comp_text[
+                    params["crust_solidus_comp"]
+                ]
+                ax1.plot(
+                    crust_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle=":",
+                    lw=1.5,
+                    label=f"Crust solidus ({crust_solidus_plot_text})",
+                )
+
+            if params["mantle_solidus"]:
+                mantle_slice = x / 1000 >= moho_depth / kilo2base(1)
+                pressure = calculate_pressure(density_new, dx)
+                mantle_solidus = calculate_mantle_solidus(
+                    pressure / 1.0e9, xoh=params["mantle_solidus_xoh"]
+                )
+                ax1.plot(
+                    mantle_solidus[mantle_slice],
+                    -x[mantle_slice] / 1000,
+                    color="gray",
+                    linestyle="--",
+                    lw=1.5,
+                    label=f"Mantle solidus ({params['mantle_solidus_xoh']:.1f} μg/g H$_{2}$O)",
+                )
+
+            if params["solidus_ranges"]:
+                # Crust solidii
+                crust_solidus_comp_text = {
+                    "wet_felsic": "Wet felsic",
+                    "wet_intermediate": "Wet intermediate",
+                    "wet_basalt": "Wet basalt",
+                    "dry_felsic": "Dry felsic",
+                    "dry_basalt": "Dry basalt",
+                }
+                crust_thickness = max(
+                    params["init_moho_depth"], moho_depth / kilo2base(1)
+                )
+                crust_slice = x / kilo2base(1) <= crust_thickness
+                pressure = calculate_pressure(density_new, dx)
+                crust_pressure = pressure[crust_slice]
+                wet_felsic_solidus = calculate_crust_solidus(
+                    "wet_felsic", crust_pressure
+                )
+                dry_basalt_solidus = calculate_crust_solidus(
+                    "dry_basalt", crust_pressure
+                )
+                wet_felsic_solidus_plot_text = crust_solidus_comp_text["wet_felsic"]
+                dry_basalt_solidus_plot_text = crust_solidus_comp_text["dry_basalt"]
+
+                # Mantle solidii
+                min_moho_depth = min(
+                    params["init_moho_depth"], moho_depth / kilo2base(1)
+                )
+                mantle_slice = x / 1000 >= min_moho_depth
+                mantle_pressure = pressure[mantle_slice]
+                # TODO: Find a suitable value for xoh
+                wet_mantle_solidus = calculate_mantle_solidus(
+                    mantle_pressure / 1.0e9, xoh=100000.0
+                )
+                dry_mantle_solidus = calculate_mantle_solidus(
+                    mantle_pressure / 1.0e9, xoh=0.0
+                )
+
+                # Plots
+                ax1.plot(
+                    wet_felsic_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle="--",
+                    lw=1.5,
+                    label=f"{wet_felsic_solidus_plot_text} solidus",
+                )
+                ax1.plot(
+                    dry_basalt_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle="-.",
+                    lw=1.5,
+                    label=f"{dry_basalt_solidus_plot_text} solidus",
+                )
+                ax1.fill_betweenx(
+                    -x[crust_slice] / 1000.0,
+                    wet_felsic_solidus,
+                    dry_basalt_solidus,
+                    color="tab:olive",
+                    alpha=0.5,
+                    lw=1.5,
+                    # label=f"Crust solidus: {wet_felsic_solidus_plot_text}, {dry_basalt_solidus_plot_text}",
+                )
+                ax1.fill_betweenx(
+                    -x[mantle_slice] / 1000.0,
+                    wet_mantle_solidus,
+                    dry_mantle_solidus,
+                    color="tab:gray",
+                    alpha=0.5,
+                    lw=1.5,
+                    label="Mantle solidus",
+                )
+
+            ax1.text(20.0, (-moho_depth + 0.01 * x.max()) / kilo2base(1), "Final Moho")
+            if moho_depth < x.max():
+                ax1.text(
+                    20.0,
+                    -params["init_moho_depth"] - (0.025 * x.max()) / kilo2base(1),
+                    "Initial Moho",
+                    color="gray",
+                )
+            ax1.legend()
+            ax1.axis([xmin, xmax, -max_depth / 1000, 0])
+            ax1.set_xlabel("Temperature (°C)")
+            ax1.set_ylabel("Depth (km)")
+
+            # Plot density, if requested
             if params["plot_density"]:
-                plot_filename = "temperature_density_history.png"
-            savefile = wd / "png" / plot_filename
-            plt.savefig(savefile, dpi=300)
-            if params["plot_density"]:
-                print(f"- Temperature/density history plot written to {savefile}")
+                # Round density ranges to nearest 50
+                density_base = 50.0
+                xmin = round_to_base(density_new.min(), density_base) - density_base
+                xmax = round_to_base(density_new.max(), density_base) + density_base
+                ax2.plot(
+                    density_new,
+                    -x / 1000,
+                    label=time_label,
+                    color=colors[-1],
+                )
+                ax2.plot(
+                    [xmin, xmax],
+                    [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
+                    linestyle="--",
+                    color="black",
+                    lw=0.5,
+                )
+                ax2.plot(
+                    [xmin, xmax],
+                    [-params["init_moho_depth"], -params["init_moho_depth"]],
+                    linestyle="--",
+                    color="gray",
+                    lw=0.5,
+                )
+                ax2.axis([xmin, xmax, -max_depth / 1000, 0])
+                ax2.set_xlabel("Density (kg m$^{-3}$)")
+                ax2.set_ylabel("Depth (km)")
+                ax2.legend()
+
+            plt.tight_layout()
+            if params["save_plots"]:
+                plot_filename = "temperature_history.png"
+                if params["plot_density"]:
+                    plot_filename = "temperature_density_history.png"
+                savefile = wd / "png" / plot_filename
+                plt.savefig(savefile, dpi=300)
+                if params["plot_density"]:
+                    print(f"- Temperature/density history plot written to {savefile}")
+                else:
+                    print(f"- Temperature history plot written to {savefile}")
+            if params["display_plots"]:
+                plt.show()
             else:
-                print(f"- Temperature history plot written to {savefile}")
-        if params["display_plots"]:
-            plt.show()
-        else:
-            plt.close()
+                plt.close()
 
         # Plot elevation history
         if params["plot_elevation_history"]:
