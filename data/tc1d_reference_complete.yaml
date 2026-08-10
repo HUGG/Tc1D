@@ -1,0 +1,329 @@
+# Tc1D reference input file (YAML)
+#
+# Purpose
+# -------
+#Reference configuration for the current Tc1D develop branch.
+# Numerical/scientific values are retained from the supplied reference model wherever
+# possible so this file can be reused as a working baseline.
+#
+# IMPORTANT
+# ---------
+# - YAML values override the corresponding command-line values.
+# - Do not define the same YAML key twice: the last occurrence wins.
+# - Parameters omitted from YAML fall back to tc1d-cli defaults.
+# - For forward runs, use scalar values.
+# - For batch/inverse-capable parameters, the CLI convention is [min, max] or a list
+#   of values. At present, YAML list/range support is fully implemented for the
+#   intrusion parameters and ero_option1..10. Geometry/material/thermal list support
+#   will be checked/fixed separately in the CLI mapping.
+#
+# Main units
+# ----------
+# time, start times, durations : Myr
+# dt                          : years
+# length/depth/thickness       : km
+# density                      : kg m^-3
+# heat capacity                : J kg^-1 K^-1
+# thermal conductivity         : W m^-1 K^-1
+# heat production              : microW m^-3
+# heat flux                    : mW m^-2
+# temperature                  : degrees C
+# velocity                     : mm yr^-1
+# grain radius                 : micrometres
+# U, Th                        : ppm
+#
+# ==============================================================================
+# 1) General / run control
+# ==============================================================================
+general:
+  run_type: "forward"          # Run mode: forward / batch / na / mcmc.
+  batch_mode: false            # Internal CLI batch flag; normally false for forward runs.
+  inverse_mode: false          # Must be true for NA/MCMC and false for forward/batch.
+  debug: false                 # Print additional debugging information.
+
+  # Screen-output controls.
+  echo_inputs: false           # Print the input parameter values.
+  no_echo_info: true           # Suppress general model information.
+  no_echo_thermal_info: true   # Suppress thermal-model information.
+  no_echo_ages: true           # Suppress calculated thermochronometer ages.
+
+# ==============================================================================
+# 2) Geometry and time
+# ==============================================================================
+geometry_time:
+  length: 125.0                # Model depth extent [km].
+                                # Reference value retained from the supplied model.
+                                # With the original full-lithosphere setup this places
+                                # the basal boundary well below the crust.
+
+  nx: 1251                     # Number of temperature grid nodes [-].
+                                # At length=125 km, dx ~100 m.
+
+  time: 600.0                  # Total model duration [Myr].
+                                # Reference run starts at 600 Ma and ends at present.
+
+  dt: 1000.0                   # Numerical time step [yr].
+                                # Fine reference value used to resolve the imposed
+                                # shallow thermal perturbation.
+
+  init_moho_depth: 45.0        # Initial Moho depth [km].
+  crustal_uplift: false        # If true, vertical motion is restricted to the crust.
+  fixed_moho: false            # If true, the Moho depth is held fixed.
+
+  removal_fraction: 0.0        # Fraction of lithospheric mantle removed [0-1].
+  # 0 disables lithospheric mantle removal.
+  removal_start_time: 0.0      # Start of mantle removal [Myr after model start].
+  removal_end_time: -1.0       # End of mantle removal [Myr after model start].
+  # Inactive here because removal_fraction = 0.
+
+# ==============================================================================
+# 3) Material properties
+# ==============================================================================
+materials:
+  # --- Crust ---
+  rho_crust: 2850.0            # Crustal density [kg m^-3].
+  cp_crust: 800.0              # Crustal heat capacity [J kg^-1 K^-1].
+  k_crust: 2.5                 # Crustal thermal conductivity [W m^-1 K^-1].
+
+  heat_prod_crust: 0.6         # Crustal radiogenic heat production [microW m^-3].
+                                # Uniform effective value in this reference setup.
+
+  heat_prod_decay_depth: -1.0  # Exponential heat-production decay depth [km].
+                                # <=0 disables exponential decay, so heat production
+                                # is uniform within the crust.
+
+  alphav_crust: 3.0e-5         # Crustal thermal-expansion coefficient [K^-1].
+
+  # --- Lithospheric mantle ---
+  rho_mantle: 3250.0           # Lithospheric-mantle density [kg m^-3].
+  cp_mantle: 1000.0            # Lithospheric-mantle heat capacity [J kg^-1 K^-1].
+  k_mantle: 2.5                # Lithospheric-mantle conductivity [W m^-1 K^-1].
+  heat_prod_mantle: 0.0        # Mantle radiogenic heat production [microW m^-3].
+  alphav_mantle: 3.0e-5        # Mantle thermal-expansion coefficient [K^-1].
+
+  # --- Asthenosphere ---
+  rho_a: 3250.0                # Asthenospheric reference density [kg m^-3].
+  k_a: 20.0                    # Effective asthenospheric conductivity [W m^-1 K^-1].
+
+# ==============================================================================
+# 4) Thermal model
+# ==============================================================================
+thermal_model:
+  # Finite-difference solver:
+  #   1 = explicit
+  #   2 = implicit
+  #   3 = Crank-Nicolson
+  solution_type: 3
+
+  # Basal boundary condition:
+  #   1 = fixed basal temperature (Dirichlet)
+  #   2 = fixed basal heat flux (Neumann)
+  bc_type: 1
+
+  temp_surf: 10.0              # Surface boundary temperature [degrees C].
+                                # Reference long-term compromise retained from the
+                                # supplied model.
+
+  temp_base: 1300.0            # Basal temperature [degrees C].
+                                # Used when bc_type = 1.
+
+  flux_base: 20.0              # Basal heat flux [mW m^-2].
+                                # Used when bc_type = 2.
+
+  no_mantle_adiabat: false     # false = use mantle adiabat; true = disable it.
+                                # Note the deliberately negative CLI/YAML naming.
+
+  temp_adiabat_ref: 1300.0     # Reference temperature for the mantle adiabat [degrees C].
+
+# ==============================================================================
+# 5) Thermal intrusion / hydrothermal proxy
+# ==============================================================================
+intrusion_model:
+  intrusion_temperature: 100.0 # Imposed temperature of the active layer [degrees C].
+
+  intrusion_start_time: 160.0  # Activation time [Myr after model start].
+                                # For a 600 Ma run: 600 - 160 = 440 Ma.
+
+  intrusion_duration: 50.0     # Duration of the imposed thermal perturbation [Myr].
+                                # Here: 440-390 Ma.
+
+  intrusion_thickness: 0.2     # Thickness of the thermally perturbed layer [km].
+                                # Here: 200 m.
+
+  intrusion_base_depth: 1.1    # Depth of the base of the layer [km].
+
+  # In inversion/batch mode, intrusion parameters can currently use YAML ranges:
+  # intrusion_temperature: [20.0, 160.0]
+  # intrusion_duration: [10.0, 100.0]
+
+# ==============================================================================
+# 6) Erosion / burial / vertical motion
+# ==============================================================================
+erosion_model:
+  vx_init: 0.0                 # Initial steady-state vertical advection velocity [mm yr^-1].
+
+  # Erosion model:
+  #   0 = multi-stage model defined by ero_stages below
+  #   1 = constant total erosion/exhumation magnitude
+  #   2 = stepwise erosion intervals
+  #   3 = exponential erosion-rate decay
+  #   4 = thrust-sheet emplacement + erosional removal
+  #   5 = tectonic exhumation + erosion
+  #   6 = linear erosion-rate change
+  #   7 = convergent/extensional tectonics
+  ero_type: 0
+
+  mantle_velocity: 0.0         # Mantle vertical velocity [mm yr^-1] for fixed-Moho/
+                                # crustal-uplift configurations.
+
+  # ero_option1..10 are model-specific parameters used by ero_type 1-7.
+  # They are omitted from the active configuration because ero_type=0 is used.
+  # YAML ranges are supported for these options, e.g.:
+  # ero_option1: [0.0, 20.0]
+
+  ero_stages:
+    # Stage 1: 600-300 Ma
+    # Negative thickness = burial/deposition in this reference convention.
+    - type: constant            # constant / linear / exponential
+      unit: thickness           # thickness [km] or erosion_rate [km/Myr]
+      duration_myr: 300.0       # Stage duration [Myr].
+      parameter1: -2.0          # Total thickness change [km] for constant+thickness.
+
+    # Stage 2: 300-0 Ma
+    # Positive thickness = removal/exhumation.
+    - type: constant
+      unit: thickness
+      duration_myr: 300.0
+      parameter1: 2.0
+
+  # Examples for other erosion models:
+  #
+  # ero_type = 1:
+  # ero_option1: 2.0            # Total erosion/exhumation magnitude [km].
+  #
+  # ero_type = 3:
+  # ero_option1: 15.0           # Total erosion magnitude [km].
+  # ero_option2: 20.0           # Characteristic decay time [Myr].
+  # ero_option3: 0.0            # Erosion start time [Myr after model start].
+
+# ==============================================================================
+# 7) Thermochronometer age prediction
+# ==============================================================================
+age_prediction:
+  no_calc_ages: false           # false = calculate thermochronometer ages.
+
+  ketch_aft: true               # Use Ketcham AFT model.
+  madtrax_aft: false            # Use MadTrax apatite FT model instead/also as configured.
+
+  madtrax_aft_kinetic_model: 1  # MadTrax apatite FT kinetic model selector.
+  madtrax_zft_kinetic_model: 1  # MadTrax zircon FT kinetic model selector.
+
+  # Default apatite grain properties used where sample-specific values are absent.
+  ap_rad: 60.0                  # Apatite grain radius [micrometres].
+  ap_uranium: 10.0              # Apatite U concentration [ppm].
+  ap_thorium: 40.0              # Apatite Th concentration [ppm].
+
+  # Default zircon grain properties.
+  zr_rad: 60.0                  # Zircon grain radius [micrometres].
+  zr_uranium: 100.0             # Zircon U concentration [ppm].
+  zr_thorium: 40.0              # Zircon Th concentration [ppm].
+
+  pad_time: 0.0                 # Additional time appended at initial T [Myr].
+  past_age_increment: 0.0       # Interval for calculating past ages [Myr].
+                                # <=0 disables incremental past-age calculations.
+
+# ==============================================================================
+# 8) Observations and misfit
+# ==============================================================================
+observations:
+  obs_age_file: "sample_data.csv"  # CSV containing observed thermochronometer data.
+
+  # Direct observations can alternatively be supplied here.
+  obs_ahe: []                   # Observed AHe ages [Ma].
+  obs_ahe_stdev: []             # AHe 1-sigma uncertainties [Ma].
+  obs_aft: []                   # Observed AFT ages [Ma].
+  obs_aft_stdev: []             # AFT 1-sigma uncertainties [Ma].
+  obs_zhe: []                   # Observed ZHe ages [Ma].
+  obs_zhe_stdev: []             # ZHe 1-sigma uncertainties [Ma].
+  obs_zft: []                   # Observed ZFT ages [Ma].
+  obs_zft_stdev: []             # ZFT 1-sigma uncertainties [Ma].
+
+  misfit_num_params: 0          # Number of fitted parameters; used only by misfit type 2.
+  misfit_type: 3                # Misfit formulation:
+    # 1 = sqrt(chi-square) / N
+    # 2 = reduced chi-square-like form using N-P-1
+    # 3 = summed chi-square
+
+# ==============================================================================
+# 9) Plotting
+# ==============================================================================
+plotting:
+  no_plot_results: false        # false = create standard result plots.
+  no_display_plots: false       # false = display plots interactively.
+
+  plot_myr: false               # false = plot geological time in Ma; true = Myr since start.
+  plot_depth_history: false     # Plot sample/model depth history.
+  plot_fault_depth_history: false  # Plot fault-depth history where relevant.
+
+  plot_density: false           # Plot density beside geotherms.
+
+  plot_elevation_history: false # Plot modeled surface elevation history.
+
+  plot_peclet_number: false     # Plot Peclet number on erosion-history plot.
+
+  plot_ft_length_dist: false    # Plot AFT length distribution.
+
+  invert_tt_plot: true          # Invert temperature/depth direction on thermal-history plot.
+
+  t_plots: [0, 160, 185, 210, 300, 600]
+                                # Times [Myr after model start] for geotherm output.
+                                # A single value can be interpreted as an increment.
+
+  watch_it_exhume: false        # Animate thermal evolution rather than static plotting.
+
+  crust_solidus: false          # Calculate/plot crustal solidus.
+  crust_solidus_comp: "wet_intermediate"
+                                # Crustal solidus composition preset.
+
+  mantle_solidus: false         # Calculate/plot mantle solidus.
+  mantle_solidus_xoh: 0.0       # Mantle water content for solidus calculation [ppm].
+  solidus_ranges: false         # Plot solidus uncertainty/compositional ranges.
+
+# ==============================================================================
+# 10) Output
+# ==============================================================================
+output:
+  log_output: false             # Write model summary to CSV.
+  log_file: ""                  # CSV log filename; blank lets Tc1D use its default.
+  model_id: "Vaasa_MCMC_Tfluid_timing_B2"
+                                # User-defined model identifier.
+
+  write_temps: false            # Save model temperatures.
+  write_past_ages: false        # Save incremental past-age predictions.
+  write_age_output: false       # Save observed/predicted age comparison.
+  save_plots: true              # Save generated figures.
+
+# ==============================================================================
+# 11) Advanced
+# ==============================================================================
+advanced:
+  read_temps: false             # Read a pre-existing temperature history.
+  compare_temps: false          # Compare calculated temperatures with a supplied history.
+
+# ==============================================================================
+# 12) Inversion hyperparameters
+# ==============================================================================
+inversion:
+  neighbourhood_algorithm:
+    na_ns: 10                   # Number of new NA samples per iteration.
+    na_nr: 5                    # Number of Voronoi cells resampled per iteration.
+    na_ni: 15                   # Initial random-search size.
+    na_n: 4                     # Number of NA iterations after the initial search.
+    na_n_resample: 1000         # NA appraiser resampling size.
+    na_n_walkers: 4             # NA appraiser walkers.
+
+  mcmc:
+    mcmc_nwalkers: 8            # Number of emcee ensemble walkers.
+    mcmc_nsteps: 10             # Number of steps per walker.
+    mcmc_discard: 0             # Burn-in steps discarded before analysis.
+    mcmc_thin: 1                # Chain thinning factor.

@@ -11,6 +11,249 @@ import copy
 # import cProfile
 # from gooey import Gooey
 
+# -----------------------------------------------------------------------------
+# YAML configuration schema
+# -----------------------------------------------------------------------------
+# Defines the YAML sections and keys currently supported by tc1d-cli.
+#
+# This provides a single reference for checking consistency between:
+#   tc1d.py parameters
+#   tc1d-cli arguments
+#   YAML input files
+#
+# Keep this mapping updated whenever a new YAML-accessible parameter is added.
+YAML_ALLOWED_KEYS = {
+    "general": {
+        "run_type",
+        "batch_mode",
+        "inverse_mode",
+        "debug",
+        "echo_inputs",
+        "no_echo_info",
+        "no_echo_thermal_info",
+        "no_echo_ages",
+    },
+
+    "geometry_time": {
+        "length",
+        "nx",
+        "time",
+        "dt",
+        "init_moho_depth",
+        "crustal_uplift",
+        "fixed_moho",
+        "removal_fraction",
+        "removal_start_time",
+        "removal_end_time",
+    },
+
+    "materials": {
+        "rho_crust",
+        "cp_crust",
+        "k_crust",
+        "heat_prod_crust",
+        "heat_prod_decay_depth",
+        "alphav_crust",
+        "rho_mantle",
+        "cp_mantle",
+        "k_mantle",
+        "heat_prod_mantle",
+        "alphav_mantle",
+        "rho_a",
+        "k_a",
+    },
+
+    "thermal_model": {
+        "solution_type",
+        "bc_type",
+        "temp_surf",
+        "temp_base",
+        "flux_base",
+        "no_mantle_adiabat",
+        "temp_adiabat_ref",
+    },
+
+    "intrusion_model": {
+        "intrusion_temperature",
+        "intrusion_start_time",
+        "intrusion_duration",
+        "intrusion_thickness",
+        "intrusion_base_depth",
+    },
+
+    "erosion_model": {
+        "vx_init",
+        "mantle_velocity",
+        "ero_type",
+        "ero_option1",
+        "ero_option2",
+        "ero_option3",
+        "ero_option4",
+        "ero_option5",
+        "ero_option6",
+        "ero_option7",
+        "ero_option8",
+        "ero_option9",
+        "ero_option10",
+        "ero_stages",
+    },
+
+    "age_prediction": {
+        "no_calc_ages",
+        "ketch_aft",
+        "madtrax_aft",
+        "madtrax_aft_kinetic_model",
+        "madtrax_zft_kinetic_model",
+        "ap_rad",
+        "ap_uranium",
+        "ap_thorium",
+        "zr_rad",
+        "zr_uranium",
+        "zr_thorium",
+        "pad_time",
+        "past_age_increment",
+    },
+
+    "observations": {
+        "obs_age_file",
+        "obs_ahe",
+        "obs_ahe_stdev",
+        "obs_aft",
+        "obs_aft_stdev",
+        "obs_zhe",
+        "obs_zhe_stdev",
+        "obs_zft",
+        "obs_zft_stdev",
+        "misfit_num_params",
+        "misfit_type",
+    },
+
+    "plotting": {
+        "no_plot_results",
+        "no_display_plots",
+        "plot_myr",
+        "plot_depth_history",
+        "plot_fault_depth_history",
+        "plot_density",
+        "plot_elevation_history",
+        "plot_peclet_number",
+        "plot_ft_length_dist",
+        "invert_tt_plot",
+        "t_plots",
+        "watch_it_exhume",
+        "crust_solidus",
+        "crust_solidus_comp",
+        "mantle_solidus",
+        "mantle_solidus_xoh",
+        "solidus_ranges",
+    },
+
+    "output": {
+        "log_output",
+        "log_file",
+        "model_id",
+        "write_temps",
+        "write_past_ages",
+        "write_age_output",
+        "save_plots",
+    },
+
+    "advanced": {
+        "read_temps",
+        "compare_temps",
+    },
+
+    "inversion": {
+        "neighbourhood_algorithm",
+        "mcmc",
+    },
+}
+
+
+YAML_INVERSION_ALLOWED_KEYS = {
+    "neighbourhood_algorithm": {
+        "na_ns",
+        "na_nr",
+        "na_ni",
+        "na_n",
+        "na_n_resample",
+        "na_n_walkers",
+    },
+
+    "mcmc": {
+        "mcmc_nwalkers",
+        "mcmc_nsteps",
+        "mcmc_discard",
+        "mcmc_thin",
+    },
+}
+
+def _validate_yaml_keys(y: dict) -> None:
+    """
+    Validate YAML section and key names against the supported Tc1D YAML schema.
+
+    Raises
+    ------
+    ValueError
+        If an unknown top-level section or unsupported key is found.
+    """
+
+    if not isinstance(y, dict):
+        raise ValueError("YAML configuration must be a mapping/dict.")
+
+    # Check top-level sections.
+    unknown_sections = set(y) - set(YAML_ALLOWED_KEYS)
+
+    if unknown_sections:
+        raise ValueError(
+            "Unknown YAML section(s): "
+            + ", ".join(sorted(unknown_sections))
+        )
+
+    # Check keys inside each section.
+    for section, values in y.items():
+
+        if not isinstance(values, dict):
+            raise ValueError(
+                f"YAML section '{section}' must be a mapping/dict."
+            )
+
+        unknown_keys = set(values) - YAML_ALLOWED_KEYS[section]
+
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown YAML key(s) in section '{section}': "
+                + ", ".join(sorted(unknown_keys))
+            )
+
+    # Check nested inversion subsections separately.
+    inversion = y.get("inversion", {})
+
+    if isinstance(inversion, dict):
+        for subsection, values in inversion.items():
+
+            if subsection not in YAML_INVERSION_ALLOWED_KEYS:
+                raise ValueError(
+                    f"Unknown YAML inversion subsection: '{subsection}'"
+                )
+
+            if not isinstance(values, dict):
+                raise ValueError(
+                    f"YAML inversion subsection '{subsection}' "
+                    "must be a mapping/dict."
+                )
+
+            unknown_keys = (
+                set(values)
+                - YAML_INVERSION_ALLOWED_KEYS[subsection]
+            )
+
+            if unknown_keys:
+                raise ValueError(
+                    f"Unknown YAML key(s) in inversion subsection "
+                    f"'{subsection}': "
+                    + ", ".join(sorted(unknown_keys))
+                )
 
 def _load_yaml_dict(path: str) -> dict:
     """
@@ -198,6 +441,8 @@ def _apply_yaml_to_args(args, y: dict) -> None:
     if isinstance(e, dict):
         if "vx_init" in e:
             args.vx_init = _as_list(float(e["vx_init"]))
+        if "mantle_velocity" in e:
+            args.mantle_velocity = _as_list(float(e["mantle_velocity"]))
         if "ero_type" in e:
             args.ero_type = _as_list(int(e["ero_type"]))
         # BG: keep YAML-defined stages in the raw YAML dict 'y',
@@ -271,6 +516,10 @@ def _apply_yaml_to_args(args, y: dict) -> None:
             "plot_myr",
             "plot_depth_history",
             "plot_fault_depth_history",
+            "plot_density",
+            "plot_elevation_history",
+            "plot_peclet_number",
+            "plot_ft_length_dist",
             "invert_tt_plot",
             "watch_it_exhume",
             "crust_solidus",
@@ -1418,6 +1667,9 @@ def main():
     y = None
     if args.input_file:
         y = _load_yaml_dict(args.input_file)
+
+        # Validate YAML sections and keys before applying overrides.
+        _validate_yaml_keys(y)
 
         # Warn about YAML/CLI conflicts BEFORE applying YAML overrides
         _warn_yaml_cli_conflicts(parser, cli_args, default_args, y)
