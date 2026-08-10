@@ -57,7 +57,7 @@ experimental = true
 [tool.scikit-build]
 wheel.expand-macos-universal-tags = true
 build-dir = "build"
-cmake.minimum-version = "3.18"
+cmake.version = "3.18"
 cmake.source-dir = "."
 cmake.build-type = "Release"
 
