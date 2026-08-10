@@ -191,7 +191,7 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         )
         for k in list_float_keys_intr:
             if k in intr:
-                setattr(args, k, _as_list(float(intr[k])))
+                setattr(args, k, _as_float_list(intr[k]))
 
     # ---- erosion_model
     e = y.get("erosion_model", {})
