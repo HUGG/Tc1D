@@ -1,0 +1,5 @@
+Age type,Age (Ma),Standard deviation (Ma),eU concentration (ppm),Grain radius (um),Sample ID,Depositional age (Ma)
+AHe,2.74,0.3,29.3,58,demo1,
+AFT,5.98,0.6,,,demo2,
+ZHe,8.15,0.6,506.8,57.9,demo3,
+ZFT,9.80,0.9,,,demo4,
