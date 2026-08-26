@@ -10,12 +10,11 @@ import numpy as np
 from pathlib import Path
 from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.linalg import solve
-import shutil
 import time
 import math
 from typing import Tuple
 import warnings
-from ctypes import *
+from ctypes import CDLL, POINTER, c_double, c_float, c_int, c_void_p, pointer
 from importlib.resources import files
 import platform
 
@@ -40,8 +39,9 @@ import importlib.metadata
 
 __version__ = importlib.metadata.version("tc1d")
 
+
 # Shared object loading
-def load_lib(base_name = "RDAAM"): # or "ketch"
+def load_lib(base_name="RDAAM"):  # or "ketch"
     root = files("tc1d")
     system = platform.system().lower()
     if system == "linux":
@@ -52,6 +52,8 @@ def load_lib(base_name = "RDAAM"): # or "ketch"
         libname = f"{base_name}.dll"
     return CDLL(os.fspath(root.joinpath(libname)))
 
+
+# RDAAM library for AHe and ZHe
 def load_rdaam():
     rdaam = load_lib("RDAAM")
     rdaam.make_path.restype = c_void_p
@@ -72,12 +74,14 @@ def load_rdaam():
         c_double,  # zr_Th
         POINTER(c_double),  # zr_age*
         POINTER(c_double),  # zr_corrAge*
-        POINTER(c_int),     # ap_success*
-        POINTER(c_int),     # zr_success*
+        POINTER(c_int),  # ap_success*
+        POINTER(c_int),  # zr_success*
     ]
     rdaam.run_RDAAM_He.restype = None
     return rdaam
 
+
+# ketch_aft for AFT
 def load_ketch():
     ketch = load_lib("ketch")
     return ketch
@@ -586,20 +590,6 @@ def apply_intrusion(
     return model_temperatures
 
 
-def check_execs() -> None:
-    """Checks whether all required executables exist."""
-
-    # Check that executables are in $PATH
-    for executable in ("ketch_aft",):
-        exec_path = shutil.which(executable)
-        if exec_path is None:
-            raise FileNotFoundError(
-                f"{executable} executable not found. See instructions at https://github.com/HUGG/Tc_core to fix this."
-            )
-
-    return None
-
-
 # TODO: Sort out why type hinting is problematic for this function
 def he_ages(
     rdaam,
@@ -612,7 +602,8 @@ def he_ages(
     zr_thorium,
 ):
     """Calculates (U-Th)/He ages."""
-    
+
+    # Initialize library parameters
     ap_age = c_double(0.0)
     ap_corrAge = c_double(0.0)
     zr_age = c_double(0.0)
@@ -620,23 +611,25 @@ def he_ages(
     ap_success = c_int(0)
     zr_success = c_int(0)
 
+    # Calculate age
     rdaam.run_RDAAM_He(
-        pa,                  # path
-        c_double(ap_rad),    # ap_rad 
-        c_double(ap_uranium),# ap_U
-        c_double(ap_thorium),# ap_Th
-        pointer(ap_age),     # ap_age
-        pointer(ap_corrAge), # ap_corrAge
-        c_double(0.0),       # total_He
-        c_double(zr_rad),    # zr_rad
-        c_double(zr_uranium),# zr_U
-        c_double(zr_thorium),# zr_Th
-        pointer(zr_age),     # zr_age
-        pointer(zr_corrAge), # zr_corrAge
-        pointer(ap_success), # ap_success
-        pointer(zr_success)  # zr_success
+        pa,  # path
+        c_double(ap_rad),  # ap_rad
+        c_double(ap_uranium),  # ap_U
+        c_double(ap_thorium),  # ap_Th
+        pointer(ap_age),  # ap_age
+        pointer(ap_corrAge),  # ap_corrAge
+        c_double(0.0),  # total_He
+        c_double(zr_rad),  # zr_rad
+        c_double(zr_uranium),  # zr_U
+        c_double(zr_thorium),  # zr_Th
+        pointer(zr_age),  # zr_age
+        pointer(zr_corrAge),  # zr_corrAge
+        pointer(ap_success),  # ap_success
+        pointer(zr_success),  # zr_success
     )
 
+    # Exit if age calculation fails
     if ap_success.value != 1:
         print(f"RDAAM_calculate for ap failed! {ap_success}")
         exit(1)
@@ -651,29 +644,10 @@ def he_ages(
 def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     """Calculates AFT ages."""
 
-    # Run executable to calculate age
-    """exec_path = shutil.which("ketch_aft")
-    command = exec_path + " " + file
-    if write_track_lengths:
-        command += " 1"
-    p = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    )
-
-    stdout = p.stdout.readlines()
-    if stdout[0] == b"usage: ketch_aft tT_file\n":
-        raise RuntimeError(
-            "Incompatible version of Tc_core. Must be >=0.2. See https://github.com/HUGG/Tc_core."
-        )
-    aft_age = float(stdout[0].split()[4][:-1].decode("UTF-8"))
-    mean_ft_length = float(stdout[0].split()[9][:-1].decode("UTF-8"))
-
-    retval = p.wait()
-    if retval != 0:
-        print(f"ketch_aft execution failed with return code: {retval}!")"""
-    
+    # Load library to calculate AFT age
     ketch = load_ketch()
 
+    # Initialize library parameters
     ntime = c_int(n)
     alo = c_double(16.3)
     final_age = c_double(0.0)
@@ -681,19 +655,20 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     fmean = c_double(0.0)
     fdist = (c_double * 200)()
 
+    # Calculate age
     ketch.ketch_main(
-        pointer(ntime),     # int *ntime
-        ti_arr,             # float ketchtime[]
-        te_arr,             # float ketchtemp[]
-        pointer(alo),       # double *alo
-        pointer(final_age), # double *final_age
-        pointer(oldest_age),# double *oldest_age
-        pointer(fmean),     # double *fmean
-        fdist               # double fdist[]
+        pointer(ntime),  # int *ntime
+        ti_arr,  # float ketchtime[]
+        te_arr,  # float ketchtemp[]
+        pointer(alo),  # double *alo
+        pointer(final_age),  # double *final_age
+        pointer(oldest_age),  # double *oldest_age
+        pointer(fmean),  # double *fmean
+        fdist,  # double fdist[]
     )
 
     if write_track_lengths:
-        with open("ft_length.csv", 'w') as out_csv:
+        with open("ft_length.csv", "w") as out_csv:
             for i, d in enumerate(fdist):
                 out_csv.write(f"{(i*1.0+0.5)*20.0/200},{d}\n")
 
@@ -732,7 +707,7 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     return write_increment
 
 
-"""def write_tt_history(
+def write_tt_history(
     params: dict, tt_filename: str, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
     "Writes a time-temperature history to a file."
@@ -760,7 +735,7 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
             )
             for pad_time in pad_times:
                 writer.writerow([pad_time, temp_history[i]])
-"""
+
 
 def write_ttdp_history(
     params: dict,
@@ -799,6 +774,7 @@ def calculate_ages_and_tcs(
     temp_history,
     depth_history,
     pressure_history,
+    tt_filename,
     ttdp_filename,
     write_track_lengths,
 ):
@@ -828,8 +804,8 @@ def calculate_ages_and_tcs(
         time_ma, temp_history, params["madtrax_zft_kinetic_model"], 0
     )
 
-    # Write time-temperature history to file for (U-Th)/He, Ketcham AFT age calculation
-    #write_tt_history(params, tt_filename, time_history, temp_history)
+    # Write time-temperature history to file
+    write_tt_history(params, tt_filename, time_history, temp_history)
 
     # Write pressure-time-temperature-depth history to file for reference
     write_ttdp_history(
@@ -854,7 +830,9 @@ def calculate_ages_and_tcs(
         te_hist.append(temp_history[i])
         rdaam.path_push(pa, c_double(time_ma[i]), c_double(temp_history[i]))
     if params["pad_time"] > 0.0:
-        pad_times = np.arange(time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0)
+        pad_times = np.arange(
+            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
+        )
         for pad_time in pad_times:
             ti_hist.append(pad_time)
             te_hist.append(temp_history[i])
@@ -879,9 +857,9 @@ def calculate_ages_and_tcs(
         te_arr[i] = c_float(te_hist[i])
 
     if params["ketch_aft"]:
-        aft_age, aft_mean_ftl = ft_ages(ti_arr, te_arr, len(ti_hist), write_track_lengths)
-
-    
+        aft_age, aft_mean_ftl = ft_ages(
+            ti_arr, te_arr, len(ti_hist), write_track_lengths
+        )
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
@@ -2853,9 +2831,6 @@ def prep_model(params):
     if params["save_plots"]:
         create_output_directory(wd, dir="png")
 
-    # Check the needed executable files exist
-    #check_execs()
-
     batch_keys = [
         "max_depth",
         "nx",
@@ -4189,14 +4164,15 @@ def run_model(params):
     wd = Path.cwd()
 
     # Set flags if using batch mode (or not)
-    write_track_lengths = False
     if params["batch_mode"]:
         params["echo_info"] = False
         params["echo_thermal_info"] = False
         params["echo_ages"] = False
         params["plot_results"] = False
-    else:
-        # Only write AFT track lengths to file in forward models
+
+    write_track_lengths = False
+    if not params["inverse_mode"]:
+        # Only write AFT track lengths to file in forward and batch modes (not inverse mode)
         write_track_lengths = True
 
     # Conversion factors and unit conversions
@@ -5305,16 +5281,6 @@ def run_model(params):
 
     # Calculate ages
     if params["calc_ages"]:
-        # Define time-temperature-depth filenames
-        if params["inverse_mode"]:
-            # Get process ID for file naming
-            pid = os.getpid()
-            tt_filename = f"time_temp_hist_{pid}.csv"
-            ttdp_filename = f"time_temp_depth_pressure_hist_{pid}.csv"
-        else:
-            tt_filename = "time_temp_hist.csv"
-            ttdp_filename = "time_temp_depth_pressure_hist.csv"
-
         # Convert time since model start to time before end of simulation
         time_ma = tt_hist_to_ma(time_hists[-1])
 
@@ -5328,7 +5294,18 @@ def run_model(params):
         zhe_temps = np.zeros(surf_age_array_size)
         zft_ages = np.zeros(surf_age_array_size)
         zft_temps = np.zeros(surf_age_array_size)
+
+        # Define string for time-temperature and time-temperature-depth ages
         for i in range(surf_age_array_size):
+            # Define tT and tTd filenames
+            if len(surface_times_ma) == 1:
+                file_age_text = ""
+            else:
+                file_age_text = f"_{surface_times_ma[i]}Ma"
+            tt_filename = "time_temp_hist" + file_age_text + ".csv"
+            ttdp_filename = "time_temp_depth_pressure_hist" + file_age_text + ".csv"
+
+            # Calculate ages
             (
                 corr_ahe_ages[i],
                 ahe_age,
@@ -5347,6 +5324,7 @@ def run_model(params):
                 temp_hists[i],
                 depth_hists[i],
                 pressure_hists[i],
+                tt_filename,
                 ttdp_filename,
                 write_track_lengths,
             )
@@ -5363,24 +5341,32 @@ def run_model(params):
                 )
                 print(f"- ZFT age: {zft_ages[i]:.2f} Ma (Tc: {zft_temps[i]:.2f} °C)")
 
-        # Move/rename/remove time-temp histories
-        # Only do this for the final ages/histories!
-        #tt_orig = Path(tt_filename)
-        ttdp_orig = Path(ttdp_filename)
-        if params["batch_mode"] and not params["inverse_mode"]:
-            # Rename and move files to batch output directory
-            #tt_newfile = params["model_id"] + "-time_temp_hist.csv"
-            #tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
-            ttdp_newfile = params["model_id"] + "-time_temp_depth_pressure_hist.csv"
-            ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
-        else:
-            #tt_new = tt_orig.rename(wd / "csv" / tt_orig)
-            ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
+            # Only write t-T and t-T-d-p files for forward and batch modes
+            if not params["inverse_mode"]:
+                # Define paths for time-temp (+depth-pressure) histories
+                tt_orig = Path(tt_filename)
+                ttdp_orig = Path(ttdp_filename)
 
-        # Move track length file to csv directory
-        if write_track_lengths:
-            ftl_orig = Path("ft_length.csv")
-            ftl_new = ftl_orig.rename(wd / "csv" / ftl_orig)
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
+                    tt_newfile = params["model_id"] + "-" + tt_filename
+                    tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
+                    ttdp_newfile = params["model_id"] + "-" + ttdp_filename
+                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
+                else:
+                    tt_new = tt_orig.rename(wd / "csv" / tt_orig)
+                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
+
+            # Move track length file to csv directory
+            if write_track_lengths:
+                ftl_orig = Path("ft_length.csv")
+                ftl_filename = "ft_length" + file_age_text + ".csv"
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
+                    ftl_newfile = params["model_id"] + "-" + ftl_filename
+                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_newfile)
+                else:
+                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_filename)
 
         if params["echo_ages"]:
             print("")
@@ -5436,12 +5422,22 @@ def run_model(params):
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
                     write_increment = get_write_increment(params, time_ma)
                     for i in range(len(time_ma) - 1, -1, -write_increment):
-                        rdaam.path_push(pa, c_double(time_ma[i]), c_double(temp_hists[tt_hist_index][i]))                            
+                        rdaam.path_push(
+                            pa,
+                            c_double(time_ma[i]),
+                            c_double(temp_hists[tt_hist_index][i]),
+                        )
                     if params["pad_time"] > 0.0:
-                        pad_times = np.arange(time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0)
+                        pad_times = np.arange(
+                            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
+                        )
                         for pad_time in pad_times:
-                            rdaam.path_push(pa, c_double(pad_time), c_double(temp_hists[tt_hist_index][i]))
-                    
+                            rdaam.path_push(
+                                pa,
+                                c_double(pad_time),
+                                c_double(temp_hists[tt_hist_index][i]),
+                            )
+
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now
 
@@ -5511,9 +5507,6 @@ def run_model(params):
                     pred_data_ages[i] = zft_ages[tt_hist_index] + depo_age_now
                     pred_data_temps[i] = zft_temps[tt_hist_index]
 
-            # Delete unneeded tt file
-            tt_orig.unlink()
-
             # Log number of different age types
             n_obs_ahe = len(obs_ahe_indices)
             n_obs_aft = len(obs_aft_indices)
@@ -5525,13 +5518,6 @@ def run_model(params):
             n_obs_aft = len(params["obs_aft"])
             n_obs_zhe = len(params["obs_zhe"])
             n_obs_zft = len(params["obs_zft"])
-
-        # Delete the tt files if using inverse mode
-        if params["inverse_mode"]:
-            #tt_new.unlink()
-            ttdp_new.unlink()
-
-        # END FIXME?
 
         depo_ages_in_file = False
         if (num_passed_ages > 0) or (num_file_ages > 0):
