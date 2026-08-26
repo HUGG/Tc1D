@@ -7,12 +7,13 @@ name = "tc1d"
 version = "0.4.1"
 authors = [
     {name = "Dave Whipp", email = "david.whipp@helsinki.fi"},
-    {name= "Benjamin Gérard", email = "benjamin.gerard@helsinki.fi"},
+    {name = "Saska Dönges", email = "saska.donges@helsinki.fi"},
+    {name = "Benjamin Gérard", email = "benjamin.gerard@helsinki.fi"},
     {name = "Sanni Laaksonen", email = "sanni.laaksonen@helsinki.fi"},
 ]
-#maintainers = [
-#    {name = "All the contributors"},
-#]
+maintainers = [
+    {name = "Dave Whipp", email = "david.whipp@helsinki.fi"},
+]
 description = "A 1D thermal model and thermochronometer age prediction code"
 keywords = ["thermochronology", "heat transfer", "geology", "geophysics"]
 readme = "README.md"
@@ -48,7 +49,7 @@ dependencies = [
     "schwimmbad",
     "scipy",
     "scikit-learn",
-    'impi-rt;platform_system=="Windows"'
+    'impi-rt ; platform_system == "Windows"'
 ]
 
 [tool.hatch.build.targets.wheel.hooks.scikit-build]
