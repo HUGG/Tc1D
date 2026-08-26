@@ -33,7 +33,6 @@ YAML_ALLOWED_KEYS = {
         "no_echo_thermal_info",
         "no_echo_ages",
     },
-
     "geometry_time": {
         "length",
         "nx",
@@ -46,7 +45,6 @@ YAML_ALLOWED_KEYS = {
         "removal_start_time",
         "removal_end_time",
     },
-
     "materials": {
         "rho_crust",
         "cp_crust",
@@ -62,7 +60,6 @@ YAML_ALLOWED_KEYS = {
         "rho_a",
         "k_a",
     },
-
     "thermal_model": {
         "solution_type",
         "bc_type",
@@ -72,7 +69,6 @@ YAML_ALLOWED_KEYS = {
         "no_mantle_adiabat",
         "temp_adiabat_ref",
     },
-
     "intrusion_model": {
         "intrusion_temperature",
         "intrusion_start_time",
@@ -80,7 +76,6 @@ YAML_ALLOWED_KEYS = {
         "intrusion_thickness",
         "intrusion_base_depth",
     },
-
     "erosion_model": {
         "vx_init",
         "mantle_velocity",
@@ -97,7 +92,6 @@ YAML_ALLOWED_KEYS = {
         "ero_option10",
         "ero_stages",
     },
-
     "age_prediction": {
         "no_calc_ages",
         "ketch_aft",
@@ -113,7 +107,6 @@ YAML_ALLOWED_KEYS = {
         "pad_time",
         "past_age_increment",
     },
-
     "observations": {
         "obs_age_file",
         "obs_ahe",
@@ -127,7 +120,6 @@ YAML_ALLOWED_KEYS = {
         "misfit_num_params",
         "misfit_type",
     },
-
     "plotting": {
         "no_plot_results",
         "no_display_plots",
@@ -147,22 +139,22 @@ YAML_ALLOWED_KEYS = {
         "mantle_solidus_xoh",
         "solidus_ranges",
     },
-
     "output": {
         "log_output",
         "log_file",
         "model_id",
         "write_temps",
+        "write_tt_history",
+        "write_ttdp_history",
         "write_past_ages",
         "write_age_output",
+        "write_ft_lengths",
         "save_plots",
     },
-
     "advanced": {
         "read_temps",
         "compare_temps",
     },
-
     "inversion": {
         "neighbourhood_algorithm",
         "mcmc",
@@ -179,7 +171,6 @@ YAML_INVERSION_ALLOWED_KEYS = {
         "na_n_resample",
         "na_n_walkers",
     },
-
     "mcmc": {
         "mcmc_nwalkers",
         "mcmc_nsteps",
@@ -187,6 +178,7 @@ YAML_INVERSION_ALLOWED_KEYS = {
         "mcmc_thin",
     },
 }
+
 
 def _validate_yaml_keys(y: dict) -> None:
     """
@@ -206,17 +198,13 @@ def _validate_yaml_keys(y: dict) -> None:
 
     if unknown_sections:
         raise ValueError(
-            "Unknown YAML section(s): "
-            + ", ".join(sorted(unknown_sections))
+            "Unknown YAML section(s): " + ", ".join(sorted(unknown_sections))
         )
 
     # Check keys inside each section.
     for section, values in y.items():
-
         if not isinstance(values, dict):
-            raise ValueError(
-                f"YAML section '{section}' must be a mapping/dict."
-            )
+            raise ValueError(f"YAML section '{section}' must be a mapping/dict.")
 
         unknown_keys = set(values) - YAML_ALLOWED_KEYS[section]
 
@@ -231,11 +219,8 @@ def _validate_yaml_keys(y: dict) -> None:
 
     if isinstance(inversion, dict):
         for subsection, values in inversion.items():
-
             if subsection not in YAML_INVERSION_ALLOWED_KEYS:
-                raise ValueError(
-                    f"Unknown YAML inversion subsection: '{subsection}'"
-                )
+                raise ValueError(f"Unknown YAML inversion subsection: '{subsection}'")
 
             if not isinstance(values, dict):
                 raise ValueError(
@@ -243,17 +228,14 @@ def _validate_yaml_keys(y: dict) -> None:
                     "must be a mapping/dict."
                 )
 
-            unknown_keys = (
-                set(values)
-                - YAML_INVERSION_ALLOWED_KEYS[subsection]
-            )
+            unknown_keys = set(values) - YAML_INVERSION_ALLOWED_KEYS[subsection]
 
             if unknown_keys:
                 raise ValueError(
                     f"Unknown YAML key(s) in inversion subsection "
-                    f"'{subsection}': "
-                    + ", ".join(sorted(unknown_keys))
+                    f"'{subsection}': " + ", ".join(sorted(unknown_keys))
                 )
+
 
 def _load_yaml_dict(path: str) -> dict:
     """
@@ -542,8 +524,11 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         for k in (
             "log_output",
             "write_temps",
+            "write_tt_history",
+            "write_ttdp_history",
             "write_past_ages",
             "write_age_output",
+            "write_ft_lengths",
             "save_plots",
         ):
             if k in out:
@@ -618,8 +603,11 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("output", "log_file"): "log_file",
         ("output", "model_id"): "model_id",
         ("output", "write_temps"): "write_temps",
+        ("output", "write_tt_history"): "write_tt_history",
+        ("output", "write_ttdp_history"): "write_ttdp_history",
         ("output", "write_past_ages"): "write_past_ages",
         ("output", "write_age_output"): "write_age_output",
+        ("output", "write_ft_lengths"): "write_ft_lengths",
         ("output", "save_plots"): "save_plots",
         ("advanced", "read_temps"): "read_temps",
         ("advanced", "compare_temps"): "compare_temps",
@@ -1618,6 +1606,20 @@ def main():
         default=False,
     )
     output.add_argument(
+        "--write-tt-history",
+        dest="write_tt_history",
+        help="Write time-temperature history to a csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
+        "--write-ttdp-history",
+        dest="write_ttdp_history",
+        help="Write time-temperature-depth-pressure history to a csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
         "--write-past-ages",
         dest="write_past_ages",
         help="Write out incremental past ages to csv file",
@@ -1628,6 +1630,13 @@ def main():
         "--write-age-output",
         dest="write_age_output",
         help="Write out measured and predicted age data to csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
+        "--write-ft-lengths",
+        dest="write_ft_lengths",
+        help="Write apatite fission track-length distribution to a file",
         action="store_true",
         default=False,
     )
@@ -1793,6 +1802,9 @@ def main():
         "pad_time": args.pad_time,
         "past_age_increment": args.past_age_increment,
         "write_past_ages": args.write_past_ages,
+        "write_tt_history": args.write_tt_history,
+        "write_ttdp_history": args.write_ttdp_history,
+        "write_ft_lengths": args.write_ft_lengths,
         "crust_solidus": args.crust_solidus,
         "crust_solidus_comp": args.crust_solidus_comp,
         "mantle_solidus": args.mantle_solidus,

@@ -707,7 +707,7 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     return write_increment
 
 
-def write_tt_history(
+def save_tt_history(
     params: dict, tt_filename: str, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
     "Writes a time-temperature history to a file."
@@ -737,7 +737,7 @@ def write_tt_history(
                 writer.writerow([pad_time, temp_history[i]])
 
 
-def write_ttdp_history(
+def save_ttdp_history(
     params: dict,
     ttdp_filename: str,
     time_history: np.ndarray,
@@ -774,7 +774,9 @@ def calculate_ages_and_tcs(
     temp_history,
     depth_history,
     pressure_history,
+    write_tt_history,
     tt_filename,
+    write_ttdp_history,
     ttdp_filename,
     write_track_lengths,
 ):
@@ -804,18 +806,20 @@ def calculate_ages_and_tcs(
         time_ma, temp_history, params["madtrax_zft_kinetic_model"], 0
     )
 
-    # Write time-temperature history to file
-    write_tt_history(params, tt_filename, time_history, temp_history)
+    # Write time-temperature history to file, if requested
+    if write_tt_history:
+        save_tt_history(params, tt_filename, time_history, temp_history)
 
-    # Write pressure-time-temperature-depth history to file for reference
-    write_ttdp_history(
-        params,
-        ttdp_filename,
-        time_history,
-        temp_history,
-        depth_history,
-        pressure_history,
-    )
+    # Write pressure-time-temperature-depth history to file, if requested
+    if write_ttdp_history:
+        save_ttdp_history(
+            params,
+            ttdp_filename,
+            time_history,
+            temp_history,
+            depth_history,
+            pressure_history,
+        )
 
     rdaam = load_rdaam()
     pa = rdaam.make_path()
@@ -2444,6 +2448,9 @@ def init_params(
     write_temps=False,
     write_age_output=False,
     write_past_ages=False,
+    write_tt_history=False,
+    write_ttdp_history=False,
+    write_ft_lengths=False,
     save_plots=False,
     read_temps=False,
     compare_temps=False,
@@ -2657,6 +2664,12 @@ def init_params(
         Save predicted and observed ages to a file.
     write_past_ages : bool, default=False
         Write out incremental past ages to csv file.
+    write_tt_history : bool, default=False
+        Write time-temperature history to a csv file.
+    write_ttdp_history : bool, default=False
+        Write time-temperature-depth-pressure history to a csv file.
+    write_ft_lengths : bool, default=False
+        Write apatite fission track-length distribution to a file.
     save_plots : bool, default=False
         Save plots to a file.
     read_temps : bool, default=False
@@ -2756,6 +2769,9 @@ def init_params(
         "pad_time": pad_time,
         "past_age_increment": past_age_increment,
         "write_past_ages": write_past_ages,
+        "write_tt_history": write_tt_history,
+        "write_ttdp_history": write_ttdp_history,
+        "write_ft_lengths": write_ft_lengths,
         "crust_solidus": crust_solidus,
         "crust_solidus_comp": crust_solidus_comp,
         "mantle_solidus": mantle_solidus,
@@ -2824,7 +2840,9 @@ def prep_model(params):
         params["log_output"]
         or params["write_past_ages"]
         or params["write_temps"]
-        or params["calc_ages"]
+        or params["write_tt_history"]
+        or params["write_ttdp_history"]
+        or params["write_ft_lengths"]
         or params["write_age_output"]
     ):
         create_output_directory(wd, dir="csv")
@@ -4170,10 +4188,14 @@ def run_model(params):
         params["echo_ages"] = False
         params["plot_results"] = False
 
-    write_track_lengths = False
-    if not params["inverse_mode"]:
-        # Only write AFT track lengths to file in forward and batch modes (not inverse mode)
-        write_track_lengths = True
+    write_tt_history = params["write_tt_history"]
+    write_ttdp_history = params["write_ttdp_history"]
+    write_track_lengths = params["write_ft_lengths"]
+    if params["inverse_mode"]:
+        # Only allow tT histories and track lengths to be saved to file in forward and batch modes
+        write_tt_history = False
+        write_ttdp_history = False
+        write_track_lengths = False
 
     # Conversion factors and unit conversions
     max_depth = kilo2base(params["max_depth"])
@@ -5324,7 +5346,9 @@ def run_model(params):
                 temp_hists[i],
                 depth_hists[i],
                 pressure_hists[i],
+                write_tt_history,
                 tt_filename,
+                write_ttdp_history,
                 ttdp_filename,
                 write_track_lengths,
             )
@@ -5341,20 +5365,25 @@ def run_model(params):
                 )
                 print(f"- ZFT age: {zft_ages[i]:.2f} Ma (Tc: {zft_temps[i]:.2f} °C)")
 
-            # Only write t-T and t-T-d-p files for forward and batch modes
-            if not params["inverse_mode"]:
-                # Define paths for time-temp (+depth-pressure) histories
+            # Rename and/or move time-temperature history file, if requested
+            # TODO: Make this a function!
+            if write_tt_history:
                 tt_orig = Path(tt_filename)
-                ttdp_orig = Path(ttdp_filename)
-
                 if params["batch_mode"]:
                     # Rename and move files to batch output directory
                     tt_newfile = params["model_id"] + "-" + tt_filename
                     tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
+                else:
+                    tt_new = tt_orig.rename(wd / "csv" / tt_orig)
+
+            # Rename and/or move time-temperature-depth-pressure history file, if requested
+            if write_ttdp_history:
+                ttdp_orig = Path(ttdp_filename)
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
                     ttdp_newfile = params["model_id"] + "-" + ttdp_filename
                     ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
                 else:
-                    tt_new = tt_orig.rename(wd / "csv" / tt_orig)
                     ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
 
             # Move track length file to csv directory
