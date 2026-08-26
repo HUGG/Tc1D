@@ -1,0 +1,184 @@
+# Tc1D input file for Whipp et al. (2026), Figure 8
+#
+# Best-fitting forward model corresponding to the Figure 8 MCMC inversion.
+# Scientific parameter values are retained from the original publication run.
+# Syntax has been updated for the current Tc1D develop branch.
+#
+# Thermal/crustal parameters marked below follow Gérard et al. (2021).
+
+# ==============================================================================
+# 1) General / run control
+# ==============================================================================
+general:
+  run_type: "forward"
+  batch_mode: false
+  inverse_mode: false
+  debug: false
+
+  echo_inputs: false
+  no_echo_info: true
+  no_echo_thermal_info: true
+  no_echo_ages: true
+
+# ==============================================================================
+# 2) Geometry and time
+# ==============================================================================
+geometry_time:
+  length: 125.0
+  nx: 251
+  time: 30.0
+  dt: 20000.0
+
+  init_moho_depth: 60.0        # Gérard et al. (2021)
+  crustal_uplift: false
+  fixed_moho: false
+
+  removal_fraction: 0.0
+  removal_start_time: 0.0
+  removal_end_time: -1.0
+
+# ==============================================================================
+# 3) Material properties
+# ==============================================================================
+materials:
+  rho_crust: 2720.0            # Gérard et al. (2021)
+  cp_crust: 900.0              # Gérard et al. (2021)
+  k_crust: 2.8                 # Gérard et al. (2021)
+  heat_prod_crust: 0.9         # Gérard et al. (2021)
+  heat_prod_decay_depth: -1.0
+  alphav_crust: 3.0e-5
+
+  rho_mantle: 3095.0           # Gérard et al. (2021)
+  cp_mantle: 1000.0
+  k_mantle: 2.5
+  heat_prod_mantle: 0.0
+  alphav_mantle: 3.0e-5
+
+  rho_a: 3250.0
+  k_a: 20.0
+
+# ==============================================================================
+# 4) Thermal model
+# ==============================================================================
+thermal_model:
+  solution_type: 2
+
+  bc_type: 1
+  temp_surf: 25.0              # Gérard et al. (2021)
+  temp_base: 1300.0
+  no_mantle_adiabat: false
+  temp_adiabat_ref: 1300.0
+
+# ==============================================================================
+# 5) Thermal intrusion
+# ==============================================================================
+intrusion_model:
+  intrusion_temperature: 750.0
+  intrusion_start_time: -1.0
+  intrusion_duration: -1.0
+  intrusion_thickness: -1.0
+  intrusion_base_depth: -1.0
+
+# ==============================================================================
+# 6) Erosion / exhumation model
+# ==============================================================================
+erosion_model:
+  vx_init: 0.0
+  ero_type: 2
+  mantle_velocity: 0.0
+
+  # Figure 8 best parameters:
+  # E1       = total erosion during stage 1 [km]
+  # tswitch parameter [Myr after model start].
+  # For a 30 Myr model, geological switch time before present = 30 - ero_option2.
+  # E2       = total erosion during stage 2 [km]
+  # Best-fitting MCMC parameters used for Figure 8a-b.
+  ero_option1: 11.591902352798801
+  ero_option2: 27.633313474396186
+  ero_option3: 2.983407383624335
+
+# ==============================================================================
+# 7) Thermochronometer age prediction
+# ==============================================================================
+age_prediction:
+  no_calc_ages: false
+
+  ketch_aft: true
+  madtrax_aft: false
+  madtrax_aft_kinetic_model: 1
+  madtrax_zft_kinetic_model: 1
+
+  ap_rad: 45.0
+  ap_uranium: 10.0
+  ap_thorium: 40.0
+
+  zr_rad: 60.0
+  zr_uranium: 100.0
+  zr_thorium: 40.0
+
+  pad_time: 0.0
+  past_age_increment: 0.0
+
+# ==============================================================================
+# 8) Observations and misfit
+# ==============================================================================
+observations:
+  # Path assumes the notebook is run from notebooks/publication_notebooks/.
+  obs_age_file: "Data_Whipp_Gerard_et_al_2026/figure_08_data.csv"
+
+  obs_ahe: []
+  obs_ahe_stdev: []
+  obs_aft: []
+  obs_aft_stdev: []
+  obs_zhe: []
+  obs_zhe_stdev: []
+  obs_zft: []
+  obs_zft_stdev: []
+
+  misfit_num_params: 0
+  misfit_type: 3
+
+# ==============================================================================
+# 9) Plotting
+# ==============================================================================
+plotting:
+  no_plot_results: false
+  no_display_plots: true
+
+  plot_myr: false
+  plot_depth_history: true
+  plot_fault_depth_history: false
+  plot_density: false
+  plot_elevation_history: false
+  plot_peclet_number: false
+  plot_ft_length_dist: false
+  invert_tt_plot: true
+
+  t_plots: [1, 5, 10, 15, 20, 25, 30]
+
+  watch_it_exhume: false
+  crust_solidus: false
+  crust_solidus_comp: "wet_intermediate"
+  mantle_solidus: false
+  mantle_solidus_xoh: 0.0
+  solidus_ranges: false
+
+# ==============================================================================
+# 10) Output
+# ==============================================================================
+output:
+  log_output: false
+  log_file: ""
+  model_id: "figure_08_forward"
+
+  write_temps: false
+  write_past_ages: false
+  write_age_output: false
+  save_plots: true
+
+# ==============================================================================
+# 11) Advanced
+# ==============================================================================
+advanced:
+  read_temps: false
+  compare_temps: false
