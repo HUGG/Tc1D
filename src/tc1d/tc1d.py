@@ -2913,8 +2913,12 @@ def prep_model(params):
 
     # Announce version before proceeding
     if rank == 0:
+        version_len = len(__version__)
+        second_star_len = 31 - version_len
         print("")
-        print(f"{26 * '='} This is Tc1D version {__version__} {26 * '='}\n")
+        print(
+            f"{26 * '='} This is Tc1D version {__version__} {second_star_len * '='}\n"
+        )
 
     # Check that prep_model was called from the command line
     if params["cmd_line_call"]:
