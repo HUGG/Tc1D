@@ -40,7 +40,7 @@ classifiers = [
 dependencies = [
     "corner",
     "emcee",
-    "matplotlib",
+    "matplotlib<3.11",
     "mpi4py",
     "neighpy",
     "numpy",
