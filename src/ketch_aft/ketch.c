@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <errno.h>
 #include "ketch.h"
@@ -892,7 +893,7 @@ void  CalcModelAges(ttPathPtr  tTPath,
 void ketch_main(int *ntime,float ketchtime[],float ketchtemp[],double *alo,double *final_age,double *oldest_age,double *fmean,double fdist[])
 {
   // ttPathRec kerryTt[22];
-  ttPathRec kerryTt[*ntime];
+  ttPathRec* kerryTt = (ttPathRec*)calloc(*ntime, sizeof(ttPathRec));
   #define nbins  200
   int numPDFPts = nbins;
   double pdfAxis[nbins];
@@ -972,7 +973,7 @@ fclose(fg); */
   //printf("ftModelAge = %8.3f\n",ftModelAge);
   //printf("meanlength = %8.3f\n",meanlength);
 
-
+  free(kerryTt);
   return ;
 
 }

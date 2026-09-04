@@ -11,6 +11,231 @@ import copy
 # import cProfile
 # from gooey import Gooey
 
+# -----------------------------------------------------------------------------
+# YAML configuration schema
+# -----------------------------------------------------------------------------
+# Defines the YAML sections and keys currently supported by tc1d-cli.
+#
+# This provides a single reference for checking consistency between:
+#   tc1d.py parameters
+#   tc1d-cli arguments
+#   YAML input files
+#
+# Keep this mapping updated whenever a new YAML-accessible parameter is added.
+YAML_ALLOWED_KEYS = {
+    "general": {
+        "run_type",
+        "batch_mode",
+        "inverse_mode",
+        "debug",
+        "echo_inputs",
+        "no_echo_info",
+        "no_echo_thermal_info",
+        "no_echo_ages",
+    },
+    "geometry_time": {
+        "length",
+        "nx",
+        "time",
+        "dt",
+        "init_moho_depth",
+        "crustal_uplift",
+        "fixed_moho",
+        "removal_fraction",
+        "removal_start_time",
+        "removal_end_time",
+    },
+    "materials": {
+        "rho_crust",
+        "cp_crust",
+        "k_crust",
+        "heat_prod_crust",
+        "heat_prod_decay_depth",
+        "alphav_crust",
+        "rho_mantle",
+        "cp_mantle",
+        "k_mantle",
+        "heat_prod_mantle",
+        "alphav_mantle",
+        "rho_a",
+        "k_a",
+    },
+    "thermal_model": {
+        "solution_type",
+        "bc_type",
+        "temp_surf",
+        "temp_base",
+        "flux_base",
+        "no_mantle_adiabat",
+        "temp_adiabat_ref",
+    },
+    "intrusion_model": {
+        "intrusion_temperature",
+        "intrusion_start_time",
+        "intrusion_duration",
+        "intrusion_thickness",
+        "intrusion_base_depth",
+    },
+    "erosion_model": {
+        "vx_init",
+        "mantle_velocity",
+        "ero_type",
+        "ero_option1",
+        "ero_option2",
+        "ero_option3",
+        "ero_option4",
+        "ero_option5",
+        "ero_option6",
+        "ero_option7",
+        "ero_option8",
+        "ero_option9",
+        "ero_option10",
+        "ero_stages",
+    },
+    "age_prediction": {
+        "no_calc_ages",
+        "ketch_aft",
+        "madtrax_aft",
+        "madtrax_aft_kinetic_model",
+        "madtrax_zft_kinetic_model",
+        "ap_rad",
+        "ap_uranium",
+        "ap_thorium",
+        "zr_rad",
+        "zr_uranium",
+        "zr_thorium",
+        "pad_time",
+        "past_age_increment",
+    },
+    "observations": {
+        "obs_age_file",
+        "obs_ahe",
+        "obs_ahe_stdev",
+        "obs_aft",
+        "obs_aft_stdev",
+        "obs_zhe",
+        "obs_zhe_stdev",
+        "obs_zft",
+        "obs_zft_stdev",
+        "misfit_num_params",
+        "misfit_type",
+    },
+    "plotting": {
+        "no_plot_results",
+        "no_display_plots",
+        "plot_myr",
+        "plot_depth_history",
+        "plot_fault_depth_history",
+        "plot_density",
+        "plot_elevation_history",
+        "plot_peclet_number",
+        "plot_ft_length_dist",
+        "invert_tt_plot",
+        "t_plots",
+        "watch_it_exhume",
+        "crust_solidus",
+        "crust_solidus_comp",
+        "mantle_solidus",
+        "mantle_solidus_xoh",
+        "solidus_ranges",
+    },
+    "output": {
+        "log_output",
+        "log_file",
+        "model_id",
+        "write_temps",
+        "write_tt_history",
+        "write_ttdp_history",
+        "write_past_ages",
+        "write_age_output",
+        "write_ft_lengths",
+        "save_plots",
+    },
+    "advanced": {
+        "read_temps",
+        "compare_temps",
+    },
+    "inversion": {
+        "neighbourhood_algorithm",
+        "mcmc",
+    },
+}
+
+
+YAML_INVERSION_ALLOWED_KEYS = {
+    "neighbourhood_algorithm": {
+        "na_ns",
+        "na_nr",
+        "na_ni",
+        "na_n",
+        "na_n_resample",
+        "na_n_walkers",
+    },
+    "mcmc": {
+        "mcmc_nwalkers",
+        "mcmc_nsteps",
+        "mcmc_discard",
+        "mcmc_thin",
+    },
+}
+
+
+def _validate_yaml_keys(y: dict) -> None:
+    """
+    Validate YAML section and key names against the supported Tc1D YAML schema.
+
+    Raises
+    ------
+    ValueError
+        If an unknown top-level section or unsupported key is found.
+    """
+
+    if not isinstance(y, dict):
+        raise ValueError("YAML configuration must be a mapping/dict.")
+
+    # Check top-level sections.
+    unknown_sections = set(y) - set(YAML_ALLOWED_KEYS)
+
+    if unknown_sections:
+        raise ValueError(
+            "Unknown YAML section(s): " + ", ".join(sorted(unknown_sections))
+        )
+
+    # Check keys inside each section.
+    for section, values in y.items():
+        if not isinstance(values, dict):
+            raise ValueError(f"YAML section '{section}' must be a mapping/dict.")
+
+        unknown_keys = set(values) - YAML_ALLOWED_KEYS[section]
+
+        if unknown_keys:
+            raise ValueError(
+                f"Unknown YAML key(s) in section '{section}': "
+                + ", ".join(sorted(unknown_keys))
+            )
+
+    # Check nested inversion subsections separately.
+    inversion = y.get("inversion", {})
+
+    if isinstance(inversion, dict):
+        for subsection, values in inversion.items():
+            if subsection not in YAML_INVERSION_ALLOWED_KEYS:
+                raise ValueError(f"Unknown YAML inversion subsection: '{subsection}'")
+
+            if not isinstance(values, dict):
+                raise ValueError(
+                    f"YAML inversion subsection '{subsection}' "
+                    "must be a mapping/dict."
+                )
+
+            unknown_keys = set(values) - YAML_INVERSION_ALLOWED_KEYS[subsection]
+
+            if unknown_keys:
+                raise ValueError(
+                    f"Unknown YAML key(s) in inversion subsection "
+                    f"'{subsection}': " + ", ".join(sorted(unknown_keys))
+                )
+
 
 def _load_yaml_dict(path: str) -> dict:
     """
@@ -164,15 +389,20 @@ def _apply_yaml_to_args(args, y: dict) -> None:
     # ---- thermal_model
     th = y.get("thermal_model", {})
     if isinstance(th, dict):
-        if "explicit" in th:
-            args.explicit = _as_bool(th["explicit"])
-        if "mantle_adiabat" in th:
-            # CLI stores this as a list (nargs='+'), keep that storage but parse the boolean safely.
-            args.mantle_adiabat = _as_list(_as_bool(th["mantle_adiabat"]))
+        if "solution_type" in th:
+            args.solution_type = _as_list(int(th["solution_type"]))
+        if "no_mantle_adiabat" in th:
+            args.no_mantle_adiabat = _as_bool(th["no_mantle_adiabat"])
+        if "bc_type" in th:
+            args.bc_type = _as_list(int(th["bc_type"]))
         if "temp_surf" in th:
             args.temp_surf = _as_list(float(th["temp_surf"]))
         if "temp_base" in th:
             args.temp_base = _as_list(float(th["temp_base"]))
+        if "flux_base" in th:
+            args.flux_base = _as_list(float(th["flux_base"]))
+        if "temp_adiabat_ref" in th:
+            args.temp_adiabat_ref = _as_list(float(th["temp_adiabat_ref"]))
 
     # ---- intrusion_model
     intr = y.get("intrusion_model", {})
@@ -186,13 +416,15 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         )
         for k in list_float_keys_intr:
             if k in intr:
-                setattr(args, k, _as_list(float(intr[k])))
+                setattr(args, k, _as_float_list(intr[k]))
 
     # ---- erosion_model
     e = y.get("erosion_model", {})
     if isinstance(e, dict):
         if "vx_init" in e:
             args.vx_init = _as_list(float(e["vx_init"]))
+        if "mantle_velocity" in e:
+            args.mantle_velocity = _as_list(float(e["mantle_velocity"]))
         if "ero_type" in e:
             args.ero_type = _as_list(int(e["ero_type"]))
         # BG: keep YAML-defined stages in the raw YAML dict 'y',
@@ -266,7 +498,12 @@ def _apply_yaml_to_args(args, y: dict) -> None:
             "plot_myr",
             "plot_depth_history",
             "plot_fault_depth_history",
+            "plot_density",
+            "plot_elevation_history",
+            "plot_peclet_number",
+            "plot_ft_length_dist",
             "invert_tt_plot",
+            "watch_it_exhume",
             "crust_solidus",
             "mantle_solidus",
             "solidus_ranges",
@@ -287,8 +524,11 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         for k in (
             "log_output",
             "write_temps",
+            "write_tt_history",
+            "write_ttdp_history",
             "write_past_ages",
             "write_age_output",
+            "write_ft_lengths",
             "save_plots",
         ):
             if k in out:
@@ -353,6 +593,7 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("plotting", "plot_fault_depth_history"): "plot_fault_depth_history",
         ("plotting", "invert_tt_plot"): "invert_tt_plot",
         ("plotting", "t_plots"): "t_plots",
+        ("plotting", "watch_it_exhume"): "watch_it_exhume",
         ("plotting", "crust_solidus"): "crust_solidus",
         ("plotting", "crust_solidus_comp"): "crust_solidus_comp",
         ("plotting", "mantle_solidus"): "mantle_solidus",
@@ -362,8 +603,11 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("output", "log_file"): "log_file",
         ("output", "model_id"): "model_id",
         ("output", "write_temps"): "write_temps",
+        ("output", "write_tt_history"): "write_tt_history",
+        ("output", "write_ttdp_history"): "write_ttdp_history",
         ("output", "write_past_ages"): "write_past_ages",
         ("output", "write_age_output"): "write_age_output",
+        ("output", "write_ft_lengths"): "write_ft_lengths",
         ("output", "save_plots"): "save_plots",
         ("advanced", "read_temps"): "read_temps",
         ("advanced", "compare_temps"): "compare_temps",
@@ -736,11 +980,20 @@ def main():
     )
     # TODO: Fix this so it works with gooey
     thermal.add_argument(
-        "--explicit",
-        help="Use explicit instead of implicit finite-difference calculation",
-        dest="explicit",
-        action="store_true",
-        default=False,
+        "--solution-type",
+        dest="solution_type",
+        help="Finite-difference solution type (1 = explicit, 2 = implicit, 3 = Crank-Nicolson)",
+        nargs="+",
+        default=[3],
+        type=int,
+    )
+    thermal.add_argument(
+        "--bc-type",
+        dest="bc_type",
+        help="Basal boundary condition type (1=constant temperature, 2=heat flux)",
+        nargs="+",
+        default=[1],
+        type=int,
     )
     thermal.add_argument(
         "--temp-surf",
@@ -758,13 +1011,29 @@ def main():
         default=[1300.0],
         type=float,
     )
+    thermal.add_argument(
+        "--flux-base",
+        dest="flux_base",
+        help="Basal boundary condition heat flux (mW/m^2)",
+        nargs="+",
+        default=[20.0],
+        type=float,
+    )
     # Does the following option work?
     thermal.add_argument(
-        "--mantle_adiabat",
-        help="Use adiabat for asthenosphere temperature",
+        "--no-mantle-adiabat",
+        dest="no_mantle_adiabat",
+        help="Do not use adiabat for asthenosphere temperature",
+        action="store_true",
+        default=False,
+    )
+    thermal.add_argument(
+        "--temp-adiabat-ref",
+        dest="temp_adiabat_ref",
+        help="Reference temperature (C) for mantle adiabat calculation",
         nargs="+",
-        default=[True],
-        type=bool,
+        default=[1300.0],
+        type=float,
     )
     intrusion = parser.add_argument_group(
         "Magmatic intrusion options", "Options for the intrusion model"
@@ -961,7 +1230,7 @@ def main():
         dest="ap_rad",
         help="Apatite grain radius (um)",
         nargs="+",
-        default=[45.0],
+        default=[60.0],
         type=float,
     )
     prediction.add_argument(
@@ -1251,7 +1520,6 @@ def main():
         action="store_true",
         default=False,
     )
-
     plotting.add_argument(
         "--invert-tt-plot",
         dest="invert_tt_plot",
@@ -1266,6 +1534,13 @@ def main():
         nargs="+",
         default=[0.1, 1, 5, 10, 20, 30, 50],
         type=float,
+    )
+    plotting.add_argument(
+        "--watch-it-exhume",
+        dest="watch_it_exhume",
+        help="Use animation plot for thermal history rather than static plotting",
+        action="store_true",
+        default=False,
     )
     plotting.add_argument(
         "--crust-solidus",
@@ -1331,6 +1606,20 @@ def main():
         default=False,
     )
     output.add_argument(
+        "--write-tt-history",
+        dest="write_tt_history",
+        help="Write time-temperature history to a csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
+        "--write-ttdp-history",
+        dest="write_ttdp_history",
+        help="Write time-temperature-depth-pressure history to a csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
         "--write-past-ages",
         dest="write_past_ages",
         help="Write out incremental past ages to csv file",
@@ -1341,6 +1630,13 @@ def main():
         "--write-age-output",
         dest="write_age_output",
         help="Write out measured and predicted age data to csv file",
+        action="store_true",
+        default=False,
+    )
+    output.add_argument(
+        "--write-ft-lengths",
+        dest="write_ft_lengths",
+        help="Write apatite fission track-length distribution to a file",
         action="store_true",
         default=False,
     )
@@ -1381,6 +1677,9 @@ def main():
     if args.input_file:
         y = _load_yaml_dict(args.input_file)
 
+        # Validate YAML sections and keys before applying overrides.
+        _validate_yaml_keys(y)
+
         # Warn about YAML/CLI conflicts BEFORE applying YAML overrides
         _warn_yaml_cli_conflicts(parser, cli_args, default_args, y)
 
@@ -1398,6 +1697,7 @@ def main():
     # Function call expects
     # - echo_info = True for basic model info to be displayed
     # - echo_thermal_info = True for thermal model info to be displayed
+    # - mantle_adiabat = True if mantle adiabat should be used for asthenosphere temperatures
     # - calc_ages = True if thermochronometer ages should be calculated
     # - echo_ages = True if thermochronometer ages should be displayed on the screen
     # - plot_results = True if plots of temperatures and densities should be created
@@ -1405,7 +1705,7 @@ def main():
     # - plot_ma = True if plots should be in millions of years ago (Ma)
     echo_info = not args.no_echo_info
     echo_thermal_info = not args.no_echo_thermal_info
-    implicit = not args.explicit
+    mantle_adiabat = not args.no_mantle_adiabat
     calc_ages = not args.no_calc_ages
     echo_ages = not args.no_echo_ages
     plot_results = not args.no_plot_results
@@ -1430,11 +1730,12 @@ def main():
         "plot_peclet_number": args.plot_peclet_number,
         "plot_ft_length_dist": args.plot_ft_length_dist,
         "invert_tt_plot": args.invert_tt_plot,
+        "watch_it_exhume": args.watch_it_exhume,
         "run_type": args.run_type,
         "batch_mode": args.batch_mode,
         "inverse_mode": args.inverse_mode,
-        "mantle_adiabat": args.mantle_adiabat,
-        "implicit": implicit,
+        "mantle_adiabat": mantle_adiabat,
+        "solution_type": args.solution_type,
         "read_temps": args.read_temps,
         "compare_temps": args.compare_temps,
         "write_temps": args.write_temps,
@@ -1471,8 +1772,11 @@ def main():
             getattr(args, "ero_stages", None)
         ),  # BG: raw YAML template for NA duration inversion
         "mantle_velocity": args.mantle_velocity,
+        "bc_type": args.bc_type,
         "temp_surf": args.temp_surf,
         "temp_base": args.temp_base,
+        "flux_base": args.flux_base,
+        "temp_adiabat_ref": args.temp_adiabat_ref,
         "t_total": args.time,
         "dt": args.dt,
         "vx_init": args.vx_init,
@@ -1498,6 +1802,9 @@ def main():
         "pad_time": args.pad_time,
         "past_age_increment": args.past_age_increment,
         "write_past_ages": args.write_past_ages,
+        "write_tt_history": args.write_tt_history,
+        "write_ttdp_history": args.write_ttdp_history,
+        "write_ft_lengths": args.write_ft_lengths,
         "crust_solidus": args.crust_solidus,
         "crust_solidus_comp": args.crust_solidus_comp,
         "mantle_solidus": args.mantle_solidus,

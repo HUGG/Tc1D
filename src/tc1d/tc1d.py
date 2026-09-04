@@ -10,12 +10,13 @@ import numpy as np
 from pathlib import Path
 from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.linalg import solve
-import shutil
-import subprocess
 import time
 import math
 from typing import Tuple
 import warnings
+from ctypes import CDLL, POINTER, c_double, c_float, c_int, c_void_p, pointer
+from importlib.resources import files
+import platform
 
 # Batch mode libraries
 from sklearn.model_selection import ParameterGrid
@@ -35,7 +36,55 @@ import sys  # TODO: Could this be removed?
 # Versioning
 import importlib.metadata
 
+
 __version__ = importlib.metadata.version("tc1d")
+
+
+# Shared object loading
+def load_lib(base_name="RDAAM"):  # or "ketch"
+    root = files("tc1d")
+    system = platform.system().lower()
+    if system == "linux":
+        libname = f"lib{base_name}.so"
+    elif system == "darwin":
+        libname = f"lib{base_name}.so"
+    else:
+        libname = f"{base_name}.dll"
+    return CDLL(os.fspath(root.joinpath(libname)))
+
+
+# RDAAM library for AHe and ZHe
+def load_rdaam():
+    rdaam = load_lib("RDAAM")
+    rdaam.make_path.restype = c_void_p
+    rdaam.path_push.argtypes = [c_void_p, c_double, c_double]
+    rdaam.path_push.restype = None
+    rdaam.del_path.argtypes = [c_void_p]
+    rdaam.del_path.restype = None
+    rdaam.run_RDAAM_He.argtypes = [
+        c_void_p,  # TTPath*
+        c_double,  # ap_rad
+        c_double,  # ap_U
+        c_double,  # ap_Th
+        POINTER(c_double),  # ap_age*
+        POINTER(c_double),  # ap_corrAge*
+        c_double,  # total_He
+        c_double,  # zr_rad
+        c_double,  # zr_U
+        c_double,  # zr_Th
+        POINTER(c_double),  # zr_age*
+        POINTER(c_double),  # zr_corrAge*
+        POINTER(c_int),  # ap_success*
+        POINTER(c_int),  # zr_success*
+    ]
+    rdaam.run_RDAAM_He.restype = None
+    return rdaam
+
+
+# ketch_aft for AFT
+def load_ketch():
+    ketch = load_lib("ketch")
+    return ketch
 
 
 # Exceptions
@@ -121,7 +170,8 @@ def echo_model_info(
     nt: int,
     dt: float,
     t_total: float,
-    implicit: bool,
+    solution_type: int,
+    bc_type: int,
     ero_type: int,
     exhumation_magnitude: float,
     cond_stab: float,
@@ -136,19 +186,27 @@ def echo_model_info(
     print(f"- Total simulation time: {t_total / myr2sec(1):.1f} million years")
     print(f"- Time steps: {nt} @ {dt / yr2sec(1):.1f} years each")
 
-    if implicit:
-        print("- Solution type: Implicit")
-    else:
-        print("- Solution type: Explicit")
+    # Output thermal calculation type
+    solution_types = {
+        1: "Explicit",
+        2: "Implicit",
+        3: "Crank-Nicolson",
+    }
+    print(f"- Solution type: {solution_types[solution_type]}")
 
+    boundary_condition_types = {
+        1: "Constant temperature (Dirichlet)",
+        2: "Constant heat flux (Neumann)",
+    }
     # Check stability conditions
-    if not implicit:
+    if solution_type == 1:
         print(
             f"- Conductive stability: {(cond_stab < cond_crit)} ({cond_stab:.3f} < {cond_crit:.4f})"
         )
         print(
             f"- Advective stability: {(adv_stab < adv_crit)} ({adv_stab:.3f} < {adv_crit:.4f})"
         )
+    print(f"- Basal boundary condition: {boundary_condition_types[bc_type]}")
 
     # Output erosion model
     ero_models = {
@@ -254,6 +312,8 @@ def adiabat(alphav: float, temp: float, cp: float) -> float:
 def temp_ss_implicit(
     nx: int,
     dx: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
     temp_surf: float,
     temp_base: float,
     vx: np.ndarray,
@@ -263,15 +323,11 @@ def temp_ss_implicit(
     heat_prod: np.ndarray,
 ) -> np.ndarray:
     """Calculates a steady-state thermal solution."""
-    # Create the empty (zero) coefficient and right hand side arrays
-    a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
-    b = np.zeros(nx)
-
     # Set B.C. values in the coefficient array and in the r.h.s. array
     a_matrix[0, 0] = 1
-    b[0] = temp_surf
+    b_vector[0] = temp_surf
     a_matrix[nx - 1, nx - 1] = 1
-    b[nx - 1] = temp_base
+    b_vector[nx - 1] = temp_base
 
     # Matrix loop
     for ix in range(1, nx - 1):
@@ -280,9 +336,9 @@ def temp_ss_implicit(
         ] / dx**2
         a_matrix[ix, ix] = k[ix] / dx**2 + k[ix - 1] / dx**2
         a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b[ix] = heat_prod[ix]
+        b_vector[ix] = heat_prod[ix]
 
-    temp = solve(a_matrix, b)
+    temp = solve(a_matrix, b_vector)
     return temp
 
 
@@ -385,15 +441,18 @@ def init_ero_types(
     return temp_prev, moho_depth, rho, cp, k, heat_prod, alphav
 
 
+# TODO: Add support for basal flux boundary condition
 def temp_transient_explicit(
-    temp_prev: np.ndarray,
-    temp_new: np.ndarray,
-    temp_surf: float,
-    temp_base: float,
     nx: int,
     dx: float,
-    vx: np.ndarray,
     dt: float,
+    temp_prev: np.ndarray,
+    temp_new: np.ndarray,
+    bc_type: int,
+    temp_surf: float,
+    temp_base: float,
+    flux_base: float,
+    vx: np.ndarray,
     rho: np.ndarray,
     cp: np.ndarray,
     k: np.ndarray,
@@ -402,7 +461,15 @@ def temp_transient_explicit(
     """Updates a transient thermal solution."""
     # Set boundary conditions
     temp_new[0] = temp_surf
-    temp_new[nx - 1] = temp_base
+    if bc_type == 1:
+        # Assign constant basal temperature
+        temp_new[nx - 1] = temp_base
+    elif bc_type == 2:
+        temp_new[nx - 1] = temp_prev[-1] + (2 * k[-1] * dt) / (
+            rho[-1] * cp[-1] * dx**2
+        ) * (temp_prev[-2] - temp_prev[-1] + (flux_base * dx) / k[-1])
+    else:
+        raise ValueError(f"Bad boundary condition type: {bc_type}. Must be 1 or 2.")
 
     # Calculate internal grid point temperatures
     # Use upwinding
@@ -439,26 +506,16 @@ def temp_transient_implicit(
     nx: int,
     dx: float,
     dt: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
     temp_prev: np.ndarray,
-    temp_surf: float,
-    temp_base: float,
     vx: np.ndarray,
     rho: np.ndarray,
     cp: np.ndarray,
     k: np.ndarray,
     heat_prod: np.ndarray,
 ) -> np.ndarray:
-    """Calculates a steady-state thermal solution."""
-    # Create the empty (zero) coefficient and right hand side arrays
-    a_matrix = np.zeros((nx, nx))  # 2-dimensional array, ny rows, ny columns
-    b = np.zeros(nx)
-
-    # Set B.C. values in the coefficient array and in the r.h.s. array
-    a_matrix[0, 0] = 1
-    b[0] = temp_surf
-    a_matrix[nx - 1, nx - 1] = 1
-    b[nx - 1] = temp_base
-
+    """Calculates a transient implicit thermal solution."""
     # Matrix loop
     for ix in range(1, nx - 1):
         a_matrix[ix, ix - 1] = (
@@ -466,9 +523,47 @@ def temp_transient_implicit(
         )
         a_matrix[ix, ix] = (rho[ix] * cp[ix]) / dt + k[ix] / dx**2 + k[ix - 1] / dx**2
         a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b[ix] = heat_prod[ix] + ((rho[ix] * cp[ix]) / dt) * temp_prev[ix]
+        b_vector[ix] = heat_prod[ix] + ((rho[ix] * cp[ix]) / dt) * temp_prev[ix]
 
-    temp = solve(a_matrix, b)
+    temp = solve(a_matrix, b_vector)
+    return temp
+
+
+# Transient heat transfer equation solved using Crank-Nicolson method
+def temp_transient_crank_nicolson(
+    nx: int,
+    dx: float,
+    dt: float,
+    a_matrix: np.ndarray,
+    b_vector: np.ndarray,
+    temp_prev: np.ndarray,
+    vx: np.ndarray,
+    rho: np.ndarray,
+    cp: np.ndarray,
+    k: np.ndarray,
+    heat_prod: np.ndarray,
+) -> np.ndarray:
+    """Calculates a steady-state thermal solution."""
+    # Matrix loop
+    for ix in range(1, nx - 1):
+        a_matrix[ix, ix - 1] = -k[ix - 1] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (
+            2 * dx
+        )
+        a_matrix[ix, ix] = (
+            k[ix] / dx**2 + k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt
+        )
+        a_matrix[ix, ix + 1] = -k[ix] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx)
+        b_vector[ix] = (
+            (k[ix] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
+            * temp_prev[ix + 1]
+            + (-k[ix] / dx**2 - k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt)
+            * temp_prev[ix]
+            + (k[ix - 1] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
+            * temp_prev[ix - 1]
+            + 2 * heat_prod[ix]
+        )
+
+    temp = solve(a_matrix, b_vector)
     return temp
 
 
@@ -495,23 +590,10 @@ def apply_intrusion(
     return model_temperatures
 
 
-def check_execs() -> None:
-    """Checks whether all required executables exist."""
-
-    # Check that executables are in $PATH
-    for executable in ("RDAAM_He", "ketch_aft"):
-        exec_path = shutil.which(executable)
-        if exec_path is None:
-            raise FileNotFoundError(
-                f"{executable} executable not found. See instructions at https://github.com/HUGG/Tc_core to fix this."
-            )
-
-    return None
-
-
 # TODO: Sort out why type hinting is problematic for this function
 def he_ages(
-    file,
+    rdaam,
+    pa,
     ap_rad,
     ap_uranium,
     ap_thorium,
@@ -521,69 +603,76 @@ def he_ages(
 ):
     """Calculates (U-Th)/He ages."""
 
-    # Run executable to calculate age
-    exec_path = shutil.which("RDAAM_He")
-    command = (
-        exec_path
-        + " "
-        + file
-        + " "
-        + str(ap_rad)
-        + " "
-        + str(ap_uranium)
-        + " "
-        + str(ap_thorium)
-        + " "
-        + str(zr_rad)
-        + " "
-        + str(zr_uranium)
-        + " "
-        + str(zr_thorium)
+    # Initialize library parameters
+    ap_age = c_double(0.0)
+    ap_corrAge = c_double(0.0)
+    zr_age = c_double(0.0)
+    zr_corrAge = c_double(0.0)
+    ap_success = c_int(0)
+    zr_success = c_int(0)
+
+    # Calculate age
+    rdaam.run_RDAAM_He(
+        pa,  # path
+        c_double(ap_rad),  # ap_rad
+        c_double(ap_uranium),  # ap_U
+        c_double(ap_thorium),  # ap_Th
+        pointer(ap_age),  # ap_age
+        pointer(ap_corrAge),  # ap_corrAge
+        c_double(0.0),  # total_He
+        c_double(zr_rad),  # zr_rad
+        c_double(zr_uranium),  # zr_U
+        c_double(zr_thorium),  # zr_Th
+        pointer(zr_age),  # zr_age
+        pointer(zr_corrAge),  # zr_corrAge
+        pointer(ap_success),  # ap_success
+        pointer(zr_success),  # zr_success
     )
-    p = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
-    )
 
-    stdout = p.stdout.readlines()
+    # Exit if age calculation fails
+    if ap_success.value != 1:
+        print(f"RDAAM_calculate for ap failed! {ap_success}")
+        exit(1)
+    if zr_success.value != 1:
+        print(f"RDAAM_calculate for zr failed! {zr_success}")
+        exit(1)
 
-    ahe_age = float(stdout[0].split()[3][:-1].decode("UTF-8"))
-    corr_ahe_age = float(stdout[0].split()[7].decode("UTF-8"))
-    zhe_age = float(stdout[1].split()[3][:-1].decode("UTF-8"))
-    corr_zhe_age = float(stdout[1].split()[7].decode("UTF-8"))
-
-    retval = p.wait()
-    if retval != 0:
-        print(f"RDAAM_He execution failed with return code: {retval}!")
-
-    return ahe_age, corr_ahe_age, zhe_age, corr_zhe_age
+    return ap_age.value, ap_corrAge.value, zr_age.value, zr_corrAge.value
 
 
 # TODO: Sort out why type hinting is problematic for this function
-def ft_ages(file, write_track_lengths):
+def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     """Calculates AFT ages."""
 
-    # Run executable to calculate age
-    exec_path = shutil.which("ketch_aft")
-    command = exec_path + " " + file
-    if write_track_lengths:
-        command += " 1"
-    p = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+    # Load library to calculate AFT age
+    ketch = load_ketch()
+
+    # Initialize library parameters
+    ntime = c_int(n)
+    alo = c_double(16.3)
+    final_age = c_double(0.0)
+    oldest_age = c_double(0.0)
+    fmean = c_double(0.0)
+    fdist = (c_double * 200)()
+
+    # Calculate age
+    ketch.ketch_main(
+        pointer(ntime),  # int *ntime
+        ti_arr,  # float ketchtime[]
+        te_arr,  # float ketchtemp[]
+        pointer(alo),  # double *alo
+        pointer(final_age),  # double *final_age
+        pointer(oldest_age),  # double *oldest_age
+        pointer(fmean),  # double *fmean
+        fdist,  # double fdist[]
     )
 
-    stdout = p.stdout.readlines()
-    if stdout[0] == b"usage: ketch_aft tT_file\n":
-        raise RuntimeError(
-            "Incompatible version of Tc_core. Must be >=0.2. See https://github.com/HUGG/Tc_core."
-        )
-    aft_age = float(stdout[0].split()[4][:-1].decode("UTF-8"))
-    mean_ft_length = float(stdout[0].split()[9][:-1].decode("UTF-8"))
+    if write_track_lengths:
+        with open("ft_length.csv", "w") as out_csv:
+            for i, d in enumerate(fdist):
+                out_csv.write(f"{(i*1.0+0.5)*20.0/200},{d}\n")
 
-    retval = p.wait()
-    if retval != 0:
-        print(f"ketch_aft execution failed with return code: {retval}!")
-
-    return aft_age, mean_ft_length
+    return float(final_age.value), float(fmean.value)
 
 
 def calculate_closure_temp(
@@ -618,10 +707,10 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     return write_increment
 
 
-def write_tt_history(
+def save_tt_history(
     params: dict, tt_filename: str, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
-    """Writes a time-temperature history to a file."""
+    "Writes a time-temperature history to a file."
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
 
@@ -648,7 +737,7 @@ def write_tt_history(
                 writer.writerow([pad_time, temp_history[i]])
 
 
-def write_ttdp_history(
+def save_ttdp_history(
     params: dict,
     ttdp_filename: str,
     time_history: np.ndarray,
@@ -685,7 +774,9 @@ def calculate_ages_and_tcs(
     temp_history,
     depth_history,
     pressure_history,
+    write_tt_history,
     tt_filename,
+    write_ttdp_history,
     ttdp_filename,
     write_track_lengths,
 ):
@@ -715,21 +806,45 @@ def calculate_ages_and_tcs(
         time_ma, temp_history, params["madtrax_zft_kinetic_model"], 0
     )
 
-    # Write time-temperature history to file for (U-Th)/He, Ketcham AFT age calculation
-    write_tt_history(params, tt_filename, time_history, temp_history)
+    # Write time-temperature history to file, if requested
+    if write_tt_history:
+        save_tt_history(params, tt_filename, time_history, temp_history)
 
-    # Write pressure-time-temperature-depth history to file for reference
-    write_ttdp_history(
-        params,
-        ttdp_filename,
-        time_history,
-        temp_history,
-        depth_history,
-        pressure_history,
-    )
+    # Write pressure-time-temperature-depth history to file, if requested
+    if write_ttdp_history:
+        save_ttdp_history(
+            params,
+            ttdp_filename,
+            time_history,
+            temp_history,
+            depth_history,
+            pressure_history,
+        )
+
+    rdaam = load_rdaam()
+    pa = rdaam.make_path()
+    time_ma = tt_hist_to_ma(time_history)
+    write_increment = get_write_increment(params, time_ma)
+
+    ti_hist = []
+    te_hist = []
+
+    for i in range(len(time_ma) - 1, -1, -write_increment):
+        ti_hist.append(time_ma[i])
+        te_hist.append(temp_history[i])
+        rdaam.path_push(pa, c_double(time_ma[i]), c_double(temp_history[i]))
+    if params["pad_time"] > 0.0:
+        pad_times = np.arange(
+            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
+        )
+        for pad_time in pad_times:
+            ti_hist.append(pad_time)
+            te_hist.append(temp_history[i])
+            rdaam.path_push(pa, c_double(pad_time), c_double(temp_history[i]))
 
     ahe_age, corr_ahe_age, zhe_age, corr_zhe_age = he_ages(
-        file=tt_filename,
+        rdaam=rdaam,
+        pa=pa,
         ap_rad=params["ap_rad"],
         ap_uranium=params["ap_uranium"],
         ap_thorium=params["ap_thorium"],
@@ -737,8 +852,18 @@ def calculate_ages_and_tcs(
         zr_uranium=params["zr_uranium"],
         zr_thorium=params["zr_thorium"],
     )
+    rdaam.del_path(pa)
+
+    ti_arr = (c_float * len(ti_hist))()
+    te_arr = (c_float * len(te_hist))()
+    for i in range(len(ti_hist)):
+        ti_arr[i] = c_float(ti_hist[i])
+        te_arr[i] = c_float(te_hist[i])
+
     if params["ketch_aft"]:
-        aft_age, aft_mean_ftl = ft_ages(tt_filename, write_track_lengths)
+        aft_age, aft_mean_ftl = ft_ages(
+            ti_arr, te_arr, len(ti_hist), write_track_lengths
+        )
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
@@ -2238,9 +2363,12 @@ def init_params(
     alphav_mantle=3.0e-5,
     rho_a=3250.0,
     k_a=20.0,
-    implicit=True,
+    solution_type=3,
+    bc_type=1,
     temp_surf=0.0,
     temp_base=1300.0,
+    flux_base=20.0,
+    temp_adiabat_ref=1300.0,
     mantle_adiabat=True,
     intrusion_temperature=750.0,
     intrusion_start_time=-1.0,
@@ -2266,7 +2394,7 @@ def init_params(
     madtrax_aft=False,
     madtrax_aft_kinetic_model=1,
     madtrax_zft_kinetic_model=1,
-    ap_rad=45.0,
+    ap_rad=60.0,
     ap_uranium=10.0,
     ap_thorium=40.0,
     zr_rad=60.0,
@@ -2308,6 +2436,7 @@ def init_params(
     plot_ft_length_dist=False,
     invert_tt_plot=False,
     t_plots=[0.1, 1, 5, 10, 20, 30, 50],
+    watch_it_exhume=False,
     crust_solidus=False,
     crust_solidus_comp="wet_intermediate",
     mantle_solidus=False,
@@ -2319,6 +2448,9 @@ def init_params(
     write_temps=False,
     write_age_output=False,
     write_past_ages=False,
+    write_tt_history=False,
+    write_ttdp_history=False,
+    write_ft_lengths=False,
     save_plots=False,
     read_temps=False,
     compare_temps=False,
@@ -2386,12 +2518,18 @@ def init_params(
         Mantle asthenosphere density in kg/m^3.
     k_a : float or int, default=20.0
         Mantle asthenosphere thermal conductivity in W/m/K.
-    implicit : bool, default=True
-        Use implicit instead of explicit finite-difference calculation.
+    solution_type : int, default=3
+        Finite-difference solution type (1 = explicit, 2 = implicit, 3 = Crank-Nicolson).
+    bc_type : int, default=1
+        Basal boundary condition type (1 = constant temperature, 2 = constant heat flux).
     temp_surf : float or int, default=0.0
         Surface boundary condition temperature in °C.
     temp_base : float or int, default=1300.0
         Basal boundary condition temperature in °C.
+    flux_base : float or int, default=20.0
+        Basal heat flux in mW/m^2.
+    temp_adiabat_ref : float or int, default=1300.0
+        Reference temperature for mantle adiabat calculation
     mantle_adiabat : bool, default=True
         Use adiabat for asthenosphere temperature.
     intrusion_temperature : float or int, default=750.0
@@ -2442,7 +2580,7 @@ def init_params(
         Kinetic model to use for AFT age prediction with MadTrax (see https://tc1d.readthedocs.io).
     madtrax_zft_kinetic_model : int, default=1
         Kinetic model to use for ZFT age prediction with MadTrax (see https://tc1d.readthedocs.io).
-    ap_rad : float or int, default=45.0
+    ap_rad : float or int, default=60.0
         Apatite grain radius in um.
     ap_uranium : float or int, default=10.0
         Apatite U concentration in ppm.
@@ -2502,6 +2640,8 @@ def init_params(
         Invert depth/temperature axis on thermal history plot.
     t_plots : list of float or int, default=[0.1, 1, 5, 10, 20, 30, 50]
         Output times for temperature plotting in Myr. Treated as increment if only one value given.
+    watch_it_exhume : bool, default=False
+        Use animation plot for thermal history rather than static plotting
     crust_solidus : bool, default=False
         Calculate and plot a crustal solidus.
     crust_solidus_comp : str, default="wet_intermediate"
@@ -2524,6 +2664,12 @@ def init_params(
         Save predicted and observed ages to a file.
     write_past_ages : bool, default=False
         Write out incremental past ages to csv file.
+    write_tt_history : bool, default=False
+        Write time-temperature history to a csv file.
+    write_ttdp_history : bool, default=False
+        Write time-temperature-depth-pressure history to a csv file.
+    write_ft_lengths : bool, default=False
+        Write apatite fission track-length distribution to a file.
     save_plots : bool, default=False
         Save plots to a file.
     read_temps : bool, default=False
@@ -2554,13 +2700,14 @@ def init_params(
         "plot_peclet_number": plot_peclet_number,
         "plot_ft_length_dist": plot_ft_length_dist,
         "invert_tt_plot": invert_tt_plot,
+        "watch_it_exhume": watch_it_exhume,
         "run_type": run_type,
         # Batch mode defaults to false and will set itself true if batch parameters exist
         "batch_mode": False,
         # Inverse mode not supported when called as a function
         "inverse_mode": False,
         "mantle_adiabat": mantle_adiabat,
-        "implicit": implicit,
+        "solution_type": solution_type,
         "read_temps": read_temps,
         "compare_temps": compare_temps,
         "write_temps": write_temps,
@@ -2592,8 +2739,11 @@ def init_params(
         "ero_option10": ero_option10,
         "ero_stages": ero_stages,
         "mantle_velocity": mantle_velocity,
+        "bc_type": bc_type,
         "temp_surf": temp_surf,
         "temp_base": temp_base,
+        "flux_base": flux_base,
+        "temp_adiabat_ref": temp_adiabat_ref,
         "t_total": time,
         "dt": dt,
         "vx_init": vx_init,
@@ -2619,6 +2769,9 @@ def init_params(
         "pad_time": pad_time,
         "past_age_increment": past_age_increment,
         "write_past_ages": write_past_ages,
+        "write_tt_history": write_tt_history,
+        "write_ttdp_history": write_ttdp_history,
+        "write_ft_lengths": write_ft_lengths,
         "crust_solidus": crust_solidus,
         "crust_solidus_comp": crust_solidus_comp,
         "mantle_solidus": mantle_solidus,
@@ -2687,21 +2840,24 @@ def prep_model(params):
         params["log_output"]
         or params["write_past_ages"]
         or params["write_temps"]
-        or params["calc_ages"]
+        or params["write_tt_history"]
+        or params["write_ttdp_history"]
+        or params["write_ft_lengths"]
         or params["write_age_output"]
     ):
         create_output_directory(wd, dir="csv")
     if params["save_plots"]:
         create_output_directory(wd, dir="png")
 
-    # Check the needed executable files exist
-    check_execs()
-
     batch_keys = [
         "max_depth",
         "nx",
+        "solution_type",
+        "bc_type",
         "temp_surf",
         "temp_base",
+        "flux_base",
+        "temp_adiabat_ref",
         "t_total",
         "dt",
         "vx_init",
@@ -2721,7 +2877,6 @@ def prep_model(params):
         "ero_option9",
         "ero_option10",
         "mantle_velocity",
-        "mantle_adiabat",
         "rho_crust",
         "cp_crust",
         "k_crust",
@@ -2939,8 +3094,8 @@ def batch_run(params, batch_params):
             # Should this also be handled in log_output()?
             with open(outfile, "a+") as f:
                 f.write(
-                    f"{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},"
-                    f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
+                    f"{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},{params['bc_type']},"
+                    f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                     f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                     f"{params['removal_end_time']:.4f},"
                     f"{params['ero_type']},{params['ero_option1']:.4f},"
@@ -4027,15 +4182,20 @@ def run_model(params):
     wd = Path.cwd()
 
     # Set flags if using batch mode (or not)
-    write_track_lengths = False
     if params["batch_mode"]:
         params["echo_info"] = False
         params["echo_thermal_info"] = False
         params["echo_ages"] = False
         params["plot_results"] = False
-    else:
-        # Only write AFT track lengths to file in forward models
-        write_track_lengths = True
+
+    write_tt_history = params["write_tt_history"]
+    write_ttdp_history = params["write_ttdp_history"]
+    write_track_lengths = params["write_ft_lengths"]
+    if params["inverse_mode"]:
+        # Only allow tT histories and track lengths to be saved to file in forward and batch modes
+        write_tt_history = False
+        write_ttdp_history = False
+        write_track_lengths = False
 
     # Conversion factors and unit conversions
     max_depth = kilo2base(params["max_depth"])
@@ -4203,7 +4363,7 @@ def run_model(params):
     # Calculate explicit model stability conditions
     cond_stab = 0.0
     adv_stab = 0.0
-    if not params["implicit"]:
+    if params["solution_type"] == 1:
         cond_stab, adv_stab = calculate_explicit_stability(
             vx_max,
             params["k_crust"],
@@ -4226,7 +4386,8 @@ def run_model(params):
             nt,
             dt,
             t_total,
-            params["implicit"],
+            params["solution_type"],
+            params["bc_type"],
             params["ero_type"],
             exhumation_magnitude,
             cond_stab,
@@ -4336,13 +4497,13 @@ def run_model(params):
     if params["mantle_adiabat"]:
         adiabat_m = adiabat(
             alphav=params["alphav_mantle"],
-            temp=params["temp_base"] + 273.15,
+            temp=params["temp_adiabat_ref"] + 273.15,
             cp=params["cp_mantle"],
         )
-        temp_adiabat = params["temp_base"] + (xstag - max_depth) * adiabat_m
+        temp_adiabat = params["temp_adiabat_ref"] + (xstag - max_depth) * adiabat_m
     else:
         adiabat_m = 0.0
-        temp_adiabat = params["temp_base"]
+        temp_adiabat = params["temp_adiabat_ref"]
 
     # Create material property arrays
     rho = np.ones(len(x)) * params["rho_crust"]
@@ -4364,9 +4525,18 @@ def run_model(params):
         print("")
         print("--- Calculating initial thermal model ---")
         print("")
+
+    # Create the empty (zero) coefficient and right hand side arrays for temperature calculations
+    a_matrix = np.zeros(
+        (params["nx"], params["nx"])
+    )  # 2-dimensional array, ny rows, ny columns
+    b_vector = np.zeros(params["nx"])
+
     temp_init = temp_ss_implicit(
         params["nx"],
         dx,
+        a_matrix,
+        b_vector,
         params["temp_surf"],
         params["temp_base"],
         vx_init,
@@ -4459,33 +4629,30 @@ def run_model(params):
                 temp_prev[ix] = params["temp_base"] + (x[ix] - max_depth) * adiabat_m
         delaminated = True
 
-    # Set plot parameters if plotting requested
-    if params["plot_results"]:
-        # Set plot style
-        plt.style.use("seaborn-v0_8-darkgrid")
-
-        # Plot initial temperature field
-        if params["plot_density"]:
-            fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
-        else:
-            fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
-        if t_plots.max() < t_total - 1.0:
-            # Add an extra color for the final temperature if it is not in the
-            # list of times for plotting
-            colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots) + 1))
-        else:
-            colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots)))
-        ax1.plot(temp_init, -x / 1000, "k:", label="Initial")
-        if params["plot_ma"]:
-            time_label = f"{params['t_total']:.1f} Ma"
-        else:
-            time_label = "0.0 Myr"
-        ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
-        if params["plot_density"]:
-            ax2.plot(density_init, -x / 1000, "k-", label=time_label)
-
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
+
+    # Assign basal boundary condition for implicit and Crank-Nicolson solutions
+    # NOTE: This assumes the boundary conditions do NOT change with time
+    # FIXME: Should handle cases where b/cs change somehow...
+    # Constant surface temperature
+    a_matrix[0, 0] = 1
+    b_vector[0] = params["temp_surf"]
+
+    if params["bc_type"] == 1:
+        # Assign constant basal temperature
+        a_matrix[-1, -1] = 1
+        b_vector[-1] = params["temp_base"]
+    elif params["bc_type"] == 2:
+        # Assign constant basal heat flux
+        a_matrix[-1, -3] = 1.0
+        a_matrix[-1, -2] = -4.0
+        a_matrix[-1, -1] = 3.0
+        b_vector[-1] = 2 * milli2base(params["flux_base"]) * dx / k[-1]
+    else:
+        raise ValueError(
+            f"Bad boundary condition type: {params['bc_type']}. Must be 1 or 2."
+        )
 
     # Loop over number of required passes
     for j in range(num_pass):
@@ -4633,6 +4800,64 @@ def run_model(params):
                 mmyr2ms(params["mantle_velocity"]),
             )
 
+        # Create initial plots and set plot parameters if plotting requested
+        if params["plot_results"]:
+            # Set plot style
+            plt.style.use("seaborn-v0_8-darkgrid")
+
+            # Plot animation of temperatures and particle depth, if requested
+            if params["watch_it_exhume"]:
+                n_anim_steps = 200
+                anim_plot_increment = int(round(nt / n_anim_steps, 0))
+                plt.ion()
+                fig_anim, (ax1_anim, ax2_anim) = plt.subplots(1, 2, figsize=(12, 8))
+                # Create initial temperature plot
+                (temp_line,) = ax1_anim.plot(
+                    temp_init, -x / 1000.0, label="Current temp."
+                )
+                particle_temp = np.interp(depths[0], x, temp_init)
+                (particle,) = ax1_anim.plot(
+                    particle_temp, -depths[0] / 1000.0, "o", label="Tracking particle"
+                )
+                time_text = ax1_anim.text(
+                    0.05 * params["temp_base"],
+                    -0.95 * max_depth / 1000.0,
+                    f"Time: {t_total / myr2sec(1):.1f} Ma",
+                )
+                ax1_anim.legend()
+
+                # Create initial thermal history plot
+                (thist_line,) = ax2_anim.plot(
+                    t_total, particle_temp, "o", label="Thermal history"
+                )
+                ax2_anim.xaxis.set_inverted(True)
+                ax2_anim.yaxis.set_inverted(True)
+
+                # Use tight layout
+                plt.tight_layout()
+
+            # Create static plots otherwise
+            else:
+                # Plot initial temperature field
+                if params["plot_density"]:
+                    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8))
+                else:
+                    fig, ax1 = plt.subplots(1, 1, figsize=(6, 8))
+                if t_plots.max() < t_total - 1.0:
+                    # Add an extra color for the final temperature if it is not in the
+                    # list of times for plotting
+                    colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots) + 1))
+                else:
+                    colors = plt.cm.viridis_r(np.linspace(0, 1, len(t_plots)))
+                ax1.plot(temp_init, -x / 1000, "k:", label="Initial")
+                if params["plot_ma"]:
+                    time_label = f"{params['t_total']:.1f} Ma"
+                else:
+                    time_label = "0.0 Myr"
+                ax1.plot(temp_prev, -x / 1000, "k-", label=time_label)
+                if params["plot_density"]:
+                    ax2.plot(density_init, -x / 1000, "k-", label=time_label)
+
         if not params["batch_mode"]:
             print("")
             print(
@@ -4767,14 +4992,45 @@ def run_model(params):
             )
 
             # Calculate updated temperatures
-            if params["implicit"]:
-                temp_new[:] = temp_transient_implicit(
+            if params["solution_type"] == 1:
+                temp_new[:] = temp_transient_explicit(
                     params["nx"],
                     dx,
                     dt,
                     temp_prev,
+                    temp_new,
+                    params["bc_type"],
                     params["temp_surf"],
                     params["temp_base"],
+                    milli2base(params["flux_base"]),
+                    vx_array,
+                    rho,
+                    cp,
+                    k,
+                    heat_prod,
+                )
+            elif params["solution_type"] == 2:
+                temp_new[:] = temp_transient_implicit(
+                    params["nx"],
+                    dx,
+                    dt,
+                    a_matrix,
+                    b_vector,
+                    temp_prev,
+                    vx_array,
+                    rho,
+                    cp,
+                    k,
+                    heat_prod,
+                )
+            elif params["solution_type"] == 3:
+                temp_new[:] = temp_transient_crank_nicolson(
+                    params["nx"],
+                    dx,
+                    dt,
+                    a_matrix,
+                    b_vector,
+                    temp_prev,
                     vx_array,
                     rho,
                     cp,
@@ -4782,21 +5038,9 @@ def run_model(params):
                     heat_prod,
                 )
             else:
-                temp_new[:] = temp_transient_explicit(
-                    temp_prev,
-                    temp_new,
-                    params["temp_surf"],
-                    params["temp_base"],
-                    params["nx"],
-                    dx,
-                    vx_array,
-                    dt,
-                    rho,
-                    cp,
-                    k,
-                    heat_prod,
+                raise ValueError(
+                    f"Bad solution type: {params['solution_type']}. Must be 1, 2 or 3."
                 )
-
             # Calculate maximum temperature difference if using debug output
             if params["debug"]:
                 max_temp_diff = abs(temp_prev - temp_new).max()
@@ -4913,6 +5157,46 @@ def run_model(params):
                                 f"Temp for surface time {i}: {temp_hists[i][idx]:.1f} °C"
                             )
 
+                if params["plot_results"] and params["watch_it_exhume"]:
+                    if idx % anim_plot_increment == 0:
+                        # Update geotherm plot
+                        temp_line.set_data(temp_new, -x / 1000.0)
+                        particle_temp = np.interp(depths[0], x, temp_new)
+                        particle.set_data([particle_temp], [-depths[0] / 1000.0])
+                        time_text.set_text(
+                            f"Time: {(t_total - curtime) / myr2sec(1):.1f} Ma"
+                        )
+
+                        # Update thermal history plot
+                        thist_line.set_data(
+                            (t_total - time_hists[-1][:idx]) / myr2sec(1.0),
+                            temp_hists[-1][:idx],
+                        )
+
+                        # Rescale axes
+                        ax1_anim.relim()
+                        ax1_anim.autoscale_view()
+                        ax2_anim.relim()
+                        ax2_anim.autoscale_view()
+
+                        # Add axis labels
+                        ax1_anim.set_xlabel("Temperature (°C)")
+                        ax1_anim.set_ylabel("Depth (km)")
+                        ax2_anim.set_xlabel("Time (Ma)")
+                        ax2_anim.set_ylabel("Temperature (°C)")
+
+                        # Redraw
+                        fig_anim.canvas.draw()
+                        fig_anim.canvas.flush_events()
+
+                    if idx % (40 * anim_plot_increment) == 0:
+                        ax1_anim.plot(
+                            temp_new,
+                            -x / 1000.0,
+                            label=f"{(t_total - curtime) / myr2sec(1):.1f} Ma",
+                        )
+                        ax1_anim.legend()
+
             if params["debug"]:
                 print(
                     f"Maximum temp difference at time {curtime / myr2sec(1):.4f} Myr: {max_temp_diff:.4f} °C"
@@ -4953,32 +5237,37 @@ def run_model(params):
             # Plot temperature and density profiles
             if j == num_pass - 1:
                 if params["plot_results"] and more_plots:
-                    if curtime > t_plots[plotidx]:
-                        if params["plot_ma"]:
-                            time_label = f"{(params['t_total'] - t_plots[plotidx] / myr2sec(1)):.1f} Ma"
-                        else:
-                            time_label = f"{t_plots[plotidx] / myr2sec(1):.1f} Myr"
-                        ax1.plot(
-                            temp_new,
-                            -x / 1000,
-                            "-",
-                            label=time_label,
-                            color=colors[plotidx],
-                        )
-                        if params["plot_density"]:
-                            ax2.plot(
-                                density_new,
+                    if not params["watch_it_exhume"]:
+                        if curtime > t_plots[plotidx]:
+                            if params["plot_ma"]:
+                                time_label = f"{(params['t_total'] - t_plots[plotidx] / myr2sec(1)):.1f} Ma"
+                            else:
+                                time_label = f"{t_plots[plotidx] / myr2sec(1):.1f} Myr"
+                            ax1.plot(
+                                temp_new,
                                 -x / 1000,
+                                "-",
                                 label=time_label,
                                 color=colors[plotidx],
                             )
-                        if plotidx == len(t_plots) - 1:
-                            more_plots = False
-                        plotidx += 1
-                        # tplot = t_plots[plotidx]
+                            if params["plot_density"]:
+                                ax2.plot(
+                                    density_new,
+                                    -x / 1000,
+                                    label=time_label,
+                                    color=colors[plotidx],
+                                )
+                            if plotidx == len(t_plots) - 1:
+                                more_plots = False
+                            plotidx += 1
+                            # tplot = t_plots[plotidx]
 
         if not params["batch_mode"]:
             print("")
+
+    if params["watch_it_exhume"]:
+        plt.ioff()
+        # plt.show()
 
     # Calculate final densities
     density_new = update_density(rho, alphav, temp_new)
@@ -5014,16 +5303,6 @@ def run_model(params):
 
     # Calculate ages
     if params["calc_ages"]:
-        # Define time-temperature-depth filenames
-        if params["inverse_mode"]:
-            # Get process ID for file naming
-            pid = os.getpid()
-            tt_filename = f"time_temp_hist_{pid}.csv"
-            ttdp_filename = f"time_temp_depth_pressure_hist_{pid}.csv"
-        else:
-            tt_filename = "time_temp_hist.csv"
-            ttdp_filename = "time_temp_depth_pressure_hist.csv"
-
         # Convert time since model start to time before end of simulation
         time_ma = tt_hist_to_ma(time_hists[-1])
 
@@ -5037,7 +5316,18 @@ def run_model(params):
         zhe_temps = np.zeros(surf_age_array_size)
         zft_ages = np.zeros(surf_age_array_size)
         zft_temps = np.zeros(surf_age_array_size)
+
+        # Define string for time-temperature and time-temperature-depth ages
         for i in range(surf_age_array_size):
+            # Define tT and tTd filenames
+            if len(surface_times_ma) == 1:
+                file_age_text = ""
+            else:
+                file_age_text = f"_{surface_times_ma[i]}Ma"
+            tt_filename = "time_temp_hist" + file_age_text + ".csv"
+            ttdp_filename = "time_temp_depth_pressure_hist" + file_age_text + ".csv"
+
+            # Calculate ages
             (
                 corr_ahe_ages[i],
                 ahe_age,
@@ -5056,7 +5346,9 @@ def run_model(params):
                 temp_hists[i],
                 depth_hists[i],
                 pressure_hists[i],
+                write_tt_history,
                 tt_filename,
+                write_ttdp_history,
                 ttdp_filename,
                 write_track_lengths,
             )
@@ -5073,24 +5365,37 @@ def run_model(params):
                 )
                 print(f"- ZFT age: {zft_ages[i]:.2f} Ma (Tc: {zft_temps[i]:.2f} °C)")
 
-        # Move/rename/remove time-temp histories
-        # Only do this for the final ages/histories!
-        tt_orig = Path(tt_filename)
-        ttdp_orig = Path(ttdp_filename)
-        if params["batch_mode"] and not params["inverse_mode"]:
-            # Rename and move files to batch output directory
-            tt_newfile = params["model_id"] + "-time_temp_hist.csv"
-            tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
-            ttdp_newfile = params["model_id"] + "-time_temp_depth_pressure_hist.csv"
-            ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
-        else:
-            tt_new = tt_orig.rename(wd / "csv" / tt_orig)
-            ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
+            # Rename and/or move time-temperature history file, if requested
+            # TODO: Make this a function!
+            if write_tt_history:
+                tt_orig = Path(tt_filename)
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
+                    tt_newfile = params["model_id"] + "-" + tt_filename
+                    tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
+                else:
+                    tt_new = tt_orig.rename(wd / "csv" / tt_orig)
 
-        # Move track length file to csv directory
-        if write_track_lengths:
-            ftl_orig = Path("ft_length.csv")
-            ftl_new = ftl_orig.rename(wd / "csv" / ftl_orig)
+            # Rename and/or move time-temperature-depth-pressure history file, if requested
+            if write_ttdp_history:
+                ttdp_orig = Path(ttdp_filename)
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
+                    ttdp_newfile = params["model_id"] + "-" + ttdp_filename
+                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
+                else:
+                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
+
+            # Move track length file to csv directory
+            if write_track_lengths:
+                ftl_orig = Path("ft_length.csv")
+                ftl_filename = "ft_length" + file_age_text + ".csv"
+                if params["batch_mode"]:
+                    # Rename and move files to batch output directory
+                    ftl_newfile = params["model_id"] + "-" + ftl_filename
+                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_newfile)
+                else:
+                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_filename)
 
         if params["echo_ages"]:
             print("")
@@ -5132,6 +5437,8 @@ def run_model(params):
             # Loop over all ages in age data file can calculate predicted age equivalents
             tt_hist_index = -1
             depo_age_old = 5000.0
+            rdaam = load_rdaam()
+            pa = pointer()
             for i in range(len(obs_ages_file)):
                 # Increment time-temperature history index whenever it changes, write new tt-history file
                 depo_age_now = obs_depo_age_file[i]
@@ -5139,16 +5446,26 @@ def run_model(params):
                 if depo_age_now < depo_age_old:
                     tt_hist_index += 1
 
-                    # Write time-temperature history to file for age prediction
-                    write_tt_history(
-                        params,
-                        tt_orig,
-                        time_hists[tt_hist_index],
-                        temp_hists[tt_hist_index],
-                    )
-
-                    # Update time_ma array
+                    rdaam.del_path(pa)
+                    pa = rdaam.make_path()
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
+                    write_increment = get_write_increment(params, time_ma)
+                    for i in range(len(time_ma) - 1, -1, -write_increment):
+                        rdaam.path_push(
+                            pa,
+                            c_double(time_ma[i]),
+                            c_double(temp_hists[tt_hist_index][i]),
+                        )
+                    if params["pad_time"] > 0.0:
+                        pad_times = np.arange(
+                            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
+                        )
+                        for pad_time in pad_times:
+                            rdaam.path_push(
+                                pa,
+                                c_double(pad_time),
+                                c_double(temp_hists[tt_hist_index][i]),
+                            )
 
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now
@@ -5159,7 +5476,8 @@ def run_model(params):
                 if obs_age_type_file[i] == "AHe":
                     # Calculate AHe age
                     _, corr_ahe_age, _, _ = he_ages(
-                        file=tt_orig.as_posix(),
+                        rdaam=rdaam,
+                        pa=pa,
                         ap_rad=obs_radius_file[i],
                         ap_uranium=obs_u_file[i],
                         ap_thorium=obs_th_file[i],
@@ -5190,7 +5508,8 @@ def run_model(params):
                 elif obs_age_type_file[i] == "ZHe":
                     # Calculate ZHe age
                     _, _, _, corr_zhe_age = he_ages(
-                        file=tt_orig.as_posix(),
+                        rdaam=rdaam,
+                        pa=pa,
                         ap_rad=params["ap_rad"],
                         ap_uranium=params["ap_uranium"],
                         ap_thorium=params["ap_thorium"],
@@ -5217,9 +5536,6 @@ def run_model(params):
                     pred_data_ages[i] = zft_ages[tt_hist_index] + depo_age_now
                     pred_data_temps[i] = zft_temps[tt_hist_index]
 
-            # Delete unneeded tt file
-            tt_orig.unlink()
-
             # Log number of different age types
             n_obs_ahe = len(obs_ahe_indices)
             n_obs_aft = len(obs_aft_indices)
@@ -5231,13 +5547,6 @@ def run_model(params):
             n_obs_aft = len(params["obs_aft"])
             n_obs_zhe = len(params["obs_zhe"])
             n_obs_zft = len(params["obs_zft"])
-
-        # Delete the tt files if using inverse mode
-        if params["inverse_mode"]:
-            tt_new.unlink()
-            ttdp_new.unlink()
-
-        # END FIXME?
 
         depo_ages_in_file = False
         if (num_passed_ages > 0) or (num_file_ages > 0):
@@ -5383,194 +5692,234 @@ def run_model(params):
             time_label = "0.0 Ma"
         else:
             time_label = f"{curtime / myr2sec(1):.1f} Myr"
-        ax1.plot(
-            temp_new,
-            -x / 1000,
-            "-",
-            label=time_label,
-            color=colors[-1],
-        )
-        ax1.plot(
-            [xmin, xmax],
-            [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
-            linestyle="--",
-            color="black",
-            lw=0.5,
-        )
-        ax1.plot(
-            [xmin, xmax],
-            [-params["init_moho_depth"], -params["init_moho_depth"]],
-            linestyle="--",
-            color="gray",
-            lw=0.5,
-        )
+        # Update plot and plot final geotherm if using watch it exhume mode
+        if params["watch_it_exhume"]:
+            # Update geotherm plot
+            temp_line.set_data(temp_new, -x / 1000.0)
+            particle_temp = np.interp(depths[0], x, temp_new)
+            particle.set_data([particle_temp], [-depths[0] / 1000.0])
+            time_text.set_text(f"Time: {(t_total - curtime) / myr2sec(1):.1f} Ma")
 
-        if params["crust_solidus"]:
-            crust_solidus_comp_text = {
-                "wet_felsic": "Wet felsic",
-                "wet_intermediate": "Wet intermediate",
-                "wet_basalt": "Wet basalt",
-                "dry_felsic": "Dry felsic",
-                "dry_basalt": "Dry basalt",
-            }
-            crust_slice = x / 1000.0 <= moho_depth / kilo2base(1)
-            pressure = calculate_pressure(density_new, dx)
-            crust_pressure = pressure[crust_slice]
-            crust_solidus = calculate_crust_solidus(
-                params["crust_solidus_comp"], crust_pressure
+            # Update thermal history plot
+            thist_line.set_data(
+                (t_total - time_hists[-1][:idx]) / myr2sec(1.0), temp_hists[-1][:idx]
             )
-            crust_solidus_plot_text = crust_solidus_comp_text[
-                params["crust_solidus_comp"]
-            ]
+
+            # Rescale axes
+            ax1_anim.relim()
+            ax1_anim.autoscale_view()
+            ax2_anim.relim()
+            ax2_anim.autoscale_view()
+
+            # Redraw
+            fig_anim.canvas.draw()
+            fig_anim.canvas.flush_events()
+
+            # Plot final geotherm
+            ax1_anim.plot(temp_new, -x / 1000.0, label=time_label)
+            ax1_anim.legend()
+
+            # Use tight layout
+            plt.tight_layout()
+
+        # Plot final geotherm on static plot
+        else:
             ax1.plot(
-                crust_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle=":",
-                lw=1.5,
-                label=f"Crust solidus ({crust_solidus_plot_text})",
-            )
-
-        if params["mantle_solidus"]:
-            mantle_slice = x / 1000 >= moho_depth / kilo2base(1)
-            pressure = calculate_pressure(density_new, dx)
-            mantle_solidus = calculate_mantle_solidus(
-                pressure / 1.0e9, xoh=params["mantle_solidus_xoh"]
-            )
-            ax1.plot(
-                mantle_solidus[mantle_slice],
-                -x[mantle_slice] / 1000,
-                color="gray",
-                linestyle="--",
-                lw=1.5,
-                label=f"Mantle solidus ({params['mantle_solidus_xoh']:.1f} μg/g H$_{2}$O)",
-            )
-
-        if params["solidus_ranges"]:
-            # Crust solidii
-            crust_solidus_comp_text = {
-                "wet_felsic": "Wet felsic",
-                "wet_intermediate": "Wet intermediate",
-                "wet_basalt": "Wet basalt",
-                "dry_felsic": "Dry felsic",
-                "dry_basalt": "Dry basalt",
-            }
-            crust_thickness = max(params["init_moho_depth"], moho_depth / kilo2base(1))
-            crust_slice = x / kilo2base(1) <= crust_thickness
-            pressure = calculate_pressure(density_new, dx)
-            crust_pressure = pressure[crust_slice]
-            wet_felsic_solidus = calculate_crust_solidus("wet_felsic", crust_pressure)
-            dry_basalt_solidus = calculate_crust_solidus("dry_basalt", crust_pressure)
-            wet_felsic_solidus_plot_text = crust_solidus_comp_text["wet_felsic"]
-            dry_basalt_solidus_plot_text = crust_solidus_comp_text["dry_basalt"]
-
-            # Mantle solidii
-            min_moho_depth = min(params["init_moho_depth"], moho_depth / kilo2base(1))
-            mantle_slice = x / 1000 >= min_moho_depth
-            mantle_pressure = pressure[mantle_slice]
-            # TODO: Find a suitable value for xoh
-            wet_mantle_solidus = calculate_mantle_solidus(
-                mantle_pressure / 1.0e9, xoh=100000.0
-            )
-            dry_mantle_solidus = calculate_mantle_solidus(
-                mantle_pressure / 1.0e9, xoh=0.0
-            )
-
-            # Plots
-            ax1.plot(
-                wet_felsic_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle="--",
-                lw=1.5,
-                label=f"{wet_felsic_solidus_plot_text} solidus",
-            )
-            ax1.plot(
-                dry_basalt_solidus,
-                -x[crust_slice] / 1000.0,
-                color="gray",
-                linestyle="-.",
-                lw=1.5,
-                label=f"{dry_basalt_solidus_plot_text} solidus",
-            )
-            ax1.fill_betweenx(
-                -x[crust_slice] / 1000.0,
-                wet_felsic_solidus,
-                dry_basalt_solidus,
-                color="tab:olive",
-                alpha=0.5,
-                lw=1.5,
-                # label=f"Crust solidus: {wet_felsic_solidus_plot_text}, {dry_basalt_solidus_plot_text}",
-            )
-            ax1.fill_betweenx(
-                -x[mantle_slice] / 1000.0,
-                wet_mantle_solidus,
-                dry_mantle_solidus,
-                color="tab:gray",
-                alpha=0.5,
-                lw=1.5,
-                label="Mantle solidus",
-            )
-
-        ax1.text(20.0, (-moho_depth + 0.01 * x.max()) / kilo2base(1), "Final Moho")
-        if moho_depth < x.max():
-            ax1.text(
-                20.0,
-                -params["init_moho_depth"] - (0.025 * x.max()) / kilo2base(1),
-                "Initial Moho",
-                color="gray",
-            )
-        ax1.legend()
-        ax1.axis([xmin, xmax, -max_depth / 1000, 0])
-        ax1.set_xlabel("Temperature (°C)")
-        ax1.set_ylabel("Depth (km)")
-
-        # Plot density, if requested
-        if params["plot_density"]:
-            # Round density ranges to nearest 50
-            density_base = 50.0
-            xmin = round_to_base(density_new.min(), density_base) - density_base
-            xmax = round_to_base(density_new.max(), density_base) + density_base
-            ax2.plot(
-                density_new,
+                temp_new,
                 -x / 1000,
+                "-",
                 label=time_label,
                 color=colors[-1],
             )
-            ax2.plot(
+            ax1.plot(
                 [xmin, xmax],
                 [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
                 linestyle="--",
                 color="black",
                 lw=0.5,
             )
-            ax2.plot(
+            ax1.plot(
                 [xmin, xmax],
                 [-params["init_moho_depth"], -params["init_moho_depth"]],
                 linestyle="--",
                 color="gray",
                 lw=0.5,
             )
-            ax2.axis([xmin, xmax, -max_depth / 1000, 0])
-            ax2.set_xlabel("Density (kg m$^{-3}$)")
-            ax2.set_ylabel("Depth (km)")
-            ax2.legend()
 
-        plt.tight_layout()
-        if params["save_plots"]:
-            plot_filename = "temperature_history.png"
+            if params["crust_solidus"]:
+                crust_solidus_comp_text = {
+                    "wet_felsic": "Wet felsic",
+                    "wet_intermediate": "Wet intermediate",
+                    "wet_basalt": "Wet basalt",
+                    "dry_felsic": "Dry felsic",
+                    "dry_basalt": "Dry basalt",
+                }
+                crust_slice = x / 1000.0 <= moho_depth / kilo2base(1)
+                pressure = calculate_pressure(density_new, dx)
+                crust_pressure = pressure[crust_slice]
+                crust_solidus = calculate_crust_solidus(
+                    params["crust_solidus_comp"], crust_pressure
+                )
+                crust_solidus_plot_text = crust_solidus_comp_text[
+                    params["crust_solidus_comp"]
+                ]
+                ax1.plot(
+                    crust_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle=":",
+                    lw=1.5,
+                    label=f"Crust solidus ({crust_solidus_plot_text})",
+                )
+
+            if params["mantle_solidus"]:
+                mantle_slice = x / 1000 >= moho_depth / kilo2base(1)
+                pressure = calculate_pressure(density_new, dx)
+                mantle_solidus = calculate_mantle_solidus(
+                    pressure / 1.0e9, xoh=params["mantle_solidus_xoh"]
+                )
+                ax1.plot(
+                    mantle_solidus[mantle_slice],
+                    -x[mantle_slice] / 1000,
+                    color="gray",
+                    linestyle="--",
+                    lw=1.5,
+                    label=f"Mantle solidus ({params['mantle_solidus_xoh']:.1f} μg/g H$_{2}$O)",
+                )
+
+            if params["solidus_ranges"]:
+                # Crust solidii
+                crust_solidus_comp_text = {
+                    "wet_felsic": "Wet felsic",
+                    "wet_intermediate": "Wet intermediate",
+                    "wet_basalt": "Wet basalt",
+                    "dry_felsic": "Dry felsic",
+                    "dry_basalt": "Dry basalt",
+                }
+                crust_thickness = max(
+                    params["init_moho_depth"], moho_depth / kilo2base(1)
+                )
+                crust_slice = x / kilo2base(1) <= crust_thickness
+                pressure = calculate_pressure(density_new, dx)
+                crust_pressure = pressure[crust_slice]
+                wet_felsic_solidus = calculate_crust_solidus(
+                    "wet_felsic", crust_pressure
+                )
+                dry_basalt_solidus = calculate_crust_solidus(
+                    "dry_basalt", crust_pressure
+                )
+                wet_felsic_solidus_plot_text = crust_solidus_comp_text["wet_felsic"]
+                dry_basalt_solidus_plot_text = crust_solidus_comp_text["dry_basalt"]
+
+                # Mantle solidii
+                min_moho_depth = min(
+                    params["init_moho_depth"], moho_depth / kilo2base(1)
+                )
+                mantle_slice = x / 1000 >= min_moho_depth
+                mantle_pressure = pressure[mantle_slice]
+                # TODO: Find a suitable value for xoh
+                wet_mantle_solidus = calculate_mantle_solidus(
+                    mantle_pressure / 1.0e9, xoh=100000.0
+                )
+                dry_mantle_solidus = calculate_mantle_solidus(
+                    mantle_pressure / 1.0e9, xoh=0.0
+                )
+
+                # Plots
+                ax1.plot(
+                    wet_felsic_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle="--",
+                    lw=1.5,
+                    label=f"{wet_felsic_solidus_plot_text} solidus",
+                )
+                ax1.plot(
+                    dry_basalt_solidus,
+                    -x[crust_slice] / 1000.0,
+                    color="gray",
+                    linestyle="-.",
+                    lw=1.5,
+                    label=f"{dry_basalt_solidus_plot_text} solidus",
+                )
+                ax1.fill_betweenx(
+                    -x[crust_slice] / 1000.0,
+                    wet_felsic_solidus,
+                    dry_basalt_solidus,
+                    color="tab:olive",
+                    alpha=0.5,
+                    lw=1.5,
+                    # label=f"Crust solidus: {wet_felsic_solidus_plot_text}, {dry_basalt_solidus_plot_text}",
+                )
+                ax1.fill_betweenx(
+                    -x[mantle_slice] / 1000.0,
+                    wet_mantle_solidus,
+                    dry_mantle_solidus,
+                    color="tab:gray",
+                    alpha=0.5,
+                    lw=1.5,
+                    label="Mantle solidus",
+                )
+
+            ax1.text(20.0, (-moho_depth + 0.01 * x.max()) / kilo2base(1), "Final Moho")
+            if moho_depth < x.max():
+                ax1.text(
+                    20.0,
+                    -params["init_moho_depth"] - (0.025 * x.max()) / kilo2base(1),
+                    "Initial Moho",
+                    color="gray",
+                )
+            ax1.legend()
+            ax1.axis([xmin, xmax, -max_depth / 1000, 0])
+            ax1.set_xlabel("Temperature (°C)")
+            ax1.set_ylabel("Depth (km)")
+
+            # Plot density, if requested
             if params["plot_density"]:
-                plot_filename = "temperature_density_history.png"
-            savefile = wd / "png" / plot_filename
-            plt.savefig(savefile, dpi=300)
-            if params["plot_density"]:
-                print(f"- Temperature/density history plot written to {savefile}")
+                # Round density ranges to nearest 50
+                density_base = 50.0
+                xmin = round_to_base(density_new.min(), density_base) - density_base
+                xmax = round_to_base(density_new.max(), density_base) + density_base
+                ax2.plot(
+                    density_new,
+                    -x / 1000,
+                    label=time_label,
+                    color=colors[-1],
+                )
+                ax2.plot(
+                    [xmin, xmax],
+                    [-moho_depth / kilo2base(1), -moho_depth / kilo2base(1)],
+                    linestyle="--",
+                    color="black",
+                    lw=0.5,
+                )
+                ax2.plot(
+                    [xmin, xmax],
+                    [-params["init_moho_depth"], -params["init_moho_depth"]],
+                    linestyle="--",
+                    color="gray",
+                    lw=0.5,
+                )
+                ax2.axis([xmin, xmax, -max_depth / 1000, 0])
+                ax2.set_xlabel("Density (kg m$^{-3}$)")
+                ax2.set_ylabel("Depth (km)")
+                ax2.legend()
+
+            plt.tight_layout()
+            if params["save_plots"]:
+                plot_filename = "temperature_history.png"
+                if params["plot_density"]:
+                    plot_filename = "temperature_density_history.png"
+                savefile = wd / "png" / plot_filename
+                plt.savefig(savefile, dpi=300)
+                if params["plot_density"]:
+                    print(f"- Temperature/density history plot written to {savefile}")
+                else:
+                    print(f"- Temperature history plot written to {savefile}")
+            if params["display_plots"]:
+                plt.show()
             else:
-                print(f"- Temperature history plot written to {savefile}")
-        if params["display_plots"]:
-            plt.show()
-        else:
-            plt.close()
+                plt.close()
 
         # Plot elevation history
         if params["plot_elevation_history"]:
@@ -6415,8 +6764,8 @@ def run_model(params):
         # Open log file for writing
         with open(outfile, "a+") as f:
             f.write(
-                f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},"
-                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['mantle_adiabat']},"
+                f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},{params['bc_type']},"
+                f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                 f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                 f"{params['removal_end_time']:.4f},{params['ero_type']},{params['ero_option1']:.4f},"
                 f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},"
