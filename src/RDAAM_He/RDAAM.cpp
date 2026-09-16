@@ -685,6 +685,8 @@ void RDAAM_InitFTAnnealingTraps(double ** &annealingTraps, bool optimize)
 	}
 // Finally, combine f and He into traps at each node at each time
 	annealingTraps = dmatrix(0,numTTNodes-1,0,rdim);
+	for (int radNode = 0; radNode < rdim; radNode++)
+		annealingTraps[0][radNode] = 0.0;
 	for (tsNode=numTTNodes-2; tsNode >= endNode; tsNode--) {
 		annealingTraps[tsNode+1][0] = 0.0;
 		for (node=tsNode; node >= endNode; node--)
@@ -796,7 +798,7 @@ void RDAAM_CalcHeAge(bool optimize)
 					} else tortuosity = 1.0;
 					fa = 1.-exp(-annealingTraps[node][i]*B_ALPHA*polyA);
 					fc = 1.-fa;
-					difft_n[i] = (1./(tortuosity*fc*fc*fc*radCmSq/diff + fa*fa*fa*radCmSq/diffN17_n))*radCmSq;
+					difft_n[i] = (1./(tortuosity*fc*fc*fc*radCmSq/diff_n + fa*fa*fa*radCmSq/diffN17_n))*radCmSq;
 				}
 			// Next time step
 				falint = 1.-exp(-annealingTraps[node+1][i]*B_ALPHA);

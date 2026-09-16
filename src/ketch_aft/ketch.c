@@ -958,6 +958,7 @@ fclose(fg); */
   ForwardModel(ktime,lengthred,kinetic_par,(double)1.0,annealmodel,doProject,usedCf,kinpar,l0model,*alo,cdf,numPDFPts,pdfAxis,pdf,&oldestModelAge,&ftModelAge,&numPopulations,kerryTt);
 
   meanlength = 0.0;
+  fdist[0] = 0;
   for(i=0; i<numPDFPts; i++) {
 		meanlength += pdfAxis[i]*pdf[i];
 		fdist[i+1] = pdf[i];
