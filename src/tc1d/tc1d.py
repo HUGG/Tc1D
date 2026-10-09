@@ -5456,11 +5456,11 @@ def run_model(params):
                     pa = rdaam.make_path()
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
                     write_increment = get_write_increment(params, time_ma)
-                    for i in range(len(time_ma) - 1, -1, -write_increment):
+                    for j in range(len(time_ma) - 1, -1, -write_increment):
                         rdaam.path_push(
                             pa,
-                            c_double(time_ma[i]),
-                            c_double(temp_hists[tt_hist_index][i]),
+                            c_double(time_ma[j]),
+                            c_double(temp_hists[tt_hist_index][j]),
                         )
                     if params["pad_time"] > 0.0:
                         pad_times = np.arange(
