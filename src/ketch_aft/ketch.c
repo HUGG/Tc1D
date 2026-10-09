@@ -399,7 +399,8 @@ void CalcModelLengthsKet(ttPathPtr    tTPath,
       kinPar = kinPar * 0.2978;
       break;
     case CL_PFU:
-      kinPar = kinPar * 0.2978;
+      // Not sure this is needed, so commenting out for now.
+      // kinPar = kinPar * 0.2978;
       calc = fabs(kinPar-1.0);
       if (calc <= 0.130) rmr0 = 0.0;
       else rmr0 = 1.0-exp(2.107*(1.0-calc)-1.834);
@@ -886,7 +887,6 @@ void  CalcModelAges(ttPathPtr  tTPath,
 							 pdf,cdf,initLength,redLength);
 		CalcModelAges(tTPath,redLength,numTTNodes,firstTTNode,oldestModelAge,
 							 ftModelAge,stdLengthReduction);
-    printf("%d: %f\n", __LINE__, *ftModelAge);
 		*numPopulations = numTTNodes - firstTTNode;
 	 }
 	 else

@@ -36,6 +36,7 @@ import sys  # TODO: Could this be removed?
 try:
     from importlib.resources import files
     import importlib.metadata
+
     __version__ = importlib.metadata.version("tc1d")
 except ImportError:
     __version__ = "dev"
@@ -655,10 +656,6 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     oldest_age = c_double(0.0)
     fmean = c_double(0.0)
     fdist = (c_double * 201)()
-    #if n == 102:
-    #    print(ntime.value, alo.value, final_age.value, oldest_age.value, fmean.value)
-    #    print("ti_arr: ", ", ".join(str(v) for v in ti_arr))
-    #    print("te_arr: ", ", ".join(str(v) for v in te_arr))
 
     # Calculate age
     ketch.ketch_main(
@@ -671,8 +668,6 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
         pointer(fmean),  # double *fmean
         fdist,  # double fdist[]
     )
-    #if n == 102:
-    #    print(n, "ketch result:", final_age.value, fmean.value)
 
     if write_track_lengths:
         with open("ft_length.csv", "w") as out_csv:
@@ -4477,7 +4472,9 @@ def run_model(params):
             surface_times_ma[:-1] = np.sort(obs_unique_depo_ages)[::-1]
         else:
             if params["past_age_increment"] > 0.0:
-                n_steps = int(np.floor(params["t_total"] / params["past_age_increment"]))
+                n_steps = int(
+                    np.floor(params["t_total"] / params["past_age_increment"])
+                )
                 surface_times_ma = np.linspace(
                     0.0,
                     params["t_total"] - params["past_age_increment"],
