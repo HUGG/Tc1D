@@ -5442,7 +5442,9 @@ def run_model(params):
             tt_hist_index = -1
             depo_age_old = 5000.0
             rdaam = load_rdaam()
-            pa = pointer()
+            # pa = pointer()
+            # Does this work?
+            pa = rdaam.make_path()
             for i in range(len(obs_ages_file)):
                 # Increment time-temperature history index whenever it changes, write new tt-history file
                 depo_age_now = obs_depo_age_file[i]
