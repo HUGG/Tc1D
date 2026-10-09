@@ -15,7 +15,6 @@ import math
 from typing import Tuple
 import warnings
 from ctypes import CDLL, POINTER, c_double, c_float, c_int, c_void_p, pointer
-from importlib.resources import files
 import platform
 
 # Batch mode libraries
@@ -34,10 +33,12 @@ from schwimmbad import MPIPool
 import sys  # TODO: Could this be removed?
 
 # Versioning
-import importlib.metadata
-
-
-__version__ = importlib.metadata.version("tc1d")
+try:
+    from importlib.resources import files
+    import importlib.metadata
+    __version__ = importlib.metadata.version("tc1d")
+except ImportError:
+    __version__ = "dev"
 
 
 # Shared object loading
@@ -654,6 +655,10 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
     oldest_age = c_double(0.0)
     fmean = c_double(0.0)
     fdist = (c_double * 201)()
+    #if n == 102:
+    #    print(ntime.value, alo.value, final_age.value, oldest_age.value, fmean.value)
+    #    print("ti_arr: ", ", ".join(str(v) for v in ti_arr))
+    #    print("te_arr: ", ", ".join(str(v) for v in te_arr))
 
     # Calculate age
     ketch.ketch_main(
@@ -666,6 +671,8 @@ def ft_ages(ti_arr, te_arr, n, write_track_lengths):
         pointer(fmean),  # double *fmean
         fdist,  # double fdist[]
     )
+    #if n == 102:
+    #    print(n, "ketch result:", final_age.value, fmean.value)
 
     if write_track_lengths:
         with open("ft_length.csv", "w") as out_csv:
@@ -825,7 +832,6 @@ def calculate_ages_and_tcs(
     pa = rdaam.make_path()
     time_ma = tt_hist_to_ma(time_history)
     write_increment = get_write_increment(params, time_ma)
-
     ti_hist = []
     te_hist = []
 
@@ -859,7 +865,6 @@ def calculate_ages_and_tcs(
     for i in range(len(ti_hist)):
         ti_arr[i] = c_float(ti_hist[i])
         te_arr[i] = c_float(te_hist[i])
-
     if params["ketch_aft"]:
         aft_age, aft_mean_ftl = ft_ages(
             ti_arr, te_arr, len(ti_hist), write_track_lengths
@@ -4472,8 +4477,13 @@ def run_model(params):
             surface_times_ma[:-1] = np.sort(obs_unique_depo_ages)[::-1]
         else:
             if params["past_age_increment"] > 0.0:
-                surface_times_ma = np.arange(
-                    0.0, params["t_total"], params["past_age_increment"]
+                n_steps = int(np.floor(params["t_total"] / params["past_age_increment"]))
+                surface_times_ma = np.linspace(
+                    0.0,
+                    params["t_total"] - params["past_age_increment"],
+                    num=n_steps,
+                    endpoint=True,
+                    dtype=float,
                 )
                 surface_times_ma = np.flip(surface_times_ma)
             else:
