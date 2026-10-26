@@ -16,7 +16,14 @@ details about :ref:`installation <installation>`.
 What can T\ :sub:`c`\ 1D do?
 ----------------------------
 
-An overview of how T\ :sub:`c`\ 1D works and some example applications are presented in a `technical note about the code in *Geochronology* <https://doi.org/10.5194/gchron-8-627-2026>_.
+T\ :sub:`c`\ 1D can be used to
+
+- Explore the effects of changes in rates of burial or exhumation on apatite and zircon (U-Th)/He and fission-track thermochronometer ages
+- Simulate how thermochronometer ages change in response to crustal and lithospheric thermal processes such as emplacement of magmatic intrusions or delamination of the mantle lithosphere
+- Derive estimates of rates of burial and exhumation from thermochronometer datasets using data inversion
+- Produce plots of measured and predicted ages for various exhumation/burial histories
+
+More details about how T\ :sub:`c`\ 1D works and some example applications are presented in a `technical note about the code in *Geochronology* <https://doi.org/10.5194/gchron-8-627-2026>`_.
 
 Citation
 --------
