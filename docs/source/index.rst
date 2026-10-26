@@ -23,7 +23,7 @@ T\ :sub:`c`\ 1D can be used to
 - Derive estimates of rates of burial and exhumation from thermochronometer datasets using data inversion
 - Produce plots of measured and predicted ages for various exhumation/burial histories
 
-More details about how T\ :sub:`c`\ 1D works and some example applications are presented in a `technical note about the code in *Geochronology* <https://doi.org/10.5194/gchron-8-627-2026>`_.
+More details about how T\ :sub:`c`\ 1D works and some example applications are presented in a `technical note about the code in Geochronology <https://doi.org/10.5194/gchron-8-627-2026>`_.
 
 Citation
 --------
