@@ -13,15 +13,18 @@ It supports forward and inverse modeling of apatite and zircon (U-Th)/He and fis
 Check out the :doc:`getting started page <getting-started>` and the :doc:`user guide <user-guide>` for further information, including
 details about :ref:`installation <installation>`.
 
-.. admonition:: Attribution
+.. admonition:: Citation
 
    Use of T\ :sub:`c`\ 1D can be acknowledged by citing
 
-   Whipp, D. M., Gérard, B., Laaksonen, S., and Kellett, D. A.: Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model, Geochronology, 8, 627–643, https://doi.org/10.5194/gchron-8-627-2026, 2026.
+      Whipp, D. M., Gérard, B., Laaksonen, S., and Kellett, D. A. (2026). Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model. *Geochronology*, 8, 627–643. https://doi.org/10.5194/gchron-8-627-2026
 
-   We also encourage you to `cite the relevant version of Tc1D <https://doi.org/10.5281/zenodo.7124271>`_ using the DOI from Zenodo.
+   We also encourage you to `cite the relevant version of Tc1D <https://doi.org/10.5281/zenodo.7124271>`_ using the DOI from Zenodo that always points to the latest version (`10.5281/zenodo.7124271 <https://doi.org/10.5281/zenodo.7124271>`_).
+   For example, the citation for version 0.5.0 is
 
-.. admonition:: Acknowledgement
+      Whipp, D. M., Gérard, B., Laaksonen, S., & Dönges, S. (2026). Tc1D - A 1D thermal and thermochronometer age prediction model (Version 0.5.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23512117
+
+.. admonition:: Acknowledgements
 
    We acknowledge Saska Dönges from the `University of Helsinki Research Software Engineering (UH-RSE) <https://wiki.helsinki.fi/xwiki/bin/view/Research%20Software%20Engineering%20group/>`_ for scientific computing support.
 
