@@ -21,14 +21,14 @@ An overview of how T\ :sub:`c`\ 1D works and some example applications are prese
 Citation
 --------
 
-Use of T\ :sub:`c`\ 1D can be acknowledged by citing
-
-   Whipp, D. M., Gérard, B., Laaksonen, S., and Kellett, D. A. (2026). Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model. *Geochronology*, 8, 627–643. https://doi.org/10.5194/gchron-8-627-2026
-
-We also encourage you to `cite the relevant version of Tc1D <https://doi.org/10.5281/zenodo.7124271>`_ using the DOI from Zenodo that always points to the latest version (`10.5281/zenodo.7124271 <https://doi.org/10.5281/zenodo.7124271>`_).
+Use of T\ :sub:`c`\ 1D can be acknowledged by citing `the relevant version of Tc1D <https://doi.org/10.5281/zenodo.7124271>`_ using the DOI from Zenodo that always points to the latest version (`10.5281/zenodo.7124271 <https://doi.org/10.5281/zenodo.7124271>`_).
 For example, the citation for version 0.5.0 is
 
    Whipp, D. M., Gérard, B., Laaksonen, S., & Dönges, S. (2026). Tc1D - A 1D thermal and thermochronometer age prediction model (Version 0.5.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23512117
+
+We also encourage you to cite the related T\ :sub:`c`\ 1D technical note, if appropriate.
+
+   Whipp, D. M., Gérard, B., Laaksonen, S., and Kellett, D. A. (2026). Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model. *Geochronology*, 8, 627–643. https://doi.org/10.5194/gchron-8-627-2026
 
 Acknowledgements
 ----------------
