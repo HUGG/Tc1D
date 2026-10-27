@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use Tc1D in your work, please cite it as below."
+type: software
+title: "Tc1D - A 1D thermal and thermochronometer age prediction model"
+authors:
+  - family-names: Whipp
+    given-names: David M.
+    affiliation: University of Helsinki, Finland
+  - family-names: Gérard
+    given-names: Benjamin
+    affiliation: University of Helsinki, Finland
+  - family-names: Laaksonen
+    given-names: Sanni
+    affiliation: University of Helsinki, Finland
+  - family-names: Dönges
+    given-names: Saska
+    affiliation: University of Helsinki, Finland
+doi: 10.5281/zenodo.7124271
+license: GPL-3.0-or-later
+repository-code: "https://github.com/HUGG/Tc1D"
+url: "https://tc1d.readthedocs.io/"
+keywords:
+  - thermochronology
+  - heat transfer
+  - geology
+  - geophysics
+references:
+  - type: article
+    title: "Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model"
+    authors:
+      - family-names: Whipp
+        given-names: David M.
+      - family-names: Gérard
+        given-names: Benjamin
+      - family-names: Laaksonen
+        given-names: Sanni
+      - family-names: Kellett
+        given-names: Dawn A.
+    journal: Geochronology
+    volume: 8
+    start: 627
+    end: 643
+    year: 2026
+    doi: 10.5194/gchron-8-627-2026
