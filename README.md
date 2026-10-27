@@ -3,8 +3,10 @@
 # T<sub>c</sub>1D - A 1D thermal and thermochronometer age prediction model
 
 [![DOI](https://zenodo.org/badge/314177994.svg)](https://zenodo.org/badge/latestdoi/314177994)
+[![Build, test, and deploy](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml/badge.svg)](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python versions](https://img.shields.io/pypi/pyversions/tc1d)](https://pypi.org/project/tc1d/)
 [![PyPI - Version](https://img.shields.io/pypi/v/tc1d)](https://pypi.org/project/tc1d/)
-[![Tests](https://github.com/HUGG/TC1D/actions/workflows/run-tests.yml/badge.svg)](https://github.com/HUGG/TC1D/actions/workflows/run-tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/tc1d/badge/?version=latest)](https://tc1d.readthedocs.io/en/latest/?badge=latest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/HUGG/TC1D/HEAD?urlpath=%2Flab%2Ftree%2Fnotebooks%2Fexplore_tc1d.ipynb)
