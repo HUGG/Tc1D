@@ -51,7 +51,7 @@ We acknowledge Saska Dönges from the `University of Helsinki Research Software 
 License
 -------
 
-T\ :sub:`c`\ 1D is licensed under the GNU General Public License version 3: `Tc1D software license <https://github.com/HUGG/Tc1D/blob/main/LICENSE>_.
+T\ :sub:`c`\ 1D is licensed under the GNU General Public License version 3: `Tc1D software license <https://github.com/HUGG/Tc1D/blob/main/LICENSE>`_.
 
 Contents
 --------
