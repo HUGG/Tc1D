@@ -49,7 +49,23 @@ tc1d-cli --help
 
 This will return a usage statement and list of flags the code accepts.
 
-Additional examples of how to run T<sub>c</sub>1D can be found in the Jupyter notebooks in the `notebooks` directory of this repository.
+## Example notebooks
+
+Additional examples of how to run T<sub>c</sub>1D can be found in a set of Jupyter notebooks, which you can try online using the **launch binder** button above.
+To get a local copy of all of the notebooks and their data files, run
+
+```bash
+tc1d-notebooks
+```
+
+This downloads the notebooks matching your installed version of T<sub>c</sub>1D into a new `tc1d-notebooks` directory. Use `tc1d-notebooks --help` to see how to choose a different location or version.
+The notebooks are also available as a ZIP file attached to each [T<sub>c</sub>1D release](https://github.com/HUGG/Tc1D/releases), and the notebooks for the latest release can be downloaded directly from [this link](https://github.com/HUGG/Tc1D/releases/latest/download/tc1d-notebooks.zip).
+
+To run the notebooks locally you will also need JupyterLab, which can be installed along with T<sub>c</sub>1D using
+
+```bash
+pip install "tc1d[notebook]"
+```
 
 ## Citation
 
