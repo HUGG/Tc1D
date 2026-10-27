@@ -51,7 +51,7 @@ dependencies = [
 
 [project.optional-dependencies]
 lint = ["mypy", "ruff"]
-mpi = ["mpi4py", "openmpi", "schwimmbad"]
+mpi = ["mpi4py", "openmpi; sys_platform != 'win32'", "schwimmbad"]
 notebook = ["jupyterlab"]
 tests = ["pytest"]
 
