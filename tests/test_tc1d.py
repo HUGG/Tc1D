@@ -18,7 +18,7 @@ from tc1d.tc1d import (
     erosion_exponential,
     calculate_erosion_rate,
     calculate_exhumation_magnitude,
-    init_params
+    init_params,
 )
 from tc1d.tc1d_cli import (
     _apply_yaml_to_args,
@@ -532,8 +532,8 @@ class TestErosionType0:
         )
         assert abs(vx_surf - 0.0) < 1e-30
 
-class TestConfigurationConsistency:
 
+class TestConfigurationConsistency:
     PARAM_ALIASES = {
         "length": "max_depth",
         "time": "t_total",
@@ -608,9 +608,7 @@ class TestConfigurationConsistency:
         """
 
         yaml_path = (
-                Path(__file__).parent.parent
-                / "data"
-                / "tc1d_reference_complete.yaml"
+            Path(__file__).parent.parent / "data" / "tc1d_reference_complete.yaml"
         )
 
         yaml_config = _load_yaml_dict(yaml_path)
@@ -630,8 +628,7 @@ class TestConfigurationConsistency:
 
         # Translate intentionally different API/internal names.
         translated_api_params = {
-            self.PARAM_ALIASES.get(name, name)
-            for name in api_params
+            self.PARAM_ALIASES.get(name, name) for name in api_params
         }
 
         # Get the actual internal parameter keys returned by init_params().
@@ -663,7 +660,7 @@ class TestConfigurationConsistency:
                                 key.value
                                 for key in node.value.keys
                                 if isinstance(key, ast.Constant)
-                                   and isinstance(key.value, str)
+                                and isinstance(key.value, str)
                             }
 
         raise AssertionError(
@@ -689,8 +686,8 @@ class TestConfigurationConsistency:
             # group.add_argument(...)
             # parser.add_argument(...)
             if not (
-                    isinstance(node.func, ast.Attribute)
-                    and node.func.attr == "add_argument"
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "add_argument"
             ):
                 continue
 
@@ -699,9 +696,9 @@ class TestConfigurationConsistency:
 
             for keyword in node.keywords:
                 if (
-                        keyword.arg == "dest"
-                        and isinstance(keyword.value, ast.Constant)
-                        and isinstance(keyword.value.value, str)
+                    keyword.arg == "dest"
+                    and isinstance(keyword.value, ast.Constant)
+                    and isinstance(keyword.value.value, str)
                 ):
                     dest = keyword.value.value
                     break
@@ -713,8 +710,8 @@ class TestConfigurationConsistency:
                     arg.value
                     for arg in node.args
                     if isinstance(arg, ast.Constant)
-                       and isinstance(arg.value, str)
-                       and arg.value.startswith("--")
+                    and isinstance(arg.value, str)
+                    and arg.value.startswith("--")
                 ]
 
                 if long_options:
@@ -742,18 +739,13 @@ class TestConfigurationConsistency:
         # or in tuples such as:
         #   for k in ("key1", "key2", ...)
         for node in ast.walk(tree):
-            if (
-                    isinstance(node, ast.Constant)
-                    and isinstance(node.value, str)
-            ):
+            if isinstance(node, ast.Constant) and isinstance(node.value, str):
                 referenced_keys.add(node.value)
 
         # ero_option1..10 are generated dynamically in _apply_yaml_to_args()
         # using f"ero_option{i}", so they do not appear as literal strings
         # in the function source inspected above.
-        referenced_keys.update(
-            {f"ero_option{i}" for i in range(1, 11)}
-        )
+        referenced_keys.update({f"ero_option{i}" for i in range(1, 11)})
 
         return referenced_keys
 
@@ -814,8 +806,7 @@ class TestConfigurationConsistency:
         missing_from_yaml = cli_args - yaml_keys - cli_only
 
         assert not missing_from_yaml, (
-            "CLI arguments missing from the YAML schema: "
-            f"{sorted(missing_from_yaml)}"
+            f"CLI arguments missing from the YAML schema: {sorted(missing_from_yaml)}"
         )
 
     def test_yaml_schema_keys_are_applied_by_cli(self):
