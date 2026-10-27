@@ -26,8 +26,10 @@ You can install T<sub>c</sub>1D in your Python environment using `pip`.
 pip install tc1d
 ```
 
+Thermochronometer ages are calculated using [T<sub>c</sub>ages](https://github.com/HUGG/tcages), which is installed automatically with T<sub>c</sub>1D.
+
 > [!WARNING]
-> If you choose to install T<sub>c</sub>1D versions older than 0.5.0, you will also need to install the thermochronometer age prediction programs available in the [T<sub>c</sub>core package](https://github.com/HUGG/Tc_core/) in order for T<sub>c</sub>1D to work properly. Installing T<sub>c</sub>1D >= 0.5.0 is strongly recommended. 
+> If you choose to install T<sub>c</sub>1D versions older than 0.5.0, you will also need to install the thermochronometer age prediction programs available in the [v0.2 release of T<sub>c</sub>core](https://github.com/HUGG/tcages/releases/tag/v0.2) in order for T<sub>c</sub>1D to work properly. Installing the latest version of T<sub>c</sub>1D is strongly recommended.
 
 ## Usage
 
