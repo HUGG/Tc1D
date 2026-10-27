@@ -1,5 +1,7 @@
 # Configuration file for the Sphinx documentation builder.
 
+import tc1d
+
 # -- Path setup
 # from pathlib import Path
 # import sys
@@ -12,8 +14,9 @@ project = "Tc1D"
 copyright = "2022-2026, David Whipp, University of Helsinki"
 author = "David Whipp, Benjamin Gérard, Sanni Laaksonen, and Saska Dönges"
 
-release = ""
-version = ""
+# Version info from the installed package
+release = tc1d.__version__
+version = release
 
 # -- General configuration
 
