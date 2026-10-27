@@ -1,0 +1,5 @@
+#!/bin/bash
+# Install Tc1D from this repository so the notebooks on Binder always run
+# with the code from the same commit, rather than the latest PyPI release
+set -euo pipefail
+python -m pip install --no-cache-dir .
