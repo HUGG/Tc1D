@@ -62,6 +62,7 @@ documentation = "https://tc1d.readthedocs.io/"
 
 [project.scripts]
 tc1d-cli = "tc1d.tc1d_cli:main"
+tc1d-notebooks = "tc1d.notebooks:main"
 
 [tool.ruff]
 # Same as Black.

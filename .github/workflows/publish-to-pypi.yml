@@ -146,3 +146,45 @@ jobs:
           name: dist
           path: dist
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+  build_notebooks:
+    name: Build notebooks archive
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # The archive contains a single top-level directory so it unpacks
+      # cleanly, and is named without a version number so the
+      # releases/latest/download/tc1d-notebooks.zip link always works
+      - name: Create tc1d-notebooks.zip
+        run: |
+          mkdir -p staging/tc1d-notebooks
+          cp -r notebooks/. staging/tc1d-notebooks/
+          rm -f staging/tc1d-notebooks/notes.md
+          find staging -name ".ipynb_checkpoints" -type d -prune -exec rm -rf {} +
+          (cd staging && zip -r -X ../tc1d-notebooks.zip tc1d-notebooks)
+          unzip -l tc1d-notebooks.zip
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: notebooks
+          path: tc1d-notebooks.zip
+
+  upload_notebooks:
+    name: Attach notebooks archive to release
+    needs: [lint, build, test, build_notebooks]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    if: github.event_name == 'release' && github.event.action == 'published'
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: notebooks
+
+      - name: Upload tc1d-notebooks.zip to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$GITHUB_REF_NAME" tc1d-notebooks.zip --repo "$GITHUB_REPOSITORY" --clobber
