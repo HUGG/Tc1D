@@ -2483,7 +2483,7 @@ def init_params(
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
-        Use the Ketcham et al. (2007) model for predicting FT ages.
+        Use the Ketcham et al. (1999) model for predicting FT ages.
     madtrax_aft : bool, default=False
         Use the MadTrax algorithm for predicting apatite FT ages.
     madtrax_aft_kinetic_model : int, default=1
