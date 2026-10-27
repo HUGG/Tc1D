@@ -14,4 +14,4 @@ dependencies:
   - scipy
   - pip
   - pip:
-    - tc1d
+    - tc1d>=0.6
