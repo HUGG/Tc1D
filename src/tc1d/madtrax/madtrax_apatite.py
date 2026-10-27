@@ -6,14 +6,13 @@ Description:
     a Python version of it and works similarly than the original one. This program
     calculates the age of a sample and its length distribution.
     I added also a plot for the distribution.
-    
+
 Author:
     Lotta Ylä-Mella 15.1.2018
 
 """
 
 import numpy as np
-import matplotlib.pyplot as plt
 
 
 def g(r, a, b):
@@ -30,7 +29,7 @@ def temperature(temp, time, t, n):
     temperature = temp[0]
 
     for i in range(0, n - 1):
-        if ((t - time[i])) * (t - time[i + 1]) <= 0.0:
+        if (t - time[i]) * (t - time[i + 1]) <= 0.0:
             rat = (t - time[i]) / (time[i + 1] - time[i])
             temperature = temp[i] + rat * (temp[i + 1] - temp[i])
             return temperature
@@ -141,7 +140,6 @@ def madtrax_apatite(
                 r[j] = 0.0
             nstep = i + 1
         else:
-
             # otherwise calculte reduction in length, r, over the time step, dt
             dt = teq + deltat
             gr = c0 + ((c1 * np.log(dt) + c2) / ((1.0 / tempm) - c3))
@@ -204,56 +202,33 @@ def madtrax_apatite(
     imin = 1
 
     # distribution
-    for l in range(0, 16):
-        imax = int((l + 1) * 100 / xind)
-        ftld[l] = 0.0
+    for j in range(0, 16):
+        imax = int((j + 1) * 100 / xind)
+        ftld[j] = 0.0
 
         for i in range(imin, imax + 1):
-            ftld[l] = ftld[l] + prob[i - 1]
+            ftld[j] = ftld[j] + prob[i - 1]
 
-        ftld[l] = ftld[l] * 100.0 / sumprob
-        ftld[16] = ftld[16] - ftld[l]
+        ftld[j] = ftld[j] * 100.0 / sumprob
+        ftld[16] = ftld[16] - ftld[j]
 
         imin = imax + 1
 
     # mean length
     sumftld = 0.0
 
-    for l in range(0, 17):
-        sumftld = sumftld + ftld[l] * ((l + 1) - 0.5)
+    for i in range(0, 17):
+        sumftld = sumftld + ftld[i] * ((i + 1) - 0.5)
 
     ftldmean = sumftld / 100.0
 
     # standard devitation
     devftld = 0.0
 
-    for l in range(0, 17):
-        devftld = devftld + ftld[l] * ((l + 1) - 0.5 - ftldmean) ** 2
+    for i in range(0, 17):
+        devftld = devftld + ftld[i] * ((i + 1) - 0.5 - ftldmean) ** 2
 
     ftldsd = np.sqrt(devftld / 100.0)
-
-    # parameters for a figure
-    N = len(ftld)  # number of lengths
-    ind = np.arange(N)  # sequence of scalars
-    width = 1  # width of the bar
-
-    # fig, ax = plt.subplots()
-    # ax.bar(ind, ftld, width,color='b', edgecolor='k')
-    # ax.bar(ind-0.5, ftld, width)
-
-    # font = 12
-    # ax.set_xlabel('Length ($\mu$m)', fontsize=font)
-    # ax.set_ylabel('Relative frequency (%)', fontsize=font)
-    # ax.annotate('Total time: ' + str(timeMa) + ' Ma', xy=(-4,27), fontsize=font) #19
-    # ax.annotate('Advection velocity: ' + str(adv) + ' mm/a', xy=(-4,24), fontsize=font) #17
-    # ax.annotate('Age: %.0f Ma' %fta,xy=(-4,21), fontsize=font) #15
-
-    # Different axis to plot a figure
-    # ax.axis([-5, 20, 0, 25])
-    # ax.axis([-5,20,0,35])
-
-    # plt.savefig(str(adv) + '.png')
-    # plt.show()
 
     # Collection of all results (age, final length, mean length, standard deviation)
     result = [fta * 10**6, ftld[16], ftldmean, ftldsd]
