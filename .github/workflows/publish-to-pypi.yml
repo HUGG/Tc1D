@@ -13,6 +13,26 @@ permissions:
   contents: read
 
 jobs:
+  lint:
+    name: Lint and check formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Check code with ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.9"
+          args: check
+
+      - name: Check formatting with ruff
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: "0.16.9"
+          args: format --check
+
   build:
     name: Build distributions
     runs-on: ubuntu-latest
@@ -97,7 +117,7 @@ jobs:
 
   upload_testpypi:
     name: Publish to TestPyPI
-    needs: [build, test]
+    needs: [lint, build, test]
     runs-on: ubuntu-latest
     environment: testpypi
     permissions:
@@ -114,7 +134,7 @@ jobs:
 
   upload_pypi:
     name: Publish to PyPI
-    needs: [build, test]
+    needs: [lint, build, test]
     runs-on: ubuntu-latest
     environment: pypi
     permissions:
