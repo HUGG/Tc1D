@@ -2,7 +2,7 @@
 
 # T<sub>c</sub>1D - A 1D thermal and thermochronometer age prediction model
 
-[![DOI](https://zenodo.org/badge/314177994.svg)](https://zenodo.org/badge/latestdoi/314177994)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.7124271.svg)](https://doi.org/10.5281/zenodo.7124271)
 [![Build, test, and deploy](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml/badge.svg)](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml)
 [![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
 [![Python versions](https://img.shields.io/pypi/pyversions/tc1d)](https://pypi.org/project/tc1d/)
