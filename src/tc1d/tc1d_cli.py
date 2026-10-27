@@ -9,6 +9,7 @@ import copy
 
 try:
     from importlib.metadata import version
+
     __version__ = version("tc1d")
 except ImportError:
     __version__ = "dev"
@@ -229,8 +230,7 @@ def _validate_yaml_keys(y: dict) -> None:
 
             if not isinstance(values, dict):
                 raise ValueError(
-                    f"YAML inversion subsection '{subsection}' "
-                    "must be a mapping/dict."
+                    f"YAML inversion subsection '{subsection}' must be a mapping/dict."
                 )
 
             unknown_keys = set(values) - YAML_INVERSION_ALLOWED_KEYS[subsection]
