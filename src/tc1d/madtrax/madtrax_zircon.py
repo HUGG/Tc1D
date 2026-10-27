@@ -72,7 +72,7 @@ def madtrax_zircon(time_history, temp_history, kinetic_model, out_flag):
     nstep = int(time_history[0])
     if nstep > 1000:
         print(
-            f"WARNING: Zircon fission-track ages cooling over 1 Gyr may be inaccurate."
+            "WARNING: Zircon fission-track ages cooling over 1 Gyr may be inaccurate."
         )
     time_interval = 1.0
     if nstep < 100:
@@ -162,26 +162,27 @@ def madtrax_zircon(time_history, temp_history, kinetic_model, out_flag):
         ft_length_dist[10] = 100.0
         imin = 0
 
-        for l in range(10):
-            imax = int(l * 100.0 / xind)
-            ft_length_dist[l] = 0.0
+        for bin_index in range(10):
+            imax = int(bin_index * 100.0 / xind)
+            ft_length_dist[bin_index] = 0.0
             for i in range(imin, imax + 1):
-                ft_length_dist[l] += prob[i]
+                ft_length_dist[bin_index] += prob[i]
 
-            ft_length_dist[l] = ft_length_dist[l] * 100.0 / sumprob
-            ft_length_dist[10] -= ft_length_dist[l]
+            ft_length_dist[bin_index] = ft_length_dist[bin_index] * 100.0 / sumprob
+            ft_length_dist[10] -= ft_length_dist[bin_index]
 
             imin = imax + 1
 
         sum_ft_length_dist = 0.0
-        for l in range(10):
-            sum_ft_length_dist += ft_length_dist[l] * (float(l) - 0.5)
+        for bin_index in range(10):
+            sum_ft_length_dist += ft_length_dist[bin_index] * (float(bin_index) - 0.5)
         mean_ft_length = sum_ft_length_dist / 100.0
 
         dev_ft_length = 0.0
-        for l in range(10):
+        for bin_index in range(10):
             dev_ft_length += (
-                ft_length_dist[l] * (float(l) - 0.5 - mean_ft_length) ** 2.0
+                ft_length_dist[bin_index]
+                * (float(bin_index) - 0.5 - mean_ft_length) ** 2.0
             )
         std_dev_ft_length = np.sqrt(dev_ft_length / 100.0)
 

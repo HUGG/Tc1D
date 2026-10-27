@@ -14,8 +14,9 @@ import time
 import math
 from typing import Tuple
 import warnings
-from ctypes import CDLL, POINTER, c_double, c_float, c_int, c_void_p, pointer
-import platform
+
+# Thermochronometer age prediction (RDAAM/ZRDAAM and ketch)
+import tcages
 
 # Batch mode libraries
 from sklearn.model_selection import ParameterGrid
@@ -26,7 +27,6 @@ import corner  # BG: Corner plots for MCMC
 import emcee  # BG: For MCMC sampling
 from itertools import combinations
 from neighpy import NASearcher, NAAppraiser
-import os
 from scipy.spatial import Voronoi, voronoi_plot_2d
 import sys  # TODO: Could this be removed?
 
@@ -35,59 +35,11 @@ from tc1d._compat import HAS_MPI, COMM_WORLD, MPIPool
 
 # Versioning
 try:
-    from importlib.resources import files
     import importlib.metadata
 
     __version__ = importlib.metadata.version("tc1d")
 except ImportError:
     __version__ = "dev"
-
-
-# Shared object loading
-def load_lib(base_name="RDAAM"):  # or "ketch"
-    root = files("tc1d")
-    system = platform.system().lower()
-    if system == "linux":
-        libname = f"lib{base_name}.so"
-    elif system == "darwin":
-        libname = f"lib{base_name}.so"
-    else:
-        libname = f"{base_name}.dll"
-    return CDLL(os.fspath(root.joinpath(libname)))
-
-
-# RDAAM library for AHe and ZHe
-def load_rdaam():
-    rdaam = load_lib("RDAAM")
-    rdaam.make_path.restype = c_void_p
-    rdaam.path_push.argtypes = [c_void_p, c_double, c_double]
-    rdaam.path_push.restype = None
-    rdaam.del_path.argtypes = [c_void_p]
-    rdaam.del_path.restype = None
-    rdaam.run_RDAAM_He.argtypes = [
-        c_void_p,  # TTPath*
-        c_double,  # ap_rad
-        c_double,  # ap_U
-        c_double,  # ap_Th
-        POINTER(c_double),  # ap_age*
-        POINTER(c_double),  # ap_corrAge*
-        c_double,  # total_He
-        c_double,  # zr_rad
-        c_double,  # zr_U
-        c_double,  # zr_Th
-        POINTER(c_double),  # zr_age*
-        POINTER(c_double),  # zr_corrAge*
-        POINTER(c_int),  # ap_success*
-        POINTER(c_int),  # zr_success*
-    ]
-    rdaam.run_RDAAM_He.restype = None
-    return rdaam
-
-
-# ketch_aft for AFT
-def load_ketch():
-    ketch = load_lib("ketch")
-    return ketch
 
 
 # Exceptions
@@ -593,10 +545,9 @@ def apply_intrusion(
     return model_temperatures
 
 
-# TODO: Sort out why type hinting is problematic for this function
 def he_ages(
-    rdaam,
-    pa,
+    time_ma,
+    temp_history,
     ap_rad,
     ap_uranium,
     ap_thorium,
@@ -604,78 +555,45 @@ def he_ages(
     zr_uranium,
     zr_thorium,
 ):
-    """Calculates (U-Th)/He ages."""
+    """Calculates (U-Th)/He ages using tcages (RDAAM and ZRDAAM).
 
-    # Initialize library parameters
-    ap_age = c_double(0.0)
-    ap_corrAge = c_double(0.0)
-    zr_age = c_double(0.0)
-    zr_corrAge = c_double(0.0)
-    ap_success = c_int(0)
-    zr_success = c_int(0)
-
-    # Calculate age
-    rdaam.run_RDAAM_He(
-        pa,  # path
-        c_double(ap_rad),  # ap_rad
-        c_double(ap_uranium),  # ap_U
-        c_double(ap_thorium),  # ap_Th
-        pointer(ap_age),  # ap_age
-        pointer(ap_corrAge),  # ap_corrAge
-        c_double(0.0),  # total_He
-        c_double(zr_rad),  # zr_rad
-        c_double(zr_uranium),  # zr_U
-        c_double(zr_thorium),  # zr_Th
-        pointer(zr_age),  # zr_age
-        pointer(zr_corrAge),  # zr_corrAge
-        pointer(ap_success),  # ap_success
-        pointer(zr_success),  # zr_success
+    Times are in Ma, starting with the present-day (youngest) point.
+    Returns the uncorrected and corrected apatite and zircon (U-Th)/He ages.
+    Raises tcages.TcagesError if the age calculation fails.
+    """
+    result = tcages.he_ages(
+        time_ma,
+        temp_history,
+        ap_rad=ap_rad,
+        ap_u=ap_uranium,
+        ap_th=ap_thorium,
+        zr_rad=zr_rad,
+        zr_u=zr_uranium,
+        zr_th=zr_thorium,
     )
-
-    # Exit if age calculation fails
-    if ap_success.value != 1:
-        print(f"RDAAM_calculate for ap failed! {ap_success}")
-        exit(1)
-    if zr_success.value != 1:
-        print(f"RDAAM_calculate for zr failed! {zr_success}")
-        exit(1)
-
-    return ap_age.value, ap_corrAge.value, zr_age.value, zr_corrAge.value
+    return result.ahe, result.ahe_corr, result.zhe, result.zhe_corr
 
 
-# TODO: Sort out why type hinting is problematic for this function
-def ft_ages(ti_arr, te_arr, n, write_track_lengths):
-    """Calculates AFT ages."""
+def ft_ages(time_ma, temp_history, write_track_lengths):
+    """Calculates AFT ages using tcages (ketch).
 
-    # Load library to calculate AFT age
-    ketch = load_ketch()
-
-    # Initialize library parameters
-    ntime = c_int(n)
-    alo = c_double(16.3)
-    final_age = c_double(0.0)
-    oldest_age = c_double(0.0)
-    fmean = c_double(0.0)
-    fdist = (c_double * 201)()
-
-    # Calculate age
-    ketch.ketch_main(
-        pointer(ntime),  # int *ntime
-        ti_arr,  # float ketchtime[]
-        te_arr,  # float ketchtemp[]
-        pointer(alo),  # double *alo
-        pointer(final_age),  # double *final_age
-        pointer(oldest_age),  # double *oldest_age
-        pointer(fmean),  # double *fmean
-        fdist,  # double fdist[]
-    )
+    Times are in Ma, starting with the present-day (youngest) point.
+    Returns the AFT age and mean track length, and optionally writes the
+    track-length distribution to ft_length.csv.
+    """
+    result = tcages.aft_age(time_ma, temp_history, alo=16.3)
 
     if write_track_lengths:
-        with open("ft_length.csv", "w") as out_csv:
-            for i, d in enumerate(fdist):
-                out_csv.write(f"{(i*1.0+0.5)*20.0/200},{d}\n")
+        np.savetxt(
+            "ft_length.csv",
+            np.column_stack([result.lengths, result.pdf]),
+            delimiter=",",
+            header="Track length (um),Probability",
+            comments="",
+            fmt=("%.2f", "%.8e"),
+        )
 
-    return float(final_age.value), float(fmean.value)
+    return float(result.age), float(result.mean_length)
 
 
 def calculate_closure_temp(
@@ -824,8 +742,7 @@ def calculate_ages_and_tcs(
             pressure_history,
         )
 
-    rdaam = load_rdaam()
-    pa = rdaam.make_path()
+    # Extract time-temperature path for age calculations (youngest point first)
     time_ma = tt_hist_to_ma(time_history)
     write_increment = get_write_increment(params, time_ma)
     ti_hist = []
@@ -834,19 +751,19 @@ def calculate_ages_and_tcs(
     for i in range(len(time_ma) - 1, -1, -write_increment):
         ti_hist.append(time_ma[i])
         te_hist.append(temp_history[i])
-        rdaam.path_push(pa, c_double(time_ma[i]), c_double(temp_history[i]))
     if params["pad_time"] > 0.0:
         pad_times = np.arange(
             time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
         )
-        for pad_time in pad_times:
+        # Only add padding points older than the oldest point in the path, as
+        # repeated time points cause the RDAAM calculation to fail
+        for pad_time in pad_times[pad_times > ti_hist[-1]]:
             ti_hist.append(pad_time)
             te_hist.append(temp_history[i])
-            rdaam.path_push(pa, c_double(pad_time), c_double(temp_history[i]))
 
     ahe_age, corr_ahe_age, zhe_age, corr_zhe_age = he_ages(
-        rdaam=rdaam,
-        pa=pa,
+        ti_hist,
+        te_hist,
         ap_rad=params["ap_rad"],
         ap_uranium=params["ap_uranium"],
         ap_thorium=params["ap_thorium"],
@@ -854,17 +771,9 @@ def calculate_ages_and_tcs(
         zr_uranium=params["zr_uranium"],
         zr_thorium=params["zr_thorium"],
     )
-    rdaam.del_path(pa)
 
-    ti_arr = (c_float * len(ti_hist))()
-    te_arr = (c_float * len(te_hist))()
-    for i in range(len(ti_hist)):
-        ti_arr[i] = c_float(ti_hist[i])
-        te_arr[i] = c_float(te_hist[i])
     if params["ketch_aft"]:
-        aft_age, aft_mean_ftl = ft_ages(
-            ti_arr, te_arr, len(ti_hist), write_track_lengths
-        )
+        aft_age, aft_mean_ftl = ft_ages(ti_hist, te_hist, write_track_lengths)
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
@@ -2574,7 +2483,7 @@ def init_params(
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
-        Use the Ketcham et al. (2007) model for predicting FT ages.
+        Use the Ketcham et al. (1999) model for predicting FT ages.
     madtrax_aft : bool, default=False
         Use the MadTrax algorithm for predicting apatite FT ages.
     madtrax_aft_kinetic_model : int, default=1
@@ -5455,10 +5364,6 @@ def run_model(params):
             # Loop over all ages in age data file can calculate predicted age equivalents
             tt_hist_index = -1
             depo_age_old = 5000.0
-            rdaam = load_rdaam()
-            # pa = pointer()
-            # Does this work?
-            pa = rdaam.make_path()
             for i in range(len(obs_ages_file)):
                 # Increment time-temperature history index whenever it changes, write new tt-history file
                 depo_age_now = obs_depo_age_file[i]
@@ -5466,26 +5371,23 @@ def run_model(params):
                 if depo_age_now < depo_age_old:
                     tt_hist_index += 1
 
-                    rdaam.del_path(pa)
-                    pa = rdaam.make_path()
+                    # Extract time-temperature path for this history (youngest point first)
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
                     write_increment = get_write_increment(params, time_ma)
+                    ti_path = []
+                    te_path = []
                     for j in range(len(time_ma) - 1, -1, -write_increment):
-                        rdaam.path_push(
-                            pa,
-                            c_double(time_ma[j]),
-                            c_double(temp_hists[tt_hist_index][j]),
-                        )
+                        ti_path.append(time_ma[j])
+                        te_path.append(temp_hists[tt_hist_index][j])
                     if params["pad_time"] > 0.0:
                         pad_times = np.arange(
                             time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
                         )
-                        for pad_time in pad_times:
-                            rdaam.path_push(
-                                pa,
-                                c_double(pad_time),
-                                c_double(temp_hists[tt_hist_index][i]),
-                            )
+                        # Only add padding points older than the oldest point in the
+                        # path, using the temperature of that oldest point
+                        for pad_time in pad_times[pad_times > ti_path[-1]]:
+                            ti_path.append(pad_time)
+                            te_path.append(temp_hists[tt_hist_index][j])
 
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now
@@ -5496,8 +5398,8 @@ def run_model(params):
                 if obs_age_type_file[i] == "AHe":
                     # Calculate AHe age
                     _, corr_ahe_age, _, _ = he_ages(
-                        rdaam=rdaam,
-                        pa=pa,
+                        ti_path,
+                        te_path,
                         ap_rad=obs_radius_file[i],
                         ap_uranium=obs_u_file[i],
                         ap_thorium=obs_th_file[i],
@@ -5528,8 +5430,8 @@ def run_model(params):
                 elif obs_age_type_file[i] == "ZHe":
                     # Calculate ZHe age
                     _, _, _, corr_zhe_age = he_ages(
-                        rdaam=rdaam,
-                        pa=pa,
+                        ti_path,
+                        te_path,
                         ap_rad=params["ap_rad"],
                         ap_uranium=params["ap_uranium"],
                         ap_thorium=params["ap_thorium"],

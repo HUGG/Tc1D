@@ -3,8 +3,10 @@
 # T<sub>c</sub>1D - A 1D thermal and thermochronometer age prediction model
 
 [![DOI](https://zenodo.org/badge/314177994.svg)](https://zenodo.org/badge/latestdoi/314177994)
+[![Build, test, and deploy](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml/badge.svg)](https://github.com/HUGG/Tc1D/actions/workflows/publish-to-pypi.yml)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+[![Python versions](https://img.shields.io/pypi/pyversions/tc1d)](https://pypi.org/project/tc1d/)
 [![PyPI - Version](https://img.shields.io/pypi/v/tc1d)](https://pypi.org/project/tc1d/)
-[![Tests](https://github.com/HUGG/TC1D/actions/workflows/run-tests.yml/badge.svg)](https://github.com/HUGG/TC1D/actions/workflows/run-tests.yml)
 [![Documentation Status](https://readthedocs.org/projects/tc1d/badge/?version=latest)](https://tc1d.readthedocs.io/en/latest/?badge=latest)
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/HUGG/TC1D/HEAD?urlpath=%2Flab%2Ftree%2Fnotebooks%2Fexplore_tc1d.ipynb)
@@ -26,8 +28,10 @@ You can install T<sub>c</sub>1D in your Python environment using `pip`.
 pip install tc1d
 ```
 
+Thermochronometer ages are calculated using [T<sub>c</sub>ages](https://github.com/HUGG/tcages), which is installed automatically with T<sub>c</sub>1D.
+
 > [!WARNING]
-> If you choose to install T<sub>c</sub>1D versions older than 0.5.0, you will also need to install the thermochronometer age prediction programs available in the [T<sub>c</sub>core package](https://github.com/HUGG/Tc_core/) in order for T<sub>c</sub>1D to work properly. Installing T<sub>c</sub>1D >= 0.5.0 is strongly recommended. 
+> If you choose to install T<sub>c</sub>1D versions older than 0.5.0, you will also need to install the thermochronometer age prediction programs available in the [v0.2 release of T<sub>c</sub>core](https://github.com/HUGG/tcages/releases/tag/v0.2) in order for T<sub>c</sub>1D to work properly. Installing the latest version of T<sub>c</sub>1D is strongly recommended.
 
 ## Usage
 
@@ -49,26 +53,36 @@ Additional examples of how to run T<sub>c</sub>1D can be found in the Jupyter no
 
 ## Citation
 
+### How to cite the code
+
 Use of T<sub>c</sub>1D can be acknowledged by citing [the relevant version of T<sub>c</sub>1D](https://doi.org/10.5281/zenodo.7124271) using the DOI from Zenodo that always points to the latest version ([10.5281/zenodo.7124271](https://doi.org/10.5281/zenodo.7124271)).
 For example, the citation for version 0.5.0 is
 
 > Whipp, D. M., Gérard, B., Laaksonen, S., & Dönges, S. (2026). Tc1D - A 1D thermal and thermochronometer age prediction model (Version 0.5.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23512117
 
-We also encourage you to cite the related T<sub>c</sub>1D technical note, if appropriate.
+### How to cite the paper
+
+You're also welcome to cite the related T<sub>c</sub>1D technical note when referencing ideas from the article.
 
 > Whipp, D. M., Gérard, B., Laaksonen, S., and Kellett, D. A. (2026). Technical note: Tc1D – a 1D thermal and thermochronometer age prediction model. *Geochronology*, 8, 627–643. https://doi.org/10.5194/gchron-8-627-2026
+
+### Additional references
+
+The following articles may also be useful to cite when sharing results from T<sub>c</sub>1D:
+
+> Flowers, R. M., Ketcham, R. A., Shuster, D. L., & Farley, K. A. (2009). Apatite (U-Th)/He thermochronometry using a radiation damage accumulation and annealing model. Geochimica et Cosmochimica Acta, 73(8), 2347--2365.
+
+> Guenthner, W. R., Reiners, P. W., Ketcham, R. A., Nasdala, L., & Giester, G. (2013). Helium diffusion in natural zircon: Radiation damage, anisotropy, and the interpretation of zircon (U-Th)/He thermochronology. American Journal of Science, 313(3), 145–198. https://doi.org/10.2475/03.2013.01
+
+> Ketcham, R. A., Donelick, R. A., & Carlson, W. D.: Variability of apatite fission-track annealing kinetics III: Extrapolation to geological time scales. American Mineralogist, 84, 1235-1255, doi: [10.2138/am-1999-0903](https://doi.org/10.2138/am-1999-0903), 1999.
+
+> Ketcham, R. A., Carter, A., Donelick, R. A., Barbarand, J., & Hurford, A. J. (2007). Improved modeling of fission-track annealing in apatite. American Mineralogist, 92(5–6), 799--810.
+
+> Ketcham, R. A., Mora, A., and Parra, M.: Deciphering exhumation and burial history with multi-sample down-well thermochronometric inverse modelling, Basin Res., 30, 48-64, [10.1111/bre.12207](https://doi.org/10.1111/bre.12207), 2018.
 
 ## Acknowledgements
 
 We acknowledge Saska Dönges from the [University of Helsinki Research Software Engineering (UH-RSE)](https://wiki.helsinki.fi/xwiki/bin/view/Research%20Software%20Engineering%20group/) for scientific computing support.
-
-## Additional references
-
-- Flowers, R. M., Ketcham, R. A., Shuster, D. L., & Farley, K. A. (2009). Apatite (U-Th)/He thermochronometry using a radiation damage accumulation and annealing model. Geochimica et Cosmochimica Acta, 73(8), 2347--2365.
-- Guenthner, W. R., Reiners, P. W., Ketcham, R. A., Nasdala, L., & Giester, G. (2013). Helium diffusion in natural zircon: Radiation damage, anisotropy, and the interpretation of zircon (U-Th)/He thermochronology. American Journal of Science, 313(3), 145–198. https://doi.org/10.2475/03.2013.01
-- Ketcham, R. A., Donelick, R. A., & Carlson, W. D.: Variability of apatite fission-track annealing kinetics III: Extrapolation to geological time scales. American Mineralogist, 84, 1235-1255, doi: [10.2138/am-1999-0903](https://doi.org/10.2138/am-1999-0903), 1999.
-- Ketcham, R. A., Carter, A., Donelick, R. A., Barbarand, J., & Hurford, A. J. (2007). Improved modeling of fission-track annealing in apatite. American Mineralogist, 92(5–6), 799--810.
-- Ketcham, R. A., Mora, A., and Parra, M.: Deciphering exhumation and burial history with multi-sample down-well thermochronometric inverse modelling, Basin Res., 30, 48-64, [10.1111/bre.12207](https://doi.org/10.1111/bre.12207), 2018.
 
 ## License
 

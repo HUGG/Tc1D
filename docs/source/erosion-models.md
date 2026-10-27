@@ -20,7 +20,9 @@ Below is a general description of how erosion is implemented in the code as well
 The calculation of erosion rates in T<sub>c</sub>1D is done in a function titled `calculate_erosion_rate()`. The function definition statement is below, to give you a sense of the values that can be passed to the function:
 
 ```python
-def calculate_erosion_rate(params, dt, t_total, current_time, x, vx_array, fault_depth, moho_depth):
+def calculate_erosion_rate(
+    params, dt, t_total, current_time, x, vx_array, fault_depth, moho_depth
+):
     """Defines the way in which erosion should be applied."""
     ...
     return vx_array, vx_surf, vx_max, fault_depth
