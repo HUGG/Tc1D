@@ -22,7 +22,7 @@ Instructions for how to install T<sub>c</sub>1D are below.
 
 ## Installation
 
-For most users, you can install T<sub>c</sub>1D in your Python environment using `pip` simply using.
+For most users, you can install T<sub>c</sub>1D in your Python environment using `pip` by simply typing
 
 ```bash
 pip install tc1d
