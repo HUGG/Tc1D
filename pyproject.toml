@@ -47,6 +47,7 @@ dependencies = [
     "scipy",
     "scikit-learn",
     "tcages>=0.3",
+    "tqdm",
 ]
 
 [project.optional-dependencies]

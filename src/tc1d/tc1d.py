@@ -12,6 +12,7 @@ from scipy.interpolate import interp1d, RectBivariateSpline
 from scipy.linalg import solve
 import time
 import math
+from tqdm import tqdm
 from typing import Tuple
 import warnings
 
@@ -4792,12 +4793,21 @@ def run_model(params):
             )
             print("")
 
+        # Create progress bar for time steps (forward mode only)
+        # Disabled in debug mode, where per-step output would break up the bar
+        pbar = tqdm(
+            total=nt,
+            ncols=80,
+            bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]",
+            disable=params["batch_mode"] or params["debug"],
+        )
+
         # Start main time loop
         while curtime < t_total:
             if not params["batch_mode"]:
-                print(
-                    f"- Step {idx + 1:5d} of {nt} (Time: {curtime / myr2sec(1):5.1f} Myr, Erosion rate: {vx / mmyr2ms(1):5.2f} mm/yr)\r",
-                    end="",
+                pbar.set_postfix_str(
+                    f"t={curtime / myr2sec(1):5.2f} Myr, erosion rate={vx / mmyr2ms(1):4.2f} mm/yr",
+                    refresh=False,
                 )
             elif not params["inverse_mode"]:
                 # Print progress dot if using batch model. 1 dot = 10%
@@ -5146,6 +5156,7 @@ def run_model(params):
             # Update current time and index
             curtime += dt
             idx += 1
+            pbar.update(1)
 
             # Update erosion rate (and fault depth when it applies)
             vx_array, vx, vx_max, fault_depth = calculate_erosion_rate(
@@ -5189,8 +5200,8 @@ def run_model(params):
                             plotidx += 1
                             # tplot = t_plots[plotidx]
 
-        if not params["batch_mode"]:
-            print("")
+        # Close progress bar
+        pbar.close()
 
     if params["watch_it_exhume"]:
         plt.ioff()
