@@ -75,9 +75,9 @@ pip install "tc1d[notebook]"
 ### How to cite the code
 
 Use of T<sub>c</sub>1D can be acknowledged by citing [the relevant version of T<sub>c</sub>1D](https://doi.org/10.5281/zenodo.7124271) using the DOI from Zenodo that always points to the latest version ([10.5281/zenodo.7124271](https://doi.org/10.5281/zenodo.7124271)).
-For example, the citation for version 0.6.0 is
+For example, the citation for version 0.7.0 is
 
-> Whipp, D. M., Gérard, B., Laaksonen, S., & Dönges, S. (2026). Tc1D - A 1D thermal and thermochronometer age prediction model (Version 0.6.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23700244
+> Whipp, D. M., Gérard, B., Laaksonen, S., & Dönges, S. (2026). Tc1D - A 1D thermal and thermochronometer age prediction model (Version 0.7.0) [Computer software]. Zenodo. https://doi.org/10.5281/zenodo.23721479
 
 ### How to cite the paper
 
