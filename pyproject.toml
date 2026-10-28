@@ -64,6 +64,18 @@ documentation = "https://tc1d.readthedocs.io/"
 tc1d-cli = "tc1d.tc1d_cli:main"
 tc1d-notebooks = "tc1d.notebooks:main"
 
+[tool.hatch.build.targets.sdist]
+# Notebooks are distributed as a release asset (see tc1d-notebooks), so keep
+# them and other repository-only files out of the source distribution
+exclude = [
+    "/.github",
+    "/docs",
+    "/notebooks",
+    "/environment.yml",
+    "/postBuild",
+    "/.readthedocs.yaml",
+]
+
 [tool.ruff]
 # Same as Black.
 line-length = 88

@@ -25,7 +25,7 @@ You can include support for parallel Markov-Chain Monte Carlo (MCMC) inversions 
 
 .. code-block:: console
 
-   pip install 'tc1d[mpi]'
+   pip install "tc1d[mpi]"
 
 .. note::
 
@@ -72,5 +72,5 @@ To run the notebooks locally you will also need JupyterLab, which can be install
 
 .. code-block:: console
 
-   pip install 'tc1d[notebook]'
+   pip install "tc1d[notebook]"
 
