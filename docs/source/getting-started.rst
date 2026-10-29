@@ -94,7 +94,7 @@ On a computer cluster a similar command might be embedded in an ``sbatch`` scrip
    Only MCMC inversions (``run_type: mcmc``) can be run in parallel.
    Do not use ``mpirun`` for forward models, batch runs, or NA inversions as each MPI process will run its own full copy of the model (!).
 
-.. hint::
+.. note::
 
    If ``mpi4py`` is not installed or not working properly, you might see output like the example below.
    This output indicates four serial forward models are running, rather than one parallel inversion.
