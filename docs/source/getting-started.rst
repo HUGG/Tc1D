@@ -21,7 +21,13 @@ Thermochronometer ages are calculated using `Tcages <https://github.com/HUGG/tca
 Installation (for parallel MCMC inversions)
 -------------------------------------------
 
-You can include support for parallel Markov-Chain Monte Carlo (MCMC) inversions in T\ :sub:`c`\ 1D by installing using the following options in ``pip``.
+Inversions using the Markov-Chain Monte Carlo (MCMC) approach in T\ :sub:`c`\ 1D can be run more efficiently by running them in parallel on multiple cores or processors.
+This is done using MPI, and the best approach for how to speed inversions up will depend on where you are running them.
+
+Parallel inversions on your own computer
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you are running on your own computer and do not have MPI installed already, the easiest option is to install using ``pip``:
 
 .. code-block:: console
 
@@ -29,7 +35,26 @@ You can include support for parallel Markov-Chain Monte Carlo (MCMC) inversions 
 
 .. note::
 
-   This should work in Linux and macOS, but you may need to install OpenMPI or MPICH for MPI support. In Windows, MPI is available via ms-mpi or IntelMPI, but you will need to install that software manually for MPI support.
+   This should work in Linux and macOS, but it is possible you may need to install OpenMPI or MPICH for MPI support. In Windows, MPI is available via ms-mpi or IntelMPI and you will need to install that software manually for MPI support.
+
+Parallel inversions on a computer cluster
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+If you are planning to use T\ :sub:`c`\ 1D for parallel inversions on a computer cluster (or already have MPI on your computer), it is better to install using ``pip`` after first loading the system's MPI module (assuming the cluster uses modules):
+
+.. code-block:: console
+
+   module load openmpi   # Or whatever MPI the system is using
+
+After this, T\ :sub:`c`\ 1D and the needed ``schwimmbad`` library can be installed using ``pip``, as well as ``mpi4py``.
+
+.. code-block:: console
+
+   pip install tc1d schwimmbad
+   pip install --no-cache-dir --no-binary mpi4py mpi4py
+
+The key here is that ``mpi4py`` will be built from source using the system MPI library, which should ensure efficient performance using the tuned MPI install on the cluster.
+Installing using ``pip install "tc1d[mpi]"`` will default to using the ``openmpi`` package, which could conflict with the cluster MPI or be slower.
 
 Running a basic model
 ---------------------
