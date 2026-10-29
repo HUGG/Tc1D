@@ -60,7 +60,7 @@ Installing using ``pip install "tc1d[mpi]"`` will default to using the MPI provi
 Checking your MPI installation works
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Before starting a parallel inversion, it is good to confirm things are working properly. You can check your
+Before starting a parallel inversion, it is good to confirm things are working properly.
 You can confirm your ``mpi4py`` installation is working properly by running
 
 .. code-block:: console
@@ -74,6 +74,10 @@ If your ``mpi4py`` package is working properly, you should see output that looks
    Open MPI v5.0.11, package: Open MPI user@localhost Distribution, ident: 5.0.11,
    repo rev: v5.0.11rc1, Sep 16, 2026
 
+.. note::
+
+   On a cluster, the output should list the MPI library from the module you loaded, not the version from the ``openmpi`` Python package.
+
 Running a parallel inversion
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -82,7 +86,7 @@ A typical example for running on your own computer using 4 MPI processes might l
 
 .. code-block:: console
 
-   mpirun -n 4 tc1d-cli --run-type mcmc ...
+   mpirun -n 4 tc1d-cli --run-type mcmc --inverse-mode ...
 
 On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
 
@@ -92,13 +96,13 @@ On a computer cluster a similar command might be embedded in an ``sbatch`` scrip
 
 .. warning::
 
-   Only MCMC inversions (``run_type: mcmc``) can be run in parallel.
+   Only MCMC inversions (``--run-type mcmc`` with ``--inverse-mode``) can be run in parallel.
    Do not use ``mpirun`` for forward models, batch runs, or NA inversions as each MPI process will run its own full copy of the model (!).
 
 .. note::
 
    If ``mpi4py`` is not installed or not working properly, you might see output like the example below.
-   This output indicates four serial forward models are running, rather than one parallel inversion.
+   This output indicates four single-processor MCMC inversions are running, rather than one parallel inversion.
 
    .. code-block:: console
 
