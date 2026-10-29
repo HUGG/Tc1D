@@ -83,15 +83,13 @@ A typical example for running on your own computer using 4 MPI processes might l
 
    mpirun -n 4 tc1d-cli --run-type mcmc ...
 
+On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
+
 .. note::
 
    One process is dedicated to coordinate the inversion, so ``-n 4`` will result in having 3 worker processes.
 
-.. hint::
-
-   On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
-
-.. attention::
+.. warning::
 
    Only MCMC inversions (``run_type: mcmc``) can be run in parallel.
    Do not use ``mpirun`` for forward models, batch runs, or NA inversions as each MPI process will run its own full copy of the model (!).
