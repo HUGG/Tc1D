@@ -60,14 +60,14 @@ Installing using ``pip install "tc1d[mpi]"`` will default to using the MPI provi
 Checking your MPI installation works
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-Before starting a parallel inversion, it is good to confirm things are working properly.
+Before starting a parallel inversion, it is good to confirm things are working as expected.
 You can confirm your ``mpi4py`` installation is working properly by running
 
 .. code-block:: console
 
    python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 
-If your ``mpi4py`` package is working properly, you should see output that looks something like
+If your ``mpi4py`` package is functioning as it should, you should see output that looks something like
 
 .. code-block:: console
 
