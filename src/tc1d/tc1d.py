@@ -3898,22 +3898,25 @@ def batch_run_mcmc(params, batch_params):
     ]
 
     # Handle serial and parallel use nicely
-    try:
-        pool = MPIPool()
+    pool = None
+    if HAS_MPI:
+        try:
+            pool = MPIPool()
+        except ValueError:
+            # mpi4py is installed but the run has only one MPI process
+            pool = None
+
+    # TODO: Should we allow threading with joblib or multiprocessing? Would be faster for multicore local jobs
+    if pool is not None:
         if not pool.is_master():
             pool.wait()
             sys.exit(0)
-        if pool.rank == 0:
-            print(
-                f"{8 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} MPI processes) {8 * '-'}\n"
-            )
-            exec_start = time.time()
-    # Catch the TypeError assuming MPIPool is set to None, or ValueError assuming 1 MPI process
-    # TODO: Should we allow threading with joblib or multiprocessing? Would be faster for multicore local jobs
-    except (TypeError, ValueError):
-        pool = None
+        print(
+            f"{8 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} MPI processes) {8 * '-'}\n"
+        )
+    else:
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
-        exec_start = time.time()
+    exec_start = time.time()
 
     # BG: Build sampler (optionally parallelized with an emcee pool)
     sampler = emcee.EnsembleSampler(
