@@ -3912,7 +3912,7 @@ def batch_run_mcmc(params, batch_params):
             pool.wait()
             sys.exit(0)
         print(
-            f"{8 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} worker processes) {8 * '-'}\n"
+            f"{7 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} worker processes) {6 * '-'}\n"
         )
     else:
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
