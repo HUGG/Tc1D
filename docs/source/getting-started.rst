@@ -14,7 +14,7 @@ You can install T\ :sub:`c`\ 1D in your Python environment using ``pip``.
 
 Thermochronometer ages are calculated using `Tcages <https://github.com/HUGG/tcages>`_, which is installed automatically with T\ :sub:`c`\ 1D.
 
-.. warning::
+.. note::
 
    If you choose to install T\ :sub:`c`\ 1D versions older than 0.5.0, you will also need to install the thermochronometer age prediction programs available in the `v0.2 release of Tc_core <https://github.com/HUGG/tcages/releases/tag/v0.2>`_ in order for T\ :sub:`c`\ 1D to work properly. Installing the latest version of T\ :sub:`c`\ 1D is strongly recommended.
 
@@ -56,6 +56,23 @@ After this, T\ :sub:`c`\ 1D and the needed ``schwimmbad`` library can be install
 The key here is that ``mpi4py`` will be built from source using the system MPI library, which should ensure efficient performance using the tuned MPI install on the cluster.
 Installing using ``pip install "tc1d[mpi]"`` will default to using the MPI provided in the ``openmpi`` dependency package, which could conflict with the cluster MPI or be slower.
 
+Checking your MPI installation works
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Before starting a parallel inversion, it is good to confirm things are working properly. You can check your
+You can confirm your ``mpi4py`` installation is working properly by running
+
+.. code-block:: console
+
+   python -c "from mpi4py import MPI; print(MPI.Get_library_version())".
+
+If your ``mpi4py`` package is working properly, you should see output like
+
+.. code-block:: console
+
+   Open MPI v5.0.11, package: Open MPI user@localhost Distribution, ident: 5.0.11,
+   repo rev: v5.0.11rc1, Sep 16, 2026
+
 Running a parallel inversion
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -66,18 +83,35 @@ A typical example for running on your own computer using 4 MPI processes might l
 
    mpirun -n 4 tc1d-cli --run-type mcmc ...
 
-.. hint::
-
-   On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
-
 .. note::
 
    One process is dedicated to coordinate the inversion, so ``-n 4`` will result in having 3 worker processes.
+
+.. hint::
+
+   On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
 
 .. attention::
 
    Only MCMC inversions (``run_type: mcmc``) can be run in parallel.
    Do not use ``mpirun`` for forward models, batch runs, or NA inversions as each MPI process will run its own full copy of the model (!).
+
+.. hint::
+
+   If ``mpi4py`` is not installed or not working properly, you might see output like the example below.
+   This output indicates four serial forward models are running, rather than one parallel inversion.
+
+   .. code-block:: console
+
+      ========================== This is Tc1D version 0.7.0 ==========================
+      ========================== This is Tc1D version 0.7.0 ==========================
+      ========================== This is Tc1D version 0.7.0 ==========================
+      ========================== This is Tc1D version 0.7.0 ==========================
+      ---------------- Starting MCMC inverse mode (single processor) -----------------
+      ---------------- Starting MCMC inverse mode (single processor) -----------------
+      ---------------- Starting MCMC inverse mode (single processor) -----------------
+      ---------------- Starting MCMC inverse mode (single processor) -----------------
+      ...
 
 Running a basic model
 ---------------------
