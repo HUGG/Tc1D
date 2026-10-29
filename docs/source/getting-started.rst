@@ -56,6 +56,18 @@ After this, T\ :sub:`c`\ 1D and the needed ``schwimmbad`` library can be install
 The key here is that ``mpi4py`` will be built from source using the system MPI library, which should ensure efficient performance using the tuned MPI install on the cluster.
 Installing using ``pip install "tc1d[mpi]"`` will default to using the ``openmpi`` package, which could conflict with the cluster MPI or be slower.
 
+Running a parallel inversion
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+The process for running a parallel inversion will vary depending on the system you are using.
+A typical example for running on your own computer using 4 MPI processes might look like this:
+
+.. code-block:: console
+
+   mpirun -n 4 tc1d-cli --input-file my_input_file.yaml
+
+On a computer cluster a similar command might be embedded in an ``sbatch`` script file.
+
 Running a basic model
 ---------------------
 
