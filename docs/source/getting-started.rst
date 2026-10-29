@@ -35,7 +35,8 @@ If you are running on your own computer and do not have MPI installed already, t
 
 .. note::
 
-   This should work in Linux and macOS, but it is possible you may need to install OpenMPI or MPICH for MPI support. In Windows, MPI is available via ms-mpi or IntelMPI and you will need to install that software manually for MPI support.
+   This command should install MPI for Linux and macOS using the ``openmpi``. If you have MPI errors after installation, you may need to install OpenMPI or MPICH separately.
+   In Windows, MPI is available via ms-mpi or IntelMPI and you will need to install that software separately for MPI support.
 
 Parallel inversions on a computer cluster
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
