@@ -64,7 +64,7 @@ You can confirm your ``mpi4py`` installation is working properly by running
 
 .. code-block:: console
 
-   python -c "from mpi4py import MPI; print(MPI.Get_library_version())".
+   python -c "from mpi4py import MPI; print(MPI.Get_library_version())"
 
 If your ``mpi4py`` package is working properly, you should see output like
 
