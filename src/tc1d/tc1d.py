@@ -29,7 +29,7 @@ import emcee  # BG: For MCMC sampling
 from itertools import combinations
 from neighpy import NASearcher, NAAppraiser
 from scipy.spatial import Voronoi, voronoi_plot_2d
-import sys  # TODO: Could this be removed?
+import sys
 
 # Optional MPI support
 from tc1d._compat import HAS_MPI, COMM_WORLD, MPIPool
@@ -3912,7 +3912,7 @@ def batch_run_mcmc(params, batch_params):
             pool.wait()
             sys.exit(0)
         print(
-            f"{8 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} MPI processes) {8 * '-'}\n"
+            f"{8 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} worker processes) {8 * '-'}\n"
         )
     else:
         print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
