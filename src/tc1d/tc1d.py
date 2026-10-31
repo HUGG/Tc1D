@@ -9,7 +9,7 @@ import matplotlib.patches as patches
 import numpy as np
 from pathlib import Path
 from scipy.interpolate import interp1d, RectBivariateSpline
-from scipy.linalg import solve
+from scipy.linalg import solve_banded
 import time
 import math
 from tqdm import tqdm
@@ -264,6 +264,47 @@ def adiabat(alphav: float, temp: float, cp: float) -> float:
     return alphav * grav * temp / cp
 
 
+# Define widths for banded storage for matrix solver: (l, u) = (2, 1)
+# The one extra sub-diagonal is so the 2nd-order one-sided basal heat-flux condition (entries at nx-3, nx-2, nx-1)
+# still fits.
+_lower_band = 2
+_upper_band = 1
+
+
+def _define_interior_matrix_coefficients(
+    nx: int, dx: float, rho: np.ndarray, cp: np.ndarray, k: np.ndarray, vx: np.ndarray
+):
+    """Defines coefficients used in the matrix solver."""
+    rhocp_coeff = rho[1 : nx - 1] * cp[1 : nx - 1]
+    adv_coeff = rhocp_coeff * -vx[1 : nx - 1] / (2 * dx)  # (rho*cp*-vx)/(2dx)
+    leftk_coeff = k[0 : nx - 2] / dx**2  # k[ix-1]/dx^2
+    rightk_coeff = k[1 : nx - 1] / dx**2  # k[ix]/dx^2
+    return rhocp_coeff, adv_coeff, leftk_coeff, rightk_coeff
+
+
+def _build_banded_array_with_bcs(
+    nx: int,
+    a_matrix: np.ndarray,
+    lower: np.ndarray,
+    diag: np.ndarray,
+    upper: np.ndarray,
+):
+    """Build the (4, nx) banded array, copying the boundary condition rows from the dense matrix."""
+    banded_array = np.zeros((_lower_band + _upper_band + 1, nx))
+    i = np.arange(1, nx - 1)
+    banded_array[_upper_band, i] = diag  # a[i, i]
+    banded_array[_upper_band - 1, i + 1] = upper  # a[i, i+1]
+    banded_array[_upper_band + 1, i - 1] = lower  # a[i, i-1]
+    # Surface row (row 0)
+    banded_array[_upper_band, 0] = a_matrix[0, 0]
+    banded_array[_upper_band - 1, 1] = a_matrix[0, 1]
+    # Basal row (row nx-1): a[nx-1, nx-3], a[nx-1, nx-2], a[nx-1, nx-1]
+    banded_array[_upper_band + 2, nx - 3] = a_matrix[nx - 1, nx - 3]
+    banded_array[_upper_band + 1, nx - 2] = a_matrix[nx - 1, nx - 2]
+    banded_array[_upper_band, nx - 1] = a_matrix[nx - 1, nx - 1]
+    return banded_array
+
+
 # Conductive steady-state heat transfer
 def temp_ss_implicit(
     nx: int,
@@ -285,16 +326,22 @@ def temp_ss_implicit(
     a_matrix[nx - 1, nx - 1] = 1
     b_vector[nx - 1] = temp_base
 
-    # Matrix loop
-    for ix in range(1, nx - 1):
-        a_matrix[ix, ix - 1] = (-(rho[ix] * cp[ix] * -vx[ix]) / (2 * dx)) - k[
-            ix - 1
-        ] / dx**2
-        a_matrix[ix, ix] = k[ix] / dx**2 + k[ix - 1] / dx**2
-        a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b_vector[ix] = heat_prod[ix]
+    # Assemble interior rows with array operations into banded storage
+    rhocp_coeff, adv_coeff, leftk_coeff, rightk_coeff = (
+        _define_interior_matrix_coefficients(nx, dx, rho, cp, k, vx)
+    )
+    banded_array = _build_banded_array_with_bcs(
+        nx,
+        a_matrix,
+        -adv_coeff - leftk_coeff,
+        rightk_coeff + leftk_coeff,
+        adv_coeff - rightk_coeff,
+    )
+    b_vector[1 : nx - 1] = heat_prod[1 : nx - 1]
 
-    temp = solve(a_matrix, b_vector)
+    temp = solve_banded(
+        (_lower_band, _upper_band), banded_array, b_vector, check_finite=False
+    )
     return temp
 
 
@@ -472,16 +519,24 @@ def temp_transient_implicit(
     heat_prod: np.ndarray,
 ) -> np.ndarray:
     """Calculates a transient implicit thermal solution."""
-    # Matrix loop
-    for ix in range(1, nx - 1):
-        a_matrix[ix, ix - 1] = (
-            -(rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix - 1] / dx**2
-        )
-        a_matrix[ix, ix] = (rho[ix] * cp[ix]) / dt + k[ix] / dx**2 + k[ix - 1] / dx**2
-        a_matrix[ix, ix + 1] = (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx) - k[ix] / dx**2
-        b_vector[ix] = heat_prod[ix] + ((rho[ix] * cp[ix]) / dt) * temp_prev[ix]
+    # Assemble interior rows with array operations into banded storage
+    rhocp_coeff, adv_coeff, leftk_coeff, rightk_coeff = (
+        _define_interior_matrix_coefficients(nx, dx, rho, cp, k, vx)
+    )
+    banded_array = _build_banded_array_with_bcs(
+        nx,
+        a_matrix,
+        -adv_coeff - leftk_coeff,
+        rhocp_coeff / dt + rightk_coeff + leftk_coeff,
+        adv_coeff - rightk_coeff,
+    )
+    b_vector[1 : nx - 1] = (
+        heat_prod[1 : nx - 1] + rhocp_coeff / dt * temp_prev[1 : nx - 1]
+    )
 
-    temp = solve(a_matrix, b_vector)
+    temp = solve_banded(
+        (_lower_band, _upper_band), banded_array, b_vector, check_finite=False
+    )
     return temp
 
 
@@ -499,27 +554,28 @@ def temp_transient_crank_nicolson(
     k: np.ndarray,
     heat_prod: np.ndarray,
 ) -> np.ndarray:
-    """Calculates a steady-state thermal solution."""
-    # Matrix loop
-    for ix in range(1, nx - 1):
-        a_matrix[ix, ix - 1] = -k[ix - 1] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (
-            2 * dx
-        )
-        a_matrix[ix, ix] = (
-            k[ix] / dx**2 + k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt
-        )
-        a_matrix[ix, ix + 1] = -k[ix] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx)
-        b_vector[ix] = (
-            (k[ix] / dx**2 - (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
-            * temp_prev[ix + 1]
-            + (-k[ix] / dx**2 - k[ix - 1] / dx**2 + (2 * rho[ix] * cp[ix]) / dt)
-            * temp_prev[ix]
-            + (k[ix - 1] / dx**2 + (rho[ix] * cp[ix] * -vx[ix]) / (2 * dx))
-            * temp_prev[ix - 1]
-            + 2 * heat_prod[ix]
-        )
+    """Calculates a transient Crank-Nicolson thermal solution."""
+    # Assemble interior rows with array operations into banded storage
+    rhocp_coeff, adv_coeff, leftk_coeff, rightk_coeff = (
+        _define_interior_matrix_coefficients(nx, dx, rho, cp, k, vx)
+    )
+    banded_array = _build_banded_array_with_bcs(
+        nx,
+        a_matrix,
+        -leftk_coeff - adv_coeff,
+        rightk_coeff + leftk_coeff + 2 * rhocp_coeff / dt,
+        -rightk_coeff + adv_coeff,
+    )
+    b_vector[1 : nx - 1] = (
+        (rightk_coeff - adv_coeff) * temp_prev[2:nx]
+        + (-rightk_coeff - leftk_coeff + 2 * rhocp_coeff / dt) * temp_prev[1 : nx - 1]
+        + (leftk_coeff + adv_coeff) * temp_prev[0 : nx - 2]
+        + 2 * heat_prod[1 : nx - 1]
+    )
 
-    temp = solve(a_matrix, b_vector)
+    temp = solve_banded(
+        (_lower_band, _upper_band), banded_array, b_vector, check_finite=False
+    )
     return temp
 
 
@@ -1917,16 +1973,15 @@ def calculate_exhumation_magnitude(
     return magnitude, fw_ref_frame
 
 
-def calculate_pressure(density, dx, g=9.81):
+def calculate_pressure(density: np.ndarray, dx: float, g=9.81):
     """Calculates lithostatic pressure"""
     pressure = np.zeros(len(density))
-    for i in range(1, len(density)):
-        pressure[i] = pressure[i - 1] + density[i] * g * dx
+    pressure[1:] = np.cumsum(density[1:] * g * dx)
 
     return pressure
 
 
-def update_density(rho, alphav, temperature):
+def update_density(rho: np.ndarray, alphav: np.ndarray, temperature: np.ndarray):
     """Calculates density including thermal expansion"""
     rho_prime = -rho * alphav * temperature
     updated_rho = rho + rho_prime
@@ -1938,15 +1993,16 @@ def calculate_isostatic_elevation(
     density, x, dx, moho_depth, astheno_density, max_depth
 ):
     """Calculates elevation of surface due to isostasy"""
-    new_mass = 0.0
-    for i in range(len(density) - 1):
-        incremental_density = density[i]
-        # Blend materials when the Moho lies between two nodes
-        if x[i] <= moho_depth < x[i + 1]:
-            crust_frac = (moho_depth - x[i]) / dx
-            mantle_frac = 1.0 - crust_frac
-            incremental_density = crust_frac * density[i] + mantle_frac * density[i + 1]
-        new_mass += incremental_density * dx
+    incremental_density = density[:-1].copy()
+    # Blend materials when the Moho lies between two nodes
+    blend = (x[:-1] <= moho_depth) & (moho_depth < x[1:])
+    if blend.any():
+        crust_frac = (moho_depth - x[:-1][blend]) / dx
+        mantle_frac = 1.0 - crust_frac
+        incremental_density[blend] = (
+            crust_frac * density[:-1][blend] + mantle_frac * density[1:][blend]
+        )
+    new_mass = incremental_density.sum() * dx
 
     height = new_mass / astheno_density
     elevation = max_depth - height
