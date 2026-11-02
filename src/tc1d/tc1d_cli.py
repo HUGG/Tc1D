@@ -740,7 +740,7 @@ def main():
         description="Calculates transient 1D temperatures and thermochronometer ages",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("-v", "--version", action="version", version=__version__)
+    parser.add_argument("-V", "--version", action="version", version=__version__)
     general = parser.add_argument_group(
         "General options", "Options for various general features"
     )
@@ -794,6 +794,7 @@ def main():
         default=False,
     )
     general.add_argument(
+        "-v",
         "--verbose",
         dest="verbose",
         help="Screen output level: 0 = minimal, 1 = standard, 2 = extended/debug",
