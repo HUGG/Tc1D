@@ -4933,7 +4933,7 @@ def run_model(params):
 
         # Find starting depth if using only a one-pass erosion type
         if num_pass == 1:
-            # Loop over all times and use increment time backwards to run erosion model
+            # Loop over all times and increment time backwards to run erosion model
             # in reverse
             # TODO: Make this a function???
             while idx < nt:
