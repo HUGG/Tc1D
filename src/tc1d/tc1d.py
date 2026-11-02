@@ -3892,7 +3892,7 @@ def log_likelihood(x):
         try:
             new_dict[k] = float(v[0]) if isinstance(v, list) else float(v)
         except (ValueError, TypeError):
-            print(f"[WARNING] Could not convert {k}={v} to float.")
+            vprint(global_params, 1, f"[WARNING] Could not convert {k}={v} to float.")
             return -np.inf
 
     params_local = copy.deepcopy(global_params)
@@ -3903,11 +3903,12 @@ def log_likelihood(x):
     params_local["run_type"] = "mcmc"
 
     cleaned_dict = {k: float(v) for k, v in new_dict.items()}
-    print(f"[MCMC] Testing params: {cleaned_dict}")
+    values_text = ", ".join(f"{k}={v:.4g}" for k, v in cleaned_dict.items())
 
     # BG: Rebuild YAML ero_type=0 stages if stage params are sampled in this MCMC step
     ok = _rebuild_ero_stages_from_sample(params_local, cleaned_dict)
     if not ok:
+        vprint(params_local, 2, f"{values_text} -> rejected (invalid erosion stages)")
         return -np.inf
 
     try:
@@ -3915,16 +3916,17 @@ def log_likelihood(x):
         misfit = run_model(copy_params_for_silent_run(params_local))
 
         if not np.isfinite(misfit):
+            vprint(params_local, 2, f"{values_text} -> rejected (misfit not finite)")
             return -np.inf
 
-        print(f"Misfit: {misfit}")
+        vprint(params_local, 2, f"{values_text} -> misfit {misfit:.4f}")
 
         # BG: Standard Gaussian log-likelihood assuming independent normal
         # BG: errors and using chi-square misfit.
         return -0.5 * misfit
 
     except Exception as e:
-        print(f"[ERROR] run_model failed: {e}")
+        vprint(params_local, 1, f"[ERROR] run_model failed for {values_text}: {e}")
         if params_local["verbose"] >= 2:
             import traceback
 
@@ -4068,12 +4070,28 @@ def batch_run_mcmc(params, batch_params):
         if not pool.is_master():
             pool.wait()
             sys.exit(0)
-        print(
-            f"{7 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} worker processes) {6 * '-'}\n"
+        vprint(
+            params,
+            1,
+            f"{7 * '-'} Starting MCMC inverse mode (parallel mode; {pool.size:4} worker processes) {6 * '-'}\n",
         )
     else:
-        print(f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n")
+        vprint(
+            params,
+            1,
+            f"{16 * '-'} Starting MCMC inverse mode (single processor) {17 * '-'}\n",
+        )
     exec_start = time.time()
+
+    # Print inversion setup
+    vprint(params, 1, f"Inverting {ndim} parameter(s):")
+    for name, (low, high) in zip(param_names, bounds):
+        vprint(params, 1, f"- {name}: {low} to {high}")
+    vprint(
+        params,
+        1,
+        f"MCMC settings: walkers={nwalkers}, steps={nsteps}, discard={discard}, thin={thin}\n",
+    )
 
     # BG: Build sampler (optionally parallelized with an emcee pool)
     sampler = emcee.EnsembleSampler(
@@ -4085,7 +4103,9 @@ def batch_run_mcmc(params, batch_params):
 
     # BG: Always close the pool, even if the MCMC run errors out
     try:
-        sampler.run_mcmc(initial_state=p0, nsteps=nsteps, progress=True)
+        sampler.run_mcmc(
+            initial_state=p0, nsteps=nsteps, progress=params["verbose"] >= 1
+        )
     finally:
         if pool is not None:
             pool.close()
@@ -4130,9 +4150,10 @@ def batch_run_mcmc(params, batch_params):
     best_idx = np.argmin(flat_misfits)
     best = flat_samples[best_idx]
     best_dict = dict(zip(param_names, best))
-    print(f"The best parameters are: { {k: float(v) for k, v in best_dict.items()} }")
-    print(f"Best misfit: {float(flat_misfits[best_idx])}")
-    print(f"Best log probability: {float(flat_log_probs[best_idx])}")
+    best_text = ", ".join(f"{k}={float(v):.4g}" for k, v in best_dict.items())
+    vprint(params, 0, f"\nBest parameters: {best_text}")
+    vprint(params, 0, f"Best misfit: {float(flat_misfits[best_idx]):.4f}")
+    vprint(params, 1, f"Best log probability: {float(flat_log_probs[best_idx]):.4f}")
 
     # Stop timer before displaying plots if plots are to be displayed
     if params["display_plots"]:
@@ -4150,7 +4171,7 @@ def batch_run_mcmc(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "mcmc_neg_log_posterior.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC negative log-posterior plot written to {savefile}")
+        vprint(params, 1, f"- MCMC negative log-posterior plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4170,7 +4191,7 @@ def batch_run_mcmc(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "mcmc_chains.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC chain plot written to {savefile}")
+        vprint(params, 1, f"- MCMC chain plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4187,7 +4208,7 @@ def batch_run_mcmc(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "mcmc_misfit.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC misfit plot written to {savefile}")
+        vprint(params, 1, f"- MCMC misfit plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4206,7 +4227,7 @@ def batch_run_mcmc(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "mcmc_corner.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- MCMC corner plot written to {savefile}")
+        vprint(params, 1, f"- MCMC corner plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -4234,8 +4255,10 @@ def batch_run_mcmc(params, batch_params):
                 wd / "png" / f"mcmc_scatter_{param_names[i]}_vs_{param_names[j]}.png"
             )
             plt.savefig(savefile, dpi=300)
-            print(
-                f"- MCMC scatter plot for {param_names[i]} versus {param_names[j]} written to {savefile}"
+            vprint(
+                params,
+                1,
+                f"- MCMC scatter plot for {param_names[i]} versus {param_names[j]} written to {savefile}",
             )
         if params["display_plots"]:
             plt.show()
@@ -4248,8 +4271,10 @@ def batch_run_mcmc(params, batch_params):
     # Stop timer here if not displaying plots
     if not params["display_plots"]:
         exec_end = time.time()
-    print(
-        f"\n{16 * '-'} MCMC execution completed in {exec_end - exec_start:10.4f} seconds {16 * '-'}"
+    vprint(
+        params,
+        1,
+        f"\n{16 * '-'} MCMC execution completed in {exec_end - exec_start:10.4f} seconds {16 * '-'}",
     )
 
 
