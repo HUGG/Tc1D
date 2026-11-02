@@ -3186,7 +3186,7 @@ def batch_run_na(params, batch_params):
     # Define working directory path
     wd = Path.cwd()
 
-    print(f"{27 * '-'} Starting NA inverse mode {27 * '-'}\n")
+    vprint(params, 1, f"{27 * '-'} Starting NA inverse mode {27 * '-'}\n")
     exec_start = time.time()
 
     # BG: robust ero_type scalar for NA (CLI often stores lists)
@@ -3239,6 +3239,7 @@ def batch_run_na(params, batch_params):
 
                 # BG: reject invalid duration combinations (no crash)
                 if new_template is None:
+                    vprint(params, 2, "Rejected: invalid erosion stage durations")
                     return 1e9
 
             # ---- p1/p2/p3 ----
@@ -3297,19 +3298,22 @@ def batch_run_na(params, batch_params):
 
         # Add bounds to parameters
         params.update(filtered_params)
-        cleaned_filtered = {k: float(v) for k, v in filtered_params.items()}
-        print(f"The current values are: {cleaned_filtered}")
+        values_text = ", ".join(
+            f"{k}={float(v):.4g}" for k, v in filtered_params.items()
+        )
 
         # BG: Cumulative constraint to prevent elevation above the surface
         cumulative_erosion = ero1 + ero3_final + ero5_final + ero7_final + ero9_final
         if cumulative_erosion < 0:
-            print("Rejected: model would place the sample above surface.")
+            vprint(
+                params, 2, f"{values_text} -> rejected (sample would be above surface)"
+            )
             return 1e10  # Or some large misfit to reject the model
 
         # Run the forward model silently using a copy of the parameters
         misfit = run_model(copy_params_for_silent_run(params))
 
-        print(f"The current misfit is: {misfit}\n")
+        vprint(params, 2, f"{values_text} -> misfit {misfit:.4f}")
         return misfit
 
     param_list = list(ParameterGrid(batch_params))
@@ -3372,6 +3376,17 @@ def batch_run_na(params, batch_params):
     na_nr = int(params["na_nr"])  # BG: NA - number of Voronoi cells to resample
     na_ni = int(params["na_ni"])  # BG: NA - size of initial random search
     na_n = int(params["na_n"])  # BG: NA - number of NA iterations
+
+    # Print inversion setup
+    vprint(params, 1, f"Inverting {len(param_names)} parameter(s):")
+    for name, (low, high) in zip(param_names, bounds):
+        vprint(params, 1, f"- {name}: {low} to {high}")
+    vprint(
+        params,
+        1,
+        f"NA settings: ns={na_ns}, nr={na_nr}, ni={na_ni}, n={na_n}, "
+        f"n_resample={params['na_n_resample']}, n_walkers={params['na_n_walkers']}\n",
+    )
 
     # Initialize NA searcher (BG: controlled by CLI flags)
     searcher = NASearcher(
@@ -3447,13 +3462,16 @@ def batch_run_na(params, batch_params):
         bounds=bounds,
         n_resample=na_n_resample,  # BG: number of desired new samples
         n_walkers=na_n_walkers,  # BG: number of parallel walkers
+        verbose=params["verbose"] >= 1,  # Show appraiser progress bar
     )
 
     appraiser.run()  # Results stored in appraiser.samples
-    print(f"Appraiser mean: {appraiser.mean}")
-    print(f"Appraiser mean error: {appraiser.sample_mean_error}")
-    print(f"Appraiser covariance: {appraiser.covariance}")
-    print(f"Appraiser covariance error: {appraiser.sample_covariance_error}")
+    vprint(params, 1, f"\nAppraiser mean: {appraiser.mean}")
+    vprint(params, 2, f"Appraiser mean error: {appraiser.sample_mean_error}")
+    vprint(params, 2, f"Appraiser covariance: {appraiser.covariance}")
+    vprint(
+        params, 2, f"Appraiser covariance error: {appraiser.sample_covariance_error}"
+    )
 
     # BG: Safely extract best parameter set using param names
     best = searcher.samples[np.argmin(searcher.objectives)]
@@ -3543,7 +3561,9 @@ def batch_run_na(params, batch_params):
 
     # BG: Rebuild best list in correct parameter order
     best[:] = [best_dict[k] for k in filtered_params.keys()]
-    print(f" The best parameters are: {best}")
+    best_text = ", ".join(f"{k}={float(v):.4g}" for k, v in best_dict.items())
+    vprint(params, 0, f"\nBest parameters: {best_text}")
+    vprint(params, 0, f"Best misfit: {float(np.min(searcher.objectives)):.4f}")
 
     # Write searcher results to file
     outfile = wd / "csv" / "na_searcher_results.csv"
@@ -3576,7 +3596,7 @@ def batch_run_na(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "na_misfit.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- NA misfit plot written to {savefile}")
+        vprint(params, 1, f"- NA misfit plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -3625,7 +3645,7 @@ def batch_run_na(params, batch_params):
         if params["save_plots"]:
             savefile = wd / "png" / "na_samples.png"
             plt.savefig(savefile, dpi=300)
-            print(f"- NA samples scatter plot written to {savefile}")
+            vprint(params, 1, f"- NA samples scatter plot written to {savefile}")
         if params["display_plots"]:
             plt.show()
         else:
@@ -3656,7 +3676,7 @@ def batch_run_na(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "na_covariance_matrix.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- NA covariance matrix plot written to {savefile}")
+        vprint(params, 1, f"- NA covariance matrix plot written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -3684,7 +3704,7 @@ def batch_run_na(params, batch_params):
         if params["save_plots"]:
             savefile = wd / "png" / "na_voronoi.png"
             plt.savefig(savefile, dpi=300)
-            print(f"- NA Voronoi diagram written to {savefile}")
+            vprint(params, 1, f"- NA Voronoi diagram written to {savefile}")
         if params["display_plots"]:
             plt.show()
         else:
@@ -3738,7 +3758,7 @@ def batch_run_na(params, batch_params):
         if params["save_plots"]:
             savefile = wd / "png" / "na_voronoi.png"
             plt.savefig(savefile, dpi=300)
-            print(f"- NA Voronoi diagram written to {savefile}")
+            vprint(params, 1, f"- NA Voronoi diagram written to {savefile}")
         if params["display_plots"]:
             plt.show()
         else:
@@ -3756,7 +3776,7 @@ def batch_run_na(params, batch_params):
     if params["save_plots"]:
         savefile = wd / "png" / "na_histograms.png"
         plt.savefig(savefile, dpi=300)
-        print(f"- NA histograms written to {savefile}")
+        vprint(params, 1, f"- NA histograms written to {savefile}")
     if params["display_plots"]:
         plt.show()
     else:
@@ -3765,8 +3785,10 @@ def batch_run_na(params, batch_params):
     # Stop timer here if not displaying plots
     if not params["display_plots"]:
         exec_end = time.time()
-    print(
-        f"\n{17 * '-'} NA execution completed in {exec_end - exec_start:10.4f} seconds {17 * '-'}"
+    vprint(
+        params,
+        1,
+        f"\n{17 * '-'} NA execution completed in {exec_end - exec_start:10.4f} seconds {17 * '-'}",
     )
 
     # FIXME: Does the line below work???
