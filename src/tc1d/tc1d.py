@@ -2913,7 +2913,7 @@ def check_run_type(params: dict, batch_params: dict) -> None:
         if len(multi_value_params) == 0 and len(stage_ranges) == 0:
             raise ValueError(
                 f"Run type '{run_type}' requires at least one parameter range to "
-                "run an inversion. This should be given as two values: (minimum and maximum)."
+                "run an inversion. This should be given as two values (minimum and maximum)."
             )
 
 
