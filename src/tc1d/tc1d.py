@@ -2955,7 +2955,6 @@ def prep_model(params):
         # We know all batch model values are lists, check their lengths
         # If all are 1 then run in forward mode
         params["batch_mode"] = False
-        params["inverse_mode"] = False
 
         for key in batch_keys:
             if len(params[key]) != 1:
@@ -2969,15 +2968,14 @@ def prep_model(params):
                 f"Invalid run mode: {params['run_type']}. Must be one of {run_types}."
             )
 
-        # Further determine flags for run type
-        if params["batch_mode"]:
-            # Set inverse mode to true for NA and MCMC runs
-            if (params["run_type"].lower() == "na") or (
-                params["run_type"].lower() == "mcmc"
-            ):
-                params["inverse_mode"] = True
-            else:
-                params["run_type"] = "batch"
+        # Set inverse mode from the run type. This does not depend on whether
+        # batch parameters have multiple values, as the inverted parameters may
+        # be defined elsewhere (e.g., erosion stage ranges for ero_type 0).
+        params["inverse_mode"] = params["run_type"].lower() in ["na", "mcmc"]
+
+        # Run batch models if batch parameters have multiple values
+        if params["batch_mode"] and not params["inverse_mode"]:
+            params["run_type"] = "batch"
 
         # Create batch_mode output directories if using batch, NA, or MCMC mode
         if params["batch_mode"] or params["inverse_mode"]:
@@ -3897,10 +3895,6 @@ def log_likelihood(x):
 
     params_local = copy.deepcopy(global_params)
     params_local.update(new_dict)
-
-    # BG: Force MCMC/inverse context (safety belt)
-    params_local["inverse_mode"] = True
-    params_local["run_type"] = "mcmc"
 
     cleaned_dict = {k: float(v) for k, v in new_dict.items()}
     values_text = ", ".join(f"{k}={v:.4g}" for k, v in cleaned_dict.items())

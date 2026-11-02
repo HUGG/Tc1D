@@ -838,3 +838,76 @@ class TestConfigurationConsistency:
             "YAML schema keys not handled by _apply_yaml_to_args(): "
             f"{sorted(missing_from_apply)}"
         )
+
+
+class TestRunModeFlags:
+    """Check the run flags set by prep_model() for each run type."""
+
+    @staticmethod
+    def _run_cli(monkeypatch, tmp_path, run_type, erosion_model):
+        """Runs tc1d-cli with a minimal YAML file and returns the params passed
+        to the batch, NA, or MCMC driver (the drivers themselves are not run).
+        """
+        import yaml
+        import tc1d.tc1d as tc1d_module
+
+        config = {
+            "general": {
+                "run_type": run_type,
+                "inverse_mode": run_type in ["na", "mcmc"],
+            },
+            "erosion_model": erosion_model,
+        }
+        input_file = tmp_path / "input.yaml"
+        input_file.write_text(yaml.safe_dump(config))
+
+        captured = {}
+
+        def fake_driver(params, batch_params):
+            captured["params"] = params
+
+        for driver in ["batch_run", "batch_run_na", "batch_run_mcmc"]:
+            monkeypatch.setattr(tc1d_module, driver, fake_driver)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        tc1d_cli.main()
+        return captured["params"]
+
+    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
+    def test_inverse_mode_with_stage_ranges_only(self, monkeypatch, tmp_path, run_type):
+        """Inverse mode should be set for NA/MCMC runs even when the only
+        inverted parameters are ero_type 0 stage ranges."""
+        erosion_model = {
+            "ero_type": 0,
+            "ero_stages": [
+                {
+                    "type": "constant",
+                    "unit": "erosion_rate",
+                    "duration_myr": 50.0,
+                    "parameter1": [0.1, 1.0],
+                }
+            ],
+        }
+        params = self._run_cli(monkeypatch, tmp_path, run_type, erosion_model)
+
+        assert params["run_type"] == run_type
+        assert params["inverse_mode"] is True
+        assert params["batch_mode"] is False
+        assert (tmp_path / "csv").is_dir()
+
+    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
+    def test_inverse_mode_with_parameter_ranges(self, monkeypatch, tmp_path, run_type):
+        erosion_model = {"ero_type": 1, "ero_option1": [5.0, 20.0]}
+        params = self._run_cli(monkeypatch, tmp_path, run_type, erosion_model)
+
+        assert params["run_type"] == run_type
+        assert params["inverse_mode"] is True
+        assert params["batch_mode"] is True
+
+    def test_batch_run_is_not_inverse_mode(self, monkeypatch, tmp_path):
+        erosion_model = {"ero_type": 1, "ero_option1": [5.0, 10.0, 20.0]}
+        params = self._run_cli(monkeypatch, tmp_path, "batch", erosion_model)
+
+        assert params["run_type"] == "batch"
+        assert params["inverse_mode"] is False
+        assert params["batch_mode"] is True
