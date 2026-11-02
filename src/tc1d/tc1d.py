@@ -4409,6 +4409,9 @@ def run_model(params):
     # Overwritten below when ages are calculated from data files or past ages.
     surface_times_ma = np.array([0.0])
 
+    # Flag for whether measured ages are available (set when ages are calculated)
+    have_obs_ages = False
+
     if params["calc_ages"]:
         num_file_ages = 0
         ages_from_data_file = False
@@ -5561,6 +5564,7 @@ def run_model(params):
 
         depo_ages_in_file = False
         if (num_passed_ages > 0) or (num_file_ages > 0):
+            have_obs_ages = True
             # Create single arrays of ages for misfit calculation
             if ages_from_data_file:
                 pred_ages = pred_data_ages
@@ -6796,8 +6800,24 @@ def run_model(params):
                 f"{obs_zft_stdev:.4f},{misfit:.6f},{misfit_type},{misfit_ages}\n"
             )
 
+    # Summary age output compares measured and predicted ages, so it can only be
+    # written when ages are calculated and measured ages are provided
+    write_age_summary = params["write_age_output"]
+    if write_age_summary and not have_obs_ages:
+        if not params["calc_ages"]:
+            reason = "ages have not been calculated (calc_ages is False)"
+        else:
+            reason = "measured ages were not provided"
+        warnings.warn(
+            f"Summary age output requested, but {reason}. "
+            "The summary age file (age_summary.csv) will not be written.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        write_age_summary = False
+
     # Write summary age output to file
-    if params["write_age_output"]:
+    if write_age_summary:
         savefile = wd / "csv" / "age_summary.csv"
         # Use sample IDs from data file, or None otherwise
         if ages_from_data_file:
