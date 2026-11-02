@@ -31,6 +31,8 @@ except ImportError:
 YAML_ALLOWED_KEYS = {
     "general": {
         "run_type",
+        # batch_mode and inverse_mode are accepted for backwards compatibility,
+        # but are ignored (see _apply_yaml_to_args() function)
         "batch_mode",
         "inverse_mode",
         "verbose",
@@ -322,8 +324,6 @@ def _apply_yaml_to_args(args, y: dict) -> None:
     if isinstance(g, dict):
         for k in (
             "run_type",
-            "batch_mode",
-            "inverse_mode",
             "verbose",
             "debug",
             "echo_inputs",
@@ -336,8 +336,6 @@ def _apply_yaml_to_args(args, y: dict) -> None:
                 if k == "verbose":
                     setattr(args, k, int(g[k]))
                 elif k in (
-                    "batch_mode",
-                    "inverse_mode",
                     "debug",
                     "echo_inputs",
                     "no_echo_info",
@@ -347,6 +345,28 @@ def _apply_yaml_to_args(args, y: dict) -> None:
                     setattr(args, k, _as_bool(g[k]))
                 else:
                     setattr(args, k, g[k])
+
+        # batch_mode and inverse_mode are no longer used as inputs as the run mode is
+        # defined exclusively by run_type. However, they are still accepted for
+        # backwards compatibility with older input files (their values are ignored).
+        # A warning is only given when one of these values conflicts with run_type.
+        if "inverse_mode" in g or "batch_mode" in g:
+            run_type = str(args.run_type).strip().lower()
+        if "inverse_mode" in g and _as_bool(g["inverse_mode"]) != (
+            run_type in ("na", "mcmc")
+        ):
+            print(
+                f"tc1d-cli: warning: inverse_mode={_as_bool(g['inverse_mode'])} in the "
+                f"YAML input file will be ignored. The run mode is set by run_type "
+                f"({run_type!r}).",
+                file=sys.stderr,
+            )
+        if "batch_mode" in g and _as_bool(g["batch_mode"]) and run_type != "batch":
+            print(
+                "tc1d-cli: warning: batch_mode=True in the YAML input file will be ignored. "
+                f"The run mode is set by run_type ({run_type!r}).",
+                file=sys.stderr,
+            )
 
     # ---- geometry_time
     gt = y.get("geometry_time", {})
@@ -587,8 +607,6 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
     # Map: (yaml_section, yaml_key) -> argparse dest
     mapping = {
         ("general", "run_type"): "run_type",
-        ("general", "batch_mode"): "batch_mode",
-        ("general", "inverse_mode"): "inverse_mode",
         ("general", "verbose"): "verbose",
         ("general", "debug"): "debug",
         ("general", "echo_inputs"): "echo_inputs",
@@ -669,7 +687,7 @@ def validate_args(args, parser, y=None) -> None:
     """
 
     # -------------------------
-    # 1) run_type / inverse_mode / batch_mode
+    # 1) run_type
     # -------------------------
     run_type = str(args.run_type).strip().lower()
     valid_run_types = {"forward", "batch", "na", "mcmc"}
@@ -678,27 +696,9 @@ def validate_args(args, parser, y=None) -> None:
             f"--run-type must be one of {sorted(valid_run_types)}, got: {args.run_type!r}"
         )
 
-    # Define "truth" from run_type
-    # - forward/batch => inverse_mode should be False
-    # - na/mcmc       => inverse_mode should be True
-    if run_type in {"na", "mcmc"} and not args.inverse_mode:
-        parser.error(
-            f"Inconsistent config: run_type='{run_type}' requires inverse_mode=true"
-        )
-    if run_type in {"forward", "batch"} and args.inverse_mode:
-        parser.error(
-            f"Inconsistent config: run_type='{run_type}' is not compatible with inverse_mode=true"
-        )
-
     # verbose: values from YAML files are not checked by argparse
     if args.verbose not in (0, 1, 2):
         parser.error(f"verbose must be 0, 1, or 2, got: {args.verbose!r}")
-
-    # batch_mode: batch_mode only meaningful for batch runs
-    if args.batch_mode and run_type != "batch":
-        parser.error(
-            "Inconsistent config: batch_mode=true is only valid when run_type='batch'"
-        )
 
     # -------------------------
     # 2) Erosion model consistency (including YAML inversion ranges)
@@ -778,20 +778,6 @@ def main():
         help="Define type of run: forward, batch, na, or mcmc.",
         default="forward",
         type=str,
-    )
-    general.add_argument(
-        "--batch-mode",
-        dest="batch_mode",
-        help="Enable batch mode (no screen output, outputs writen to file)",
-        action="store_true",
-        default=False,
-    )
-    general.add_argument(
-        "--inverse-mode",
-        dest="inverse_mode",
-        help="Enable inverse mode",
-        action="store_true",
-        default=False,
     )
     general.add_argument(
         "-v",
@@ -1761,8 +1747,10 @@ def main():
         "invert_tt_plot": args.invert_tt_plot,
         "watch_it_exhume": args.watch_it_exhume,
         "run_type": args.run_type,
-        "batch_mode": args.batch_mode,
-        "inverse_mode": args.inverse_mode,
+        # Internal flags, set by prep_model() based on run_type
+        "batch_mode": False,
+        "inverse_mode": False,
+        # End internal flags
         "mantle_adiabat": mantle_adiabat,
         "solution_type": args.solution_type,
         "read_temps": args.read_temps,

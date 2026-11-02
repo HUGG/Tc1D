@@ -37,8 +37,6 @@
 # ==============================================================================
 general:
   run_type: "forward"          # Run mode: forward / batch / na / mcmc.
-  batch_mode: false            # Internal CLI batch flag; normally false for forward runs.
-  inverse_mode: false          # Must be true for NA/MCMC and false for forward/batch.
   verbose: 1                   # Screen output: 0 = minimal, 1 = standard, 2 = extended/debug.
   debug: false                 # Print additional debugging information (equivalent to verbose: 2).
 

@@ -37,8 +37,6 @@
 # ==============================================================================
 general:
   run_type: "mcmc"          # forward / batch / na / mcmc
-  batch_mode: false
-  inverse_mode: true
   debug: false
 
   # Screen output toggles

@@ -764,8 +764,6 @@ class TestConfigurationConsistency:
         # Parameters intentionally created only by the CLI.
         cli_only = {
             "cmd_line_call",
-            "batch_mode",
-            "inverse_mode",
             "ero_stages_template",
         }
 
@@ -846,9 +844,10 @@ class TestRunModeFlags:
     """Check the run flags set by prep_model() for each run type."""
 
     @staticmethod
-    def _run_cli(monkeypatch, tmp_path, run_type, erosion_model):
+    def _run_cli(monkeypatch, tmp_path, run_type, erosion_model, general=None):
         """Runs tc1d-cli with a minimal YAML file and returns the params passed
         to the batch, NA, or MCMC driver (the drivers themselves are not run).
+        Additional values for the YAML general section can be given in `general`.
         """
         import yaml
         import tc1d.tc1d as tc1d_module
@@ -856,7 +855,7 @@ class TestRunModeFlags:
         config = {
             "general": {
                 "run_type": run_type,
-                "inverse_mode": run_type in ["na", "mcmc"],
+                **(general or {}),
             },
             "erosion_model": erosion_model,
         }
@@ -976,3 +975,54 @@ class TestCheckRunType:
         # Inversions are only supported using tc1d-cli
         with pytest.raises(ValueError, match="only supported using tc1d-cli"):
             prep_model(init_params(run_type="na"))
+
+
+class TestDeprecatedModeFlags:
+    """batch_mode and inverse_mode are ignored, but accepted in YAML input files
+    for backwards compatibility."""
+
+    RANGES = {"ero_type": 1, "ero_option1": [5.0, 20.0]}
+
+    @pytest.mark.parametrize(
+        "run_type, general",
+        [
+            ("mcmc", {"batch_mode": False, "inverse_mode": True}),
+            ("na", {"batch_mode": False, "inverse_mode": True}),
+            ("batch", {"batch_mode": True, "inverse_mode": False}),
+            ("batch", {"batch_mode": False, "inverse_mode": False}),
+        ],
+    )
+    def test_matching_values_are_accepted_silently(
+        self, monkeypatch, tmp_path, capsys, run_type, general
+    ):
+        params = TestRunModeFlags._run_cli(
+            monkeypatch, tmp_path, run_type, self.RANGES, general
+        )
+        assert params["run_type"] == run_type
+        assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
+        assert "is ignored" not in capsys.readouterr().err
+
+    @pytest.mark.parametrize(
+        "run_type, general, flag",
+        [
+            ("mcmc", {"inverse_mode": False}, "inverse_mode=False"),
+            ("batch", {"inverse_mode": True}, "inverse_mode=True"),
+            ("mcmc", {"batch_mode": True}, "batch_mode=True"),
+        ],
+    )
+    def test_mismatched_values_are_ignored_with_warning(
+        self, monkeypatch, tmp_path, capsys, run_type, general, flag
+    ):
+        params = TestRunModeFlags._run_cli(
+            monkeypatch, tmp_path, run_type, self.RANGES, general
+        )
+        assert params["run_type"] == run_type
+        assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
+        err = capsys.readouterr().err
+        assert flag in err and "is ignored" in err
+
+    @pytest.mark.parametrize("option", ["--inverse-mode", "--batch-mode"])
+    def test_cli_options_removed(self, monkeypatch, option):
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--run-type", "mcmc", option])
+        with pytest.raises(SystemExit):
+            tc1d_cli.main()
