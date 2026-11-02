@@ -2847,6 +2847,76 @@ def create_output_directory(wd, dir=""):
     return newdir
 
 
+def check_run_type(params: dict, batch_params: dict) -> None:
+    """Checks that the run type is consistent with the model parameter values.
+
+    - forward: all parameters must have a single value
+    - batch: at least one parameter must have more than one value
+    - na/mcmc: at least one parameter range must be given to invert, and each
+      range must have two values (minimum and maximum)
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+    batch_params : dict
+        Dictionary of parameters that can have multiple values (as lists).
+
+    Raises
+    ------
+    ValueError
+        If the run type is not valid or does not match the parameter values.
+    """
+    run_type = params["run_type"].lower()
+    run_types = ["forward", "batch", "na", "mcmc"]
+    if run_type not in run_types:
+        raise ValueError(
+            f"Invalid run type: {params['run_type']}. Must be one of {run_types}."
+        )
+
+    # Find parameters with more than one value
+    multi_value_params = [key for key, value in batch_params.items() if len(value) > 1]
+
+    if run_type == "forward" and len(multi_value_params) > 0:
+        raise ValueError(
+            "Run type 'forward' requires a single value for each parameter but "
+            f"multiple values were given for: {', '.join(multi_value_params)}. "
+            "Use run type 'batch' to run a model for each combination of a list of values."
+        )
+
+    if run_type == "batch" and len(multi_value_params) == 0:
+        raise ValueError(
+            "Run type 'batch' requires more than one value for at least one parameter. "
+            "Use run type 'forward' to run a single model."
+        )
+
+    if run_type in ["na", "mcmc"]:
+        # Parameter ranges must be given as [minimum, maximum]
+        for key in multi_value_params:
+            if len(batch_params[key]) != 2:
+                raise ValueError(
+                    f"Run type '{run_type}' requires two parameter values in a range "
+                    f"(minimum and maximum), but {key} has "
+                    f"{len(batch_params[key])} values."
+                )
+
+        # Erosion stage ranges for ero_type 0 can also be inverted
+        ero_type = params["ero_type"]
+        if isinstance(ero_type, (list, tuple)):
+            ero_type = ero_type[0]
+        stage_ranges = {}
+        if int(ero_type) == 0:
+            template = params.get("ero_stages_template", None)
+            stage_ranges.update(_collect_ero_stage_duration_bounds(template))
+            stage_ranges.update(_collect_ero_stage_param_bounds(template))
+
+        if len(multi_value_params) == 0 and len(stage_ranges) == 0:
+            raise ValueError(
+                f"Run type '{run_type}' requires at least one parameter range to "
+                "run an inversion. This should be given as two values: (minimum and maximum)."
+            )
+
+
 def prep_model(params):
     """Prepares models to be run as single models or in batch mode.
 
@@ -2961,21 +3031,13 @@ def prep_model(params):
                 params["batch_mode"] = True
             batch_params[key] = params[key]
 
-        # Check to ensure a suitable run mode has been defined
-        run_types = ["forward", "batch", "na", "mcmc"]
-        if params["run_type"].lower() not in run_types:
-            raise ValueError(
-                f"Invalid run mode: {params['run_type']}. Must be one of {run_types}."
-            )
+        # Check that the run type matches the parameter values
+        check_run_type(params, batch_params)
 
         # Set inverse mode from the run type. This does not depend on whether
         # batch parameters have multiple values, as the inverted parameters may
         # be defined elsewhere (e.g., erosion stage ranges for ero_type 0).
         params["inverse_mode"] = params["run_type"].lower() in ["na", "mcmc"]
-
-        # Run batch models if batch parameters have multiple values
-        if params["batch_mode"] and not params["inverse_mode"]:
-            params["run_type"] = "batch"
 
         # Create batch_mode output directories if using batch, NA, or MCMC mode
         if params["batch_mode"] or params["inverse_mode"]:
@@ -3007,7 +3069,15 @@ def prep_model(params):
                 if len(params[key]) != 1:
                     params["batch_mode"] = True
                 batch_params[key] = params[key]
-            # TODO: Raise exception here? Batch and inverse mode not supported, right?
+
+        # NA and MCMC inversions are only supported using tc1d-cli
+        if params["run_type"].lower() in ["na", "mcmc"]:
+            raise ValueError(
+                f"Run type '{params['run_type']}' is only supported using tc1d-cli."
+            )
+
+        # Check that the run type matches the parameter values
+        check_run_type(params, batch_params)
 
         # TODO: Remove stuff below except run_model()?
         # Create batch_mode output directories if using batch mode

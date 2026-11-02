@@ -18,7 +18,9 @@ from tc1d.tc1d import (
     erosion_exponential,
     calculate_erosion_rate,
     calculate_exhumation_magnitude,
+    check_run_type,
     init_params,
+    prep_model,
 )
 from tc1d.tc1d_cli import (
     _apply_yaml_to_args,
@@ -911,3 +913,66 @@ class TestRunModeFlags:
         assert params["run_type"] == "batch"
         assert params["inverse_mode"] is False
         assert params["batch_mode"] is True
+
+
+class TestCheckRunType:
+    """Check that run types that do not match the parameter values are caught."""
+
+    STAGES_WITH_RANGE = [
+        {
+            "type": "constant",
+            "unit": "erosion_rate",
+            "duration_myr": 50.0,
+            "parameter1": [0.1, 1.0],
+        }
+    ]
+
+    @staticmethod
+    def _params(run_type, ero_type=1, ero_stages_template=None):
+        params = init_params(run_type=run_type, ero_type=ero_type)
+        params["ero_stages_template"] = ero_stages_template
+        return params
+
+    def test_invalid_run_type(self):
+        with pytest.raises(ValueError, match="Invalid run type"):
+            check_run_type(self._params("inverse"), {"ero_option1": [5.0]})
+
+    def test_forward(self):
+        check_run_type(self._params("forward"), {"ero_option1": [5.0]})
+        with pytest.raises(ValueError, match="Run type 'forward'.*ero_option1"):
+            check_run_type(self._params("forward"), {"ero_option1": [5.0, 10.0]})
+
+    def test_batch(self):
+        check_run_type(self._params("batch"), {"ero_option1": [5.0, 10.0, 20.0]})
+        with pytest.raises(ValueError, match="Run type 'batch' requires"):
+            check_run_type(self._params("batch"), {"ero_option1": [5.0]})
+
+    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
+    def test_inversions(self, run_type):
+        # Parameter range
+        check_run_type(self._params(run_type), {"ero_option1": [5.0, 10.0]})
+
+        # Erosion stage range only (ero_type 0)
+        check_run_type(
+            self._params(run_type, 0, self.STAGES_WITH_RANGE), {"ero_option1": [0.0]}
+        )
+
+        # Nothing to invert
+        with pytest.raises(ValueError, match="at least one parameter range"):
+            check_run_type(self._params(run_type), {"ero_option1": [5.0]})
+
+        # Range with more than two values
+        with pytest.raises(ValueError, match="ero_option1 has 3 values"):
+            check_run_type(self._params(run_type), {"ero_option1": [5.0, 10.0, 20.0]})
+
+    def test_prep_model_function_call(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+
+        # Multiple values require run_type="batch"
+        params = init_params(run_type="forward", ero_option1=[5.0, 10.0])
+        with pytest.raises(ValueError, match="Run type 'forward'"):
+            prep_model(params)
+
+        # Inversions are only supported using tc1d-cli
+        with pytest.raises(ValueError, match="only supported using tc1d-cli"):
+            prep_model(init_params(run_type="na"))
