@@ -103,6 +103,9 @@ The following articles may also be useful to cite when sharing results from T<su
 
 We acknowledge Saska Dönges from the [University of Helsinki Research Software Engineering (UH-RSE)](https://wiki.helsinki.fi/xwiki/bin/view/Research%20Software%20Engineering%20group/) for scientific computing support.
 
+Much of T<sub>c</sub>1D was written by humans, however some modifications have been included based on suggestions from [Claude](https://claude.com/) using the Opus 5.5 model.
+In all cases, these modifications were carefully reviewed and often modified prior to being merged into T<sub>c</sub>1D.
+
 ## License
 
 The T<sub>c</sub>1D is licensed under the GNU General Public License version 3: [T<sub>c</sub>1D software license](LICENSE)
