@@ -701,6 +701,19 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     return write_increment
 
 
+def get_history_indices(n_points: int, write_increment: int) -> list:
+    """Returns the indices of the thermal history points to use for output and
+    age calculations, starting with the youngest point.
+
+    Every nth point is used based on the write_increment, and the oldest point is
+    always included so that the full history is covered.
+    """
+    indices = list(range(n_points - 1, -1, -write_increment))
+    if indices[-1] != 0:
+        indices.append(0)
+    return indices
+
+
 def save_tt_history(
     params: dict, tt_filename: Path, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
@@ -716,7 +729,7 @@ def save_tt_history(
         writer = csv.writer(csvfile, delimiter=",", lineterminator="\n")
 
         # Write time-temperature history in reverse order!
-        for i in range(-1, -(len(time_ma) + 1), -write_increment):
+        for i in get_history_indices(len(time_ma), write_increment):
             writer.writerow([time_ma[i], temp_history[i]])
 
         # Write fake times if time history padding is enabled
@@ -727,8 +740,10 @@ def save_tt_history(
                 time_ma.max() + params["pad_time"] + 0.1,
                 1.0,
             )
-            for pad_time in pad_times:
-                writer.writerow([pad_time, temp_history[i]])
+            # Only add time padding points that are older than the oldest point in the
+            # thermal history, using the temperature of that oldest point
+            for pad_time in pad_times[pad_times > time_ma[0]]:
+                writer.writerow([pad_time, temp_history[0]])
 
 
 def save_ttdp_history(
@@ -751,7 +766,7 @@ def save_ttdp_history(
         # Write header
         writer.writerow(["Time (Ma)", "Temperature (C)", "Depth (m)", "Pressure (MPa)"])
         # Write time-temperature history in reverse order!
-        for i in range(-1, -(len(time_ma) + 1), -write_increment):
+        for i in get_history_indices(len(time_ma), write_increment):
             writer.writerow(
                 [
                     time_ma[i],
@@ -847,25 +862,25 @@ def calculate_ages_and_tcs(
     # Extract time-temperature path for age calculations (youngest point first)
     time_ma = tt_hist_to_ma(time_history)
     write_increment = get_write_increment(params, time_ma)
-    ti_hist = []
-    te_hist = []
+    time_hist = []
+    temp_hist = []
 
-    for i in range(len(time_ma) - 1, -1, -write_increment):
-        ti_hist.append(time_ma[i])
-        te_hist.append(temp_history[i])
+    for i in get_history_indices(len(time_ma), write_increment):
+        time_hist.append(time_ma[i])
+        temp_hist.append(temp_history[i])
     if params["pad_time"] > 0.0:
         pad_times = np.arange(
             time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
         )
         # Only add padding points older than the oldest point in the path, as
         # repeated time points cause the RDAAM calculation to fail
-        for pad_time in pad_times[pad_times > ti_hist[-1]]:
-            ti_hist.append(pad_time)
-            te_hist.append(temp_history[i])
+        for pad_time in pad_times[pad_times > time_hist[-1]]:
+            time_hist.append(pad_time)
+            temp_hist.append(temp_hist[-1])
 
     ahe_age, corr_ahe_age, zhe_age, corr_zhe_age = he_ages(
-        ti_hist,
-        te_hist,
+        time_hist,
+        temp_hist,
         ap_rad=params["ap_rad"],
         ap_uranium=params["ap_uranium"],
         ap_thorium=params["ap_thorium"],
@@ -875,7 +890,7 @@ def calculate_ages_and_tcs(
     )
 
     if params["ketch_aft"]:
-        aft_age, aft_mean_ftl = ft_ages(ti_hist, te_hist, write_track_lengths)
+        aft_age, aft_mean_ftl = ft_ages(time_hist, temp_hist, write_track_lengths)
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
@@ -4352,6 +4367,26 @@ def batch_run_mcmc(params, batch_params):
     )
 
 
+def get_particle_temp_and_pressure(
+    depth: float,
+    moho_depth: float,
+    fixed_moho: bool,
+    interp_temp,
+    interp_pressure,
+) -> Tuple[float, float]:
+    """Returns the temperature and pressure for a tracked particle at depth.
+
+    Particles within 5 cm of the surface are assigned a surface temperature and
+    zero pressure. For fixed-Moho models, particles below the Moho are assigned the
+    Moho temperature and pressure.
+    """
+    if abs(depth) <= 5.0e-2:
+        return 0.0, 0.0
+    if depth > moho_depth and fixed_moho:
+        return float(interp_temp(moho_depth)), float(interp_pressure(moho_depth))
+    return float(interp_temp(depth)), float(interp_pressure(depth))
+
+
 def calculate_num_steps(total_time: float, dt: float, tol: float = 1.0e-6) -> int:
     """Returns the number of time steps of length dt needed to cover total_time.
 
@@ -4697,10 +4732,11 @@ def run_model(params):
     for i in range(len(surface_times_ma)):
         time_inc_now = myr2sec(params["t_total"] - surface_times_ma[i])
         nt_now = min(calculate_num_steps(time_inc_now, dt), nt)
-        depth_hists.append(np.zeros(nt_now))
-        pressure_hists.append(np.zeros(nt_now))
-        temp_hists.append(np.zeros(nt_now))
-        time_hists.append(np.zeros(nt_now))
+        # Histories include the initial state plus the state after each time step
+        depth_hists.append(np.zeros(nt_now + 1))
+        pressure_hists.append(np.zeros(nt_now + 1))
+        temp_hists.append(np.zeros(nt_now + 1))
+        time_hists.append(np.zeros(nt_now + 1))
         nt_surf_times[i] = nt_now
 
     # Calculate mantle adiabat (or fill with dummy values)
@@ -5085,6 +5121,22 @@ def run_model(params):
             disable=params["verbose"] != 1,
         )
 
+        # Store initial particle states (model time 0) as the first history points
+        if j == num_pass - 1:
+            interp_temp_start = interp1d(x, temp_prev)
+            density_start = update_density(rho, alphav, temp_prev)
+            interp_pressure_start = interp1d(x, calculate_pressure(density_start, dx))
+            for i in range(len(surface_times_ma)):
+                time_hists[i][0] = 0.0
+                depth_hists[i][0] = depths[i]
+                temp_hists[i][0], pressure_hists[i][0] = get_particle_temp_and_pressure(
+                    depths[i],
+                    moho_depth,
+                    params["fixed_moho"],
+                    interp_temp_start,
+                    interp_pressure_start,
+                )
+
         # Start main time loop
         while idx < nt:
             if not pbar.disable:
@@ -5326,30 +5378,20 @@ def run_model(params):
                 # Loop over all times when particles reach the surface
                 for i in range(len(surface_times_ma)):
                     if idx < nt_surf_times[i]:
-                        # Store depth and time histories
-                        depth_hists[i][idx] = depths[i]
-                        time_hists[i][idx] = curtime
-
-                        # Store temperature histories
-                        # Check whether point is within 10 cm of the surface
-                        if abs(depths[i]) <= 5.0e-2:
-                            temp_hists[i][idx] = 0.0
-                        # Check whether point is below the Moho for fixed-moho models
-                        # If so, set temperature to Moho temperature
-                        elif depths[i] > moho_depth and params["fixed_moho"]:
-                            temp_hists[i][idx] = interp_temp_new(moho_depth)
-                        # Otherwise, record temperature at current depth
-                        else:
-                            temp_hists[i][idx] = interp_temp_new(depths[i])
-
-                        # Store pressure history
-                        # Check whether point is within 10 cm of the surface
-                        if abs(depths[i]) <= 5.0e-2:
-                            pressure_hists[i][idx] = 0.0
-                        elif depths[i] > moho_depth and params["fixed_moho"]:
-                            pressure_hists[i][idx] = interp_pressure(moho_depth)
-                        else:
-                            pressure_hists[i][idx] = interp_pressure(depths[i])
+                        # Store state at the end of this time step
+                        # (index 0 holds the initial state)
+                        ih = idx + 1
+                        depth_hists[i][ih] = depths[i]
+                        time_hists[i][ih] = (idx + 1) * dt
+                        temp_hists[i][ih], pressure_hists[i][ih] = (
+                            get_particle_temp_and_pressure(
+                                depths[i],
+                                moho_depth,
+                                params["fixed_moho"],
+                                interp_temp_new,
+                                interp_pressure,
+                            )
+                        )
 
                         # Print array values if debugging is on
                         if params["verbose"] >= 2:
@@ -5361,16 +5403,16 @@ def run_model(params):
                                 f"Time span for surface time {i}: {myr2sec(params['t_total'] - surface_times_ma[i]):.2f} s ({params['t_total'] - surface_times_ma[i]} Myr)"
                             )
                             print(
-                                f"Depth for surface time {i}: {depth_hists[i][idx] / kilo2base(1):.2f} km"
+                                f"Depth for surface time {i}: {depth_hists[i][idx + 1] / kilo2base(1):.2f} km"
                             )
                             print(
-                                f"Pressure for surface time {i}: {pressure_hists[i][idx] * micro2base(1):.2f} MPa"
+                                f"Pressure for surface time {i}: {pressure_hists[i][idx + 1] * micro2base(1):.2f} MPa"
                             )
                             print(
-                                f"Time for surface time {i}: {time_hists[i][idx] / myr2sec(1):.2f} Myr"
+                                f"Time for surface time {i}: {time_hists[i][idx + 1] / myr2sec(1):.2f} Myr"
                             )
                             print(
-                                f"Temp for surface time {i}: {temp_hists[i][idx]:.1f} °C"
+                                f"Temp for surface time {i}: {temp_hists[i][idx + 1]:.1f} °C"
                             )
 
                 if params["plot_results"] and params["watch_it_exhume"]:
@@ -5385,8 +5427,8 @@ def run_model(params):
 
                         # Update thermal history plot
                         thist_line.set_data(
-                            (t_total - time_hists[-1][:idx]) / myr2sec(1.0),
-                            temp_hists[-1][:idx],
+                            (t_total - time_hists[-1][: idx + 2]) / myr2sec(1.0),
+                            temp_hists[-1][: idx + 2],
                         )
 
                         # Rescale axes
@@ -5654,20 +5696,20 @@ def run_model(params):
                     # Extract time-temperature path for this history (youngest point first)
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
                     write_increment = get_write_increment(params, time_ma)
-                    ti_path = []
-                    te_path = []
-                    for j in range(len(time_ma) - 1, -1, -write_increment):
-                        ti_path.append(time_ma[j])
-                        te_path.append(temp_hists[tt_hist_index][j])
+                    time_path = []
+                    temp_path = []
+                    for j in get_history_indices(len(time_ma), write_increment):
+                        time_path.append(time_ma[j])
+                        temp_path.append(temp_hists[tt_hist_index][j])
                     if params["pad_time"] > 0.0:
                         pad_times = np.arange(
                             time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
                         )
                         # Only add padding points older than the oldest point in the
                         # path, using the temperature of that oldest point
-                        for pad_time in pad_times[pad_times > ti_path[-1]]:
-                            ti_path.append(pad_time)
-                            te_path.append(temp_hists[tt_hist_index][j])
+                        for pad_time in pad_times[pad_times > time_path[-1]]:
+                            time_path.append(pad_time)
+                            temp_path.append(temp_path[-1])
 
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now
@@ -5678,8 +5720,8 @@ def run_model(params):
                 if obs_age_type_file[i] == "AHe":
                     # Calculate AHe age
                     _, corr_ahe_age, _, _ = he_ages(
-                        ti_path,
-                        te_path,
+                        time_path,
+                        temp_path,
                         ap_rad=obs_radius_file[i],
                         ap_uranium=obs_u_file[i],
                         ap_thorium=obs_th_file[i],
@@ -5710,8 +5752,8 @@ def run_model(params):
                 elif obs_age_type_file[i] == "ZHe":
                     # Calculate ZHe age
                     _, _, _, corr_zhe_age = he_ages(
-                        ti_path,
-                        te_path,
+                        time_path,
+                        temp_path,
                         ap_rad=params["ap_rad"],
                         ap_uranium=params["ap_uranium"],
                         ap_thorium=params["ap_thorium"],
@@ -5887,6 +5929,8 @@ def run_model(params):
 
         # Calculate model time in Ma for final plots
         time_ma = tt_hist_to_ma(time_hists[-1])
+        # Times at the end of each time step, for per-step values (e.g., vx_hist)
+        step_time_ma = time_ma[1:]
 
         # Plot the final temperature field
         xmin = params["temp_surf"]
@@ -5906,7 +5950,7 @@ def run_model(params):
 
             # Update thermal history plot
             thist_line.set_data(
-                (t_total - time_hists[-1][:idx]) / myr2sec(1.0), temp_hists[-1][:idx]
+                (t_total - time_hists[-1]) / myr2sec(1.0), temp_hists[-1]
             )
 
             # Rescale axes
@@ -6151,9 +6195,9 @@ def run_model(params):
             # ax1.grid()
 
             if params["plot_ma"]:
-                plot_time = params["t_total"] - time_hists[-1] / myr2sec(1)
+                plot_time = params["t_total"] - time_hists[-1][1:] / myr2sec(1)
             else:
-                plot_time = time_hists[-1] / myr2sec(1)
+                plot_time = time_hists[-1][1:] / myr2sec(1)
             ax2.plot(plot_time, vx_hist / mmyr2ms(1))
             ax2.fill_between(
                 plot_time,
@@ -6231,7 +6275,7 @@ def run_model(params):
                 )
             if params["plot_fault_depth_history"]:
                 ax1b.plot(
-                    time_ma,
+                    step_time_ma,
                     fault_depth_history / kilo2base(1),
                     "-.",
                     color="darkgray",
@@ -6583,9 +6627,9 @@ def run_model(params):
                 ax1.legend()
 
             if not params["plot_peclet_number"]:
-                ax2.plot(time_ma, vx_hist / mmyr2ms(1))
+                ax2.plot(step_time_ma, vx_hist / mmyr2ms(1))
                 ax2.fill_between(
-                    time_ma,
+                    step_time_ma,
                     vx_hist / mmyr2ms(1),
                     0.0,
                     alpha=0.33,
@@ -6594,13 +6638,13 @@ def run_model(params):
                 )
             else:
                 ax2.plot(
-                    time_ma,
+                    step_time_ma,
                     vx_hist / mmyr2ms(1),
                     color="dimgray",
                     label=f"Erosion rate (Total exhumation: {exhumation_magnitude:.2f} km)",
                 )
                 ax2b.plot(
-                    time_ma, peclet, "--", color="darkgray", label="Péclet number"
+                    step_time_ma, peclet, "--", color="darkgray", label="Péclet number"
                 )
             ax2.set_xlabel("Time (Ma)")
             if not params["plot_peclet_number"]:

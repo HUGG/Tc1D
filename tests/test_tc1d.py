@@ -20,6 +20,7 @@ from tc1d.tc1d import (
     calculate_exhumation_magnitude,
     calculate_num_steps,
     check_run_type,
+    get_history_indices,
     init_params,
     prep_model,
     set_run_flags,
@@ -1097,3 +1098,25 @@ class TestTimeSteps:
     def test_past_age_increment_not_dividing_time_steps(self, monkeypatch, tmp_path):
         # Past ages every 0.3 Myr are not a whole number of 5000 year time steps
         self._run_forward(monkeypatch, tmp_path, dt=5000.0, past_age_increment=0.3)
+
+
+class TestThermalHistories:
+    def test_get_history_indices(self):
+        # Youngest point first, every write_increment-th point, oldest included
+        assert get_history_indices(11, 2) == [10, 8, 6, 4, 2, 0]
+        assert get_history_indices(10, 2) == [9, 7, 5, 3, 1, 0]
+        assert get_history_indices(500, 50)[0] == 499
+        assert get_history_indices(500, 50)[-1] == 0
+        assert get_history_indices(1, 2) == [0]
+
+    def test_history_covers_full_model_time(self, monkeypatch, tmp_path):
+        # 1 Myr with 200 time steps and 2 km of erosion
+        history = TestTimeSteps._run_forward(monkeypatch, tmp_path, dt=5000.0)
+
+        # Youngest point (first row) is at the surface at 0 Ma
+        assert history[0, 0] == pytest.approx(0.0)
+        assert history[0, 2] == pytest.approx(0.0, abs=1.0)
+
+        # Oldest point (last row) is the initial state at the start of the model
+        assert history[-1, 0] == pytest.approx(1.0)
+        assert history[-1, 2] == pytest.approx(2000.0, rel=1.0e-6)
