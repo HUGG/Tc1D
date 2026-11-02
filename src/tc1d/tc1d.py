@@ -4990,7 +4990,9 @@ def run_model(params):
                     fw_reference_frame,
                     mmyr2ms(params["mantle_velocity"]),
                 )
-                move_particles = surface_times >= curtime
+                # Only move particles that have not yet reached the surface, i.e.,
+                # whose surface time is after the start of this time step
+                move_particles = (nt - 1 - idx) < nt_surf_times
                 depths[move_particles] -= vx_pts[move_particles] * -dt
                 # Store exhumation velocity history for particle reaching surface at 0 Ma
                 vx_hist[idx] = vx_pts[-1]
@@ -5374,7 +5376,8 @@ def run_model(params):
                     mmyr2ms(params["mantle_velocity"]),
                 )
                 # Determine which particle positions to update
-                move_particles = surface_times >= curtime
+                # Only move particles that have not yet reached the surface
+                move_particles = idx < nt_surf_times
                 depths[move_particles] -= vx_pts[move_particles] * dt
 
                 # Loop over all times when particles reach the surface

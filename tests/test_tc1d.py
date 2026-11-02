@@ -1150,3 +1150,26 @@ class TestParticleTempAndPressure:
         )
         assert temp == pytest.approx(700.0)
         assert pressure == pytest.approx(1.05e9)
+
+
+class TestPastAges:
+    def test_past_sample_reaches_surface_at_surface_time(self, monkeypatch, tmp_path):
+        # 1 Myr model with 2 km of erosion and a past surface time of 0.5 Ma
+        TestTimeSteps._run_forward(
+            monkeypatch, tmp_path, dt=5000.0, past_age_increment=0.5
+        )
+        history = np.loadtxt(
+            tmp_path / "csv" / "time_temp_depth_pressure_hist_0.5Ma.csv",
+            delimiter=",",
+            skiprows=1,
+        )
+
+        # Youngest point (first row) is at the surface at the surface time
+        # (times in the history are relative to the surface time)
+        assert history[0, 0] == pytest.approx(0.0)
+        assert history[0, 2] == pytest.approx(0.0, abs=1.0)
+
+        # Oldest point is at the start of the model, 0.5 Myr before the
+        # surface time, at the depth eroded in that time (1 km)
+        assert history[-1, 0] == pytest.approx(0.5)
+        assert history[-1, 2] == pytest.approx(1000.0, rel=1.0e-6)
