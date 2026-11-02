@@ -24,6 +24,7 @@ from tc1d.tc1d import (
     get_particle_temp_and_pressure,
     init_params,
     prep_model,
+    run_model,
     set_run_flags,
 )
 from tc1d.tc1d_cli import (
@@ -1173,3 +1174,25 @@ class TestPastAges:
         # surface time, at the depth eroded in that time (1 km)
         assert history[-1, 0] == pytest.approx(0.5)
         assert history[-1, 2] == pytest.approx(1000.0, rel=1.0e-6)
+
+    def test_measured_ages_use_present_day_history(self, monkeypatch, tmp_path):
+        """Measured ages without depositional ages should be compared to the
+        present-day sample, also when past ages are calculated."""
+        monkeypatch.chdir(tmp_path)
+        obs_age_file = Path(__file__).parent.parent / "data" / "sample_data.csv"
+
+        def misfit(**kwargs):
+            params = init_params(
+                time=2.0,
+                dt=5000.0,
+                nx=21,
+                ero_type=1,
+                ero_option1=4.0,
+                obs_age_file=str(obs_age_file),
+                plot_results=False,
+                verbose=0,
+                **kwargs,
+            )
+            return run_model(params)
+
+        assert misfit(past_age_increment=0.5) == pytest.approx(misfit())

@@ -5690,14 +5690,24 @@ def run_model(params):
             pred_data_temps = np.zeros(num_file_ages)
 
             # Loop over all ages in age data file can calculate predicted age equivalents
-            tt_hist_index = -1
-            depo_age_old = 5000.0
+            tt_hist_index = None
             for i in range(len(obs_ages_file)):
-                # Increment time-temperature history index whenever it changes, write new tt-history file
                 depo_age_now = obs_depo_age_file[i]
 
-                if depo_age_now < depo_age_old:
-                    tt_hist_index += 1
+                # Find the thermal history for the particle reaching the surface at
+                # the depositional age of this sample (0 Ma for the present day)
+                matches = np.flatnonzero(
+                    np.isclose(surface_times_ma, depo_age_now, rtol=0.0, atol=1.0e-6)
+                )
+                if len(matches) == 0:
+                    raise ValueError(
+                        f"No thermal history found for the depositional age of "
+                        f"{depo_age_now} Ma (age data file line {i + 1})."
+                    )
+
+                # Extract the time-temperature path whenever the history changes
+                if matches[0] != tt_hist_index:
+                    tt_hist_index = int(matches[0])
 
                     # Extract time-temperature path for this history (youngest point first)
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
@@ -5719,9 +5729,6 @@ def run_model(params):
 
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now
-
-                    # Update depositional age reference
-                    depo_age_old = depo_age_now
 
                 if obs_age_type_file[i] == "AHe":
                     # Calculate AHe age
