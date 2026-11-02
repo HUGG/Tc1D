@@ -1000,7 +1000,7 @@ class TestDeprecatedModeFlags:
         )
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
-        assert "is ignored" not in capsys.readouterr().err
+        assert "will be ignored" not in capsys.readouterr().err
 
     @pytest.mark.parametrize(
         "run_type, general, flag",
@@ -1019,7 +1019,7 @@ class TestDeprecatedModeFlags:
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
         err = capsys.readouterr().err
-        assert flag in err and "is ignored" in err
+        assert flag in err and "will be ignored" in err
 
     @pytest.mark.parametrize("option", ["--inverse-mode", "--batch-mode"])
     def test_cli_options_removed(self, monkeypatch, option):
