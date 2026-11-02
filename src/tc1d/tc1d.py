@@ -4352,6 +4352,19 @@ def batch_run_mcmc(params, batch_params):
     )
 
 
+def calculate_num_steps(total_time: float, dt: float, tol: float = 1.0e-6) -> int:
+    """Returns the number of time steps of length dt needed to cover total_time.
+
+    If dt divides evenly into total_time (within a relative tolerance of tol time steps),
+    that number of steps is returned. Otherwise, the number is rounded up so the steps
+    cover the full duration.
+    """
+    ratio = total_time / dt
+    if abs(ratio - round(ratio)) <= tol:
+        return int(round(ratio))
+    return int(np.ceil(ratio))
+
+
 def run_model(params):
     # Say hello
     if params["verbose"] >= 1:
@@ -4380,8 +4393,18 @@ def run_model(params):
     # Calculate node spacing
     dx = max_depth / (params["nx"] - 1)  # m
 
-    # Calculate time step
-    nt = int(np.floor(t_total / dt))  # -
+    # Calculate number of time steps
+    # Adjust the time step slightly if needed so that nt * dt = t_total
+    nt = calculate_num_steps(t_total, dt)
+    if not np.isclose(nt * dt, t_total, rtol=0.0, atol=1.0e-6 * dt):
+        dt_adjusted = t_total / nt
+        warnings.warn(
+            f"Time step adjusted from {dt / yr2sec(1):.4f} to "
+            f"{dt_adjusted / yr2sec(1):.4f} years so that the model duration is a whole "
+            f"number of time steps ({nt}).",
+            stacklevel=2,
+        )
+        dt = dt_adjusted
 
     # Create arrays to hold temperature fields
     temp_new = np.zeros(params["nx"])
@@ -4670,10 +4693,10 @@ def run_model(params):
     vx_pts = np.zeros(len(surface_times_ma))
 
     # Create empty numpy arrays for depth, temperature, and time histories
-    nt_surf_times = np.zeros(len(surface_times_ma))
+    nt_surf_times = np.zeros(len(surface_times_ma), dtype=int)
     for i in range(len(surface_times_ma)):
         time_inc_now = myr2sec(params["t_total"] - surface_times_ma[i])
-        nt_now = int(np.floor(time_inc_now / dt))
+        nt_now = min(calculate_num_steps(time_inc_now, dt), nt)
         depth_hists.append(np.zeros(nt_now))
         pressure_hists.append(np.zeros(nt_now))
         temp_hists.append(np.zeros(nt_now))
@@ -4910,11 +4933,12 @@ def run_model(params):
 
         # Find starting depth if using only a one-pass erosion type
         if num_pass == 1:
-            # Loop over all times and use -dt to run erosion model backwards
+            # Loop over all times and use increment time backwards to run erosion model
+            # in reverse
             # TODO: Make this a function???
-            while curtime > 0.0:
-                # Increment current time
-                curtime -= dt
+            while idx < nt:
+                # Calculate current time (start of the time step being reversed)
+                curtime = (nt - 1 - idx) * dt
 
                 # Find particle velocities and move incrementally to starting depths
                 vx_pts, vx, vx_max, fault_depth = calculate_erosion_rate(
@@ -5062,7 +5086,7 @@ def run_model(params):
         )
 
         # Start main time loop
-        while curtime < t_total:
+        while idx < nt:
             if not pbar.disable:
                 pbar.set_postfix_str(
                     f"t={curtime / myr2sec(1):5.2f} Myr, erosion rate={vx / mmyr2ms(1):4.2f} mm/yr",
@@ -5301,7 +5325,7 @@ def run_model(params):
 
                 # Loop over all times when particles reach the surface
                 for i in range(len(surface_times_ma)):
-                    if curtime < myr2sec(params["t_total"] - surface_times_ma[i]):
+                    if idx < nt_surf_times[i]:
                         # Store depth and time histories
                         depth_hists[i][idx] = depths[i]
                         time_hists[i][idx] = curtime
@@ -5409,7 +5433,9 @@ def run_model(params):
             )
 
             # Update current time and index
-            curtime += dt
+            # Current time is calculated from the step index to avoid accumulating
+            # floating-point error
+            curtime = (idx + 1) * dt
             idx += 1
             pbar.update(1)
 

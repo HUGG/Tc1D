@@ -18,6 +18,7 @@ from tc1d.tc1d import (
     erosion_exponential,
     calculate_erosion_rate,
     calculate_exhumation_magnitude,
+    calculate_num_steps,
     check_run_type,
     init_params,
     prep_model,
@@ -1053,3 +1054,46 @@ class TestSetRunFlags:
         assert params["run_type"] == "forward"
         assert params["batch_mode"] is False
         assert params["inverse_mode"] is False
+
+
+class TestTimeSteps:
+    def test_calculate_num_steps(self):
+        dt = yr2sec(5000.0)
+        assert calculate_num_steps(myr2sec(10.0), dt) == 2000
+        # Floating-point error should not change the number of steps
+        assert calculate_num_steps(myr2sec(10.0) * (1.0 + 1.0e-12), dt) == 2000
+        assert calculate_num_steps(myr2sec(10.0) * (1.0 - 1.0e-12), dt) == 2000
+        # Partial time steps are rounded up
+        assert calculate_num_steps(myr2sec(10.0), yr2sec(7000.0)) == 1429
+
+    @staticmethod
+    def _run_forward(monkeypatch, tmp_path, **kwargs):
+        """Runs a short forward model and returns its tTdp history."""
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=1.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=2.0,
+            plot_results=False,
+            verbose=0,
+            write_ttdp_history=True,
+            **kwargs,
+        )
+        prep_model(params)
+        # With past ages, the history for 0 Ma has the surface age in its filename
+        history_file = sorted((tmp_path / "csv").glob("time_temp_depth_pressure*.csv"))
+        return np.loadtxt(history_file[0], delimiter=",", skiprows=1)
+
+    def test_time_step_not_dividing_model_time(self, monkeypatch, tmp_path):
+        # 1 Myr is not a whole number of 7000 year time steps
+        with pytest.warns(UserWarning, match="Time step adjusted"):
+            history = self._run_forward(monkeypatch, tmp_path, dt=7000.0)
+
+        # Youngest point (first row) is at the surface at 0 Ma
+        assert history[0, 0] == pytest.approx(0.0)
+        assert history[0, 2] == pytest.approx(0.0, abs=1.0)
+
+    def test_past_age_increment_not_dividing_time_steps(self, monkeypatch, tmp_path):
+        # Past ages every 0.3 Myr are not a whole number of 5000 year time steps
+        self._run_forward(monkeypatch, tmp_path, dt=5000.0, past_age_increment=0.3)
