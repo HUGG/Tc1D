@@ -746,16 +746,60 @@ def save_ttdp_history(
             )
 
 
+def write_thermal_histories(
+    params: dict,
+    output_dir: Path,
+    surface_times_ma: np.ndarray,
+    time_hists: list,
+    temp_hists: list,
+    depth_hists: list,
+    pressure_hists: list,
+    write_tt_history: bool,
+    write_ttdp_history: bool,
+) -> None:
+    """Writes tT and/or tTdp histories for each tracked particle to output_dir."""
+    if not (write_tt_history or write_ttdp_history):
+        return
+
+    # Prefix filenames with the model ID in batch mode
+    if params["batch_mode"]:
+        file_prefix = params["model_id"] + "-"
+    else:
+        file_prefix = ""
+
+    for i in range(len(surface_times_ma)):
+        # Add the surface time to filenames when tracking more than one particle
+        if len(surface_times_ma) == 1:
+            file_age_text = ""
+        else:
+            file_age_text = f"_{surface_times_ma[i]}Ma"
+
+        if write_tt_history:
+            tt_filename = file_prefix + "time_temp_hist" + file_age_text + ".csv"
+            save_tt_history(
+                params, output_dir / tt_filename, time_hists[i], temp_hists[i]
+            )
+
+        if write_ttdp_history:
+            ttdp_filename = (
+                file_prefix + "time_temp_depth_pressure_hist" + file_age_text + ".csv"
+            )
+            save_ttdp_history(
+                params,
+                output_dir / ttdp_filename,
+                time_hists[i],
+                temp_hists[i],
+                depth_hists[i],
+                pressure_hists[i],
+            )
+
+
 def calculate_ages_and_tcs(
     params,
     time_history,
     temp_history,
     depth_history,
     pressure_history,
-    write_tt_history,
-    tt_filename,
-    write_ttdp_history,
-    ttdp_filename,
     write_track_lengths,
 ):
     """Calculates thermochronometer ages and closure temperatures"""
@@ -783,21 +827,6 @@ def calculate_ages_and_tcs(
     zft_age, _, _, _ = madtrax_zircon(
         time_ma, temp_history, params["madtrax_zft_kinetic_model"], 0
     )
-
-    # Write time-temperature history to file, if requested
-    if write_tt_history:
-        save_tt_history(params, tt_filename, time_history, temp_history)
-
-    # Write pressure-time-temperature-depth history to file, if requested
-    if write_ttdp_history:
-        save_ttdp_history(
-            params,
-            ttdp_filename,
-            time_history,
-            temp_history,
-            depth_history,
-            pressure_history,
-        )
 
     # Extract time-temperature path for age calculations (youngest point first)
     time_ma = tt_hist_to_ma(time_history)
@@ -4376,6 +4405,10 @@ def run_model(params):
             adv_crit=0.5,
         )
 
+    # Default: track a single particle that reaches the surface at 0 Ma.
+    # Overwritten below when ages are calculated from data files or past ages.
+    surface_times_ma = np.array([0.0])
+
     if params["calc_ages"]:
         num_file_ages = 0
         ages_from_data_file = False
@@ -5298,6 +5331,19 @@ def run_model(params):
         print(f"  - Range for all steps: {peclet.min():.2f}-{peclet.max():.2f}")
         print(f"- Final dimensionless heat production: {final_nd_hp:.2f}")
 
+    # Write time-temperature(-depth-pressure) histories, if requested
+    write_thermal_histories(
+        params,
+        wd / "csv",
+        surface_times_ma,
+        time_hists,
+        temp_hists,
+        depth_hists,
+        pressure_hists,
+        write_tt_history,
+        write_ttdp_history,
+    )
+
     # Calculate ages
     if params["calc_ages"]:
         # Convert time since model start to time before end of simulation
@@ -5316,13 +5362,11 @@ def run_model(params):
 
         # Define string for time-temperature and time-temperature-depth ages
         for i in range(surf_age_array_size):
-            # Define tT and tTd filenames
+            # Define surface time text for track length filenames
             if len(surface_times_ma) == 1:
                 file_age_text = ""
             else:
                 file_age_text = f"_{surface_times_ma[i]}Ma"
-            tt_filename = "time_temp_hist" + file_age_text + ".csv"
-            ttdp_filename = "time_temp_depth_pressure_hist" + file_age_text + ".csv"
 
             # Calculate ages
             (
@@ -5343,10 +5387,6 @@ def run_model(params):
                 temp_hists[i],
                 depth_hists[i],
                 pressure_hists[i],
-                write_tt_history,
-                tt_filename,
-                write_ttdp_history,
-                ttdp_filename,
                 write_track_lengths,
             )
 
@@ -5361,27 +5401,6 @@ def run_model(params):
                     f"- ZHe age: {corr_zhe_ages[i]:.2f} Ma (Tc: {zhe_temps[i]:.2f} °C)"
                 )
                 print(f"- ZFT age: {zft_ages[i]:.2f} Ma (Tc: {zft_temps[i]:.2f} °C)")
-
-            # Rename and/or move time-temperature history file, if requested
-            # TODO: Make this a function!
-            if write_tt_history:
-                tt_orig = Path(tt_filename)
-                if params["batch_mode"]:
-                    # Rename and move files to batch output directory
-                    tt_newfile = params["model_id"] + "-" + tt_filename
-                    tt_new = tt_orig.rename(wd / "csv" / tt_newfile)
-                else:
-                    tt_new = tt_orig.rename(wd / "csv" / tt_orig)
-
-            # Rename and/or move time-temperature-depth-pressure history file, if requested
-            if write_ttdp_history:
-                ttdp_orig = Path(ttdp_filename)
-                if params["batch_mode"]:
-                    # Rename and move files to batch output directory
-                    ttdp_newfile = params["model_id"] + "-" + ttdp_filename
-                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_newfile)
-                else:
-                    ttdp_new = ttdp_orig.rename(wd / "csv" / ttdp_orig)
 
             # Move track length file to csv directory
             if write_track_lengths:

@@ -58,10 +58,6 @@ def run_age_calculation(write_track_lengths=False, **param_updates):
         TEMP_HISTORY,
         ZEROS,
         ZEROS,
-        False,
-        "",
-        False,
-        "",
         write_track_lengths,
     )
     return dict(zip(OUTPUT_NAMES, (float(r) for r in results)))
