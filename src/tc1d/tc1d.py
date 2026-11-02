@@ -3112,9 +3112,15 @@ def batch_run(params, batch_params):
 
     # Make parameter permutation list
     param_list = list(ParameterGrid(batch_params))
+    n_models = len(param_list)
 
-    print(
-        f"{19 * '-'} Starting batch processor for {len(param_list):4} models {19 * '-'}\n"
+    # Find parameters that vary between models (for screen output)
+    varied_keys = [key for key in batch_params if len(batch_params[key]) > 1]
+
+    vprint(
+        params,
+        1,
+        f"{19 * '-'} Starting batch processor for {n_models:4} models {19 * '-'}\n",
     )
     exec_start = time.time()
 
@@ -3122,22 +3128,30 @@ def batch_run(params, batch_params):
     success = 0
     failed = 0
 
+    # Create progress bar for models (verbose >= 1)
+    pbar = tqdm(
+        total=n_models,
+        ncols=80,
+        bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]",
+        disable=params["verbose"] < 1,
+    )
+
     # Loop over list of parameters and run all permutations
-    for i in range(len(param_list)):
+    for i in range(n_models):
         outfile = log_output(params, batch_mode=True)
         model = param_list[i]
-        print(f"Iteration {i + 1}", end="", flush=True)
         # Update model parameters
         for key in batch_params:
             params[key] = model[key]
+        model_text = ", ".join(f"{key}={model[key]}" for key in varied_keys)
 
         try:
             run_model(copy_params_for_silent_run(params))
-            print("Complete")
+            vprint(params, 2, f"Model {i + 1}/{n_models} ({model_text}): complete")
             success += 1
         # TODO: Should make a complete list of exceptions to catch
-        except ValueError:
-            print("FAILED!")
+        except ValueError as e:
+            vprint(params, 1, f"Model {i + 1}/{n_models} ({model_text}): FAILED ({e})")
             # FIXME: outfile is not defined when models crash...
             # Should this also be handled in log_output()?
             with open(outfile, "a+") as f:
@@ -3152,10 +3166,19 @@ def batch_run(params, batch_params):
                 )
             failed += 1
 
+        # Update progress bar
+        pbar.set_postfix_str(f"ok={success}, failed={failed}", refresh=False)
+        pbar.update(1)
+
+    pbar.close()
+
     exec_end = time.time()
-    print(
-        f"\n{3 * '-'} Execution completed in {exec_end - exec_start:10.4f} seconds ({success:4} succeeded, {failed:4} failed) {4 * '-'}"
-    )
+    if params["verbose"] >= 1:
+        print(
+            f"\n{3 * '-'} Execution completed in {exec_end - exec_start:10.4f} seconds ({success:4} succeeded, {failed:4} failed) {4 * '-'}"
+        )
+    elif params["verbose"] == 0:
+        print(f"Batch run completed: {success} succeeded, {failed} failed")
 
 
 def batch_run_na(params, batch_params):
