@@ -4371,17 +4371,18 @@ def get_particle_temp_and_pressure(
     depth: float,
     moho_depth: float,
     fixed_moho: bool,
+    temp_surf: float,
     interp_temp,
     interp_pressure,
 ) -> Tuple[float, float]:
     """Returns the temperature and pressure for a tracked particle at depth.
 
-    Particles within 5 cm of the surface are assigned a surface temperature and
-    zero pressure. For fixed-Moho models, particles below the Moho are assigned the
-    Moho temperature and pressure.
+    Particles within 5 cm of the surface are assigned the surface temperature
+    (temp_surf) and zero pressure. For fixed-Moho models, particles below the Moho
+    are assigned the Moho temperature and pressure.
     """
     if abs(depth) <= 5.0e-2:
-        return 0.0, 0.0
+        return float(temp_surf), 0.0
     if depth > moho_depth and fixed_moho:
         return float(interp_temp(moho_depth)), float(interp_pressure(moho_depth))
     return float(interp_temp(depth)), float(interp_pressure(depth))
@@ -5133,6 +5134,7 @@ def run_model(params):
                     depths[i],
                     moho_depth,
                     params["fixed_moho"],
+                    params["temp_surf"],
                     interp_temp_start,
                     interp_pressure_start,
                 )
@@ -5388,6 +5390,7 @@ def run_model(params):
                                 depths[i],
                                 moho_depth,
                                 params["fixed_moho"],
+                                params["temp_surf"],
                                 interp_temp_new,
                                 interp_pressure,
                             )

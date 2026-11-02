@@ -21,6 +21,7 @@ from tc1d.tc1d import (
     calculate_num_steps,
     check_run_type,
     get_history_indices,
+    get_particle_temp_and_pressure,
     init_params,
     prep_model,
     set_run_flags,
@@ -1120,3 +1121,32 @@ class TestThermalHistories:
         # Oldest point (last row) is the initial state at the start of the model
         assert history[-1, 0] == pytest.approx(1.0)
         assert history[-1, 2] == pytest.approx(2000.0, rel=1.0e-6)
+
+
+class TestParticleTempAndPressure:
+    @staticmethod
+    def _interp(slope):
+        return lambda depth: slope * depth
+
+    def test_surface_temperature(self):
+        # Particles at the surface have the surface temperature and zero pressure
+        temp, pressure = get_particle_temp_and_pressure(
+            0.0, 35.0e3, False, 10.0, self._interp(0.02), self._interp(3.0e4)
+        )
+        assert temp == 10.0
+        assert pressure == 0.0
+
+    def test_temperature_at_depth(self):
+        temp, pressure = get_particle_temp_and_pressure(
+            5.0e3, 35.0e3, False, 10.0, self._interp(0.02), self._interp(3.0e4)
+        )
+        assert temp == pytest.approx(100.0)
+        assert pressure == pytest.approx(1.5e8)
+
+    def test_fixed_moho(self):
+        # Particles below a fixed Moho have the Moho temperature and pressure
+        temp, pressure = get_particle_temp_and_pressure(
+            40.0e3, 35.0e3, True, 10.0, self._interp(0.02), self._interp(3.0e4)
+        )
+        assert temp == pytest.approx(700.0)
+        assert pressure == pytest.approx(1.05e9)
