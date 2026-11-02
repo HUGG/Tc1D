@@ -2253,8 +2253,10 @@ def read_age_data_file(file, params):
                     elif data[i][0].lower() == "zhe":
                         u[np_index] = float(params["zr_uranium"])
                         th[np_index] = float(params["zr_thorium"])
-                    print(
-                        f"         Using default U ({u[np_index]:.1f} ppm) and Th ({th[np_index]:.1f} ppm) values."
+                    vprint(
+                        params,
+                        0,
+                        f"         Using default U ({u[np_index]:.1f} ppm) and Th ({th[np_index]:.1f} ppm) values.",
                     )
                 # Append radius value if it exists, use default if missing (keeps list lengths consistent)
                 if len(data[i][4]) > 0:
@@ -2268,8 +2270,10 @@ def read_age_data_file(file, params):
                         radius[np_index] = float(params["ap_rad"])
                     elif data[i][0].lower() == "zhe":
                         radius[np_index] = float(params["zr_rad"])
-                    print(
-                        f"         Using default radius ({radius[np_index]:.1f} um) value."
+                    vprint(
+                        params,
+                        0,
+                        f"         Using default radius ({radius[np_index]:.1f} um) value.",
                     )
             # Append sample ID to list
             if len(data[i][5]) > 0:
@@ -4206,19 +4210,12 @@ def batch_run_mcmc(params, batch_params):
 
 def run_model(params):
     # Say hello
-    if not params["batch_mode"]:
+    if params["verbose"] >= 1:
         print(f"{23 * '-'} Forward model execution started {24 * '-'}")
-        exec_start = time.time()
+    exec_start = time.time()
 
     # Define working directory
     wd = Path.cwd()
-
-    # Set flags if using batch mode (or not)
-    if params["batch_mode"]:
-        params["echo_info"] = False
-        params["echo_thermal_info"] = False
-        params["echo_ages"] = False
-        params["plot_results"] = False
 
     write_tt_history = params["write_tt_history"]
     write_ttdp_history = params["write_ttdp_history"]
@@ -4412,7 +4409,7 @@ def run_model(params):
         )
 
     # Echo model info if requested
-    if params["echo_info"]:
+    if params["verbose"] >= 1 and params["echo_info"]:
         echo_model_info(
             dx,
             nt,
@@ -4567,7 +4564,7 @@ def run_model(params):
     alphav[x > moho_depth] = params["alphav_mantle"]
 
     # Generate initial temperature field
-    if not params["batch_mode"]:
+    if params["verbose"] >= 1:
         print("")
         print("--- Calculating initial thermal model ---")
         print("")
@@ -4628,7 +4625,7 @@ def run_model(params):
     )
 
     # Echo thermal model values
-    if params["echo_thermal_info"]:
+    if params["verbose"] >= 1 and params["echo_thermal_info"]:
         print(f"- Initial surface heat flow: {init_heat_flow:.1f} mW/m^2")
         print(f"- Initial Moho temperature: {init_moho_temp:.1f}°C")
         print(f"- Initial Moho depth: {params['init_moho_depth']:.1f} km")
@@ -4904,33 +4901,29 @@ def run_model(params):
                 if params["plot_density"]:
                     ax2.plot(density_init, -x / 1000, "k-", label=time_label)
 
-        if not params["batch_mode"]:
+        if params["verbose"] >= 1:
             print("")
             print(
                 f"--- Calculating transient thermal model (Pass {j + 1}/{num_pass}) ---"
             )
             print("")
 
-        # Create progress bar for time steps (forward mode only)
-        # Disabled in debug mode, where per-step output would break up the bar
+        # Create progress bar for time steps (standard output level only)
+        # Disabled for verbose = 2, where per-step debug output would break up the bar
         pbar = tqdm(
             total=nt,
             ncols=80,
             bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]",
-            disable=params["batch_mode"] or params["verbose"] >= 2,
+            disable=params["verbose"] != 1,
         )
 
         # Start main time loop
         while curtime < t_total:
-            if not params["batch_mode"]:
+            if not pbar.disable:
                 pbar.set_postfix_str(
                     f"t={curtime / myr2sec(1):5.2f} Myr, erosion rate={vx / mmyr2ms(1):4.2f} mm/yr",
                     refresh=False,
                 )
-            elif not params["inverse_mode"]:
-                # Print progress dot if using batch model. 1 dot = 10%
-                if (idx + 1) % round(nt / 10, 0) == 0:
-                    print(".", end="", flush=True)
 
             # Modify temperatures and material properties for ero_types 4 and 5
             if ((params["ero_type"] == 4) or (params["ero_type"] == 5)) and (
@@ -5341,10 +5334,10 @@ def run_model(params):
         max_depth,
     )
 
-    if not params["batch_mode"]:
+    if params["verbose"] >= 1:
         print("")
 
-    if params["echo_thermal_info"]:
+    if params["verbose"] >= 1 and params["echo_thermal_info"]:
         print("")
         print("--- Final thermal model values ---")
         print("")
@@ -5439,10 +5432,12 @@ def run_model(params):
                 else:
                     ftl_new = ftl_orig.rename(wd / "csv" / ftl_filename)
 
-        if params["echo_ages"]:
-            print("")
-            print("--- Predicted thermochronometer ages ---")
-            print("")
+        # Print ages (verbose >= 0), with section heading for verbose >= 1
+        if params["verbose"] >= 0 and params["echo_ages"]:
+            if params["verbose"] >= 1:
+                print("")
+                print("--- Predicted thermochronometer ages ---")
+                print("")
             print(
                 f"- AHe age: {corr_ahe_ages[-1]:.2f} Ma (uncorrected age: {ahe_age:.2f} Ma)"
             )
@@ -5668,10 +5663,11 @@ def run_model(params):
                 )
 
             # Print misfit to the screen
-            if params["echo_ages"]:
-                print("")
-                print("--- Predicted and observed age misfit ---")
-                print("")
+            if params["verbose"] >= 0 and params["echo_ages"]:
+                if params["verbose"] >= 1:
+                    print("")
+                    print("--- Predicted and observed age misfit ---")
+                    print("")
                 print(
                     f"- Total misfit: {misfit:.4f} (misfit type {params['misfit_type']}, {len(pred_ages)} age(s))"
                 )
@@ -5684,7 +5680,7 @@ def run_model(params):
                     )
 
     # Write output files
-    if (
+    if params["verbose"] >= 1 and (
         (params["plot_results"] and params["save_plots"])
         or params["write_temps"]
         or params["read_temps"]
@@ -5712,7 +5708,7 @@ def run_model(params):
             header="Time (Ma),Predicted Apatite (U-Th)/He age (Ma),Predicted Apatite fission-track age (Ma),Predicted "
             "Zircon (U-Th)/He age (Ma),Predicted Zircon fission-track age (Ma)",
         )
-        print(f"- Past ages written to {savefile}")
+        vprint(params, 1, f"- Past ages written to {savefile}")
 
     # Make final set of plots
     if params["plot_results"]:
@@ -5951,9 +5947,15 @@ def run_model(params):
                 savefile = wd / "png" / plot_filename
                 plt.savefig(savefile, dpi=300)
                 if params["plot_density"]:
-                    print(f"- Temperature/density history plot written to {savefile}")
+                    vprint(
+                        params,
+                        1,
+                        f"- Temperature/density history plot written to {savefile}",
+                    )
                 else:
-                    print(f"- Temperature history plot written to {savefile}")
+                    vprint(
+                        params, 1, f"- Temperature history plot written to {savefile}"
+                    )
             if params["display_plots"]:
                 plt.show()
             else:
@@ -6004,7 +6006,9 @@ def run_model(params):
             if params["save_plots"]:
                 savefile = wd / "png" / "elev_hist.png"
                 plt.savefig(savefile, dpi=300)
-                print(f"- Surface elevation history plot written to {savefile}")
+                vprint(
+                    params, 1, f"- Surface elevation history plot written to {savefile}"
+                )
             if params["display_plots"]:
                 plt.show()
             else:
@@ -6451,7 +6455,9 @@ def run_model(params):
             if params["save_plots"]:
                 savefile = wd / "png" / "thermal_history.png"
                 plt.savefig(savefile, dpi=300)
-                print(f"- Thermal history and ages plot written to {savefile}")
+                vprint(
+                    params, 1, f"- Thermal history and ages plot written to {savefile}"
+                )
             if params["display_plots"]:
                 plt.show()
             else:
@@ -6479,8 +6485,10 @@ def run_model(params):
                 if params["save_plots"]:
                     savefile = wd / "png" / "apatite_ft_length_dist.png"
                     plt.savefig(savefile, dpi=300)
-                    print(
-                        f"- Apatite fission-track length distribution plot written to {savefile}"
+                    vprint(
+                        params,
+                        1,
+                        f"- Apatite fission-track length distribution plot written to {savefile}",
                     )
                 if params["display_plots"]:
                     plt.show()
@@ -6593,7 +6601,7 @@ def run_model(params):
                 if params["save_plots"]:
                     savefile = wd / "png" / "past_ages.png"
                     plt.savefig(savefile, dpi=300)
-                    print(f"- Past ages plot written to {savefile}")
+                    vprint(params, 1, f"- Past ages plot written to {savefile}")
                 if params["display_plots"]:
                     plt.show()
                 else:
@@ -6724,7 +6732,7 @@ def run_model(params):
             header="Depth (m),Temperature (deg. C),Initial temperature (deg. C)",
             comments="",
         )
-        print(f"- Temperature output writen to {savefile}")
+        vprint(params, 1, f"- Temperature output writen to {savefile}")
 
     # Write header in log file if needed
     if params["log_output"]:
@@ -6791,7 +6799,7 @@ def run_model(params):
         obs_age_nums = [n_obs_ahe, n_obs_aft, n_obs_zhe, n_obs_zft]
         if (not params["batch_mode"]) or (not params["inverse_mode"]):
             if (n_obs_ahe > 1) or (n_obs_aft > 1) or (n_obs_zhe > 1) or (n_obs_zft > 1):
-                print("")
+                vprint(params, 1, "")
                 for i in range(len(age_types)):
                     if obs_age_nums[i] > 1:
                         warnings.warn(
@@ -6928,9 +6936,9 @@ def run_model(params):
             comments="",
             fmt="%s",
         )
-        print(f"- Summary age output written to {savefile}")
+        vprint(params, 1, f"- Summary age output written to {savefile}")
 
-    if not params["batch_mode"]:
+    if params["verbose"] >= 1:
         print("")
         if not params["plot_results"]:
             exec_end = time.time()
