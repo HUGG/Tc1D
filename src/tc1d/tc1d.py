@@ -2729,10 +2729,10 @@ def init_params(
         "invert_tt_plot": invert_tt_plot,
         "watch_it_exhume": watch_it_exhume,
         "run_type": run_type,
-        # Batch mode defaults to false and will set itself true if batch parameters exist
+        # Internal flags, set by prep_model() based on run_type (see set_run_flags())
         "batch_mode": False,
-        # Inverse mode not supported when called as a function
         "inverse_mode": False,
+        # End internal flags
         "mantle_adiabat": mantle_adiabat,
         "solution_type": solution_type,
         "read_temps": read_temps,
@@ -2917,6 +2917,25 @@ def check_run_type(params: dict, batch_params: dict) -> None:
             )
 
 
+def set_run_flags(params: dict) -> None:
+    """Sets the internal run flags based on the run type.
+
+    - batch_mode will be True when more than one model will be run (batch, NA, or MCMC)
+    - inverse_mode will be True when the models are part of an inversion (NA or MCMC)
+
+    Every inversion is also a batch run so inverse_mode = True always sets
+    batch_mode = True.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+    """
+    run_type = params["run_type"].lower()
+    params["batch_mode"] = run_type in ["batch", "na", "mcmc"]
+    params["inverse_mode"] = run_type in ["na", "mcmc"]
+
+
 def prep_model(params):
     """Prepares models to be run as single models or in batch mode.
 
@@ -3022,25 +3041,18 @@ def prep_model(params):
 
     # Check that prep_model was called from the command line
     if params["cmd_line_call"]:
-        # We know all batch model values are lists, check their lengths
-        # If all are 1 then run in forward mode
-        params["batch_mode"] = False
-
+        # We know all batch model values are lists
         for key in batch_keys:
-            if len(params[key]) != 1:
-                params["batch_mode"] = True
             batch_params[key] = params[key]
 
         # Check that the run type matches the parameter values
         check_run_type(params, batch_params)
 
-        # Set inverse mode from the run type. This does not depend on whether
-        # batch parameters have multiple values, as the inverted parameters may
-        # be defined elsewhere (e.g., erosion stage ranges for ero_type 0).
-        params["inverse_mode"] = params["run_type"].lower() in ["na", "mcmc"]
+        # Set batch_mode and inverse_mode from the run type
+        set_run_flags(params)
 
         # Create batch_mode output directories if using batch, NA, or MCMC mode
-        if params["batch_mode"] or params["inverse_mode"]:
+        if params["batch_mode"]:
             create_output_directory(wd, dir="csv")
 
         # Now we see what to do for running the model(s)
@@ -3060,14 +3072,9 @@ def prep_model(params):
             batch_run_mcmc(params, batch_params)
 
     else:
-        # If called as a function, check for lists and their lengths
-        params["batch_mode"] = False
-        params["inverse_mode"] = False
-
+        # If called as a function, find parameters given as lists
         for key in batch_keys:
             if isinstance(params[key], list):
-                if len(params[key]) != 1:
-                    params["batch_mode"] = True
                 batch_params[key] = params[key]
 
         # NA and MCMC inversions are only supported using tc1d-cli
@@ -3078,6 +3085,9 @@ def prep_model(params):
 
         # Check that the run type matches the parameter values
         check_run_type(params, batch_params)
+
+        # Set batch_mode and inverse_mode from the run type
+        set_run_flags(params)
 
         # TODO: Remove stuff below except run_model()?
         # Create batch_mode output directories if using batch mode
@@ -6931,7 +6941,9 @@ def run_model(params):
         # Print warnings if there are multiple observed ages to write to the log file
         age_types = ["AHe", "AFT", "ZHe", "ZFT"]
         obs_age_nums = [n_obs_ahe, n_obs_aft, n_obs_zhe, n_obs_zft]
-        if (not params["batch_mode"]) or (not params["inverse_mode"]):
+        # Do not print warnings for inversions, where the warnings would be repeated
+        # for each model
+        if not params["inverse_mode"]:
             if (n_obs_ahe > 1) or (n_obs_aft > 1) or (n_obs_zhe > 1) or (n_obs_zft > 1):
                 vprint(params, 1, "")
                 for i in range(len(age_types)):

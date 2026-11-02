@@ -21,6 +21,7 @@ from tc1d.tc1d import (
     check_run_type,
     init_params,
     prep_model,
+    set_run_flags,
 )
 from tc1d.tc1d_cli import (
     _apply_yaml_to_args,
@@ -846,7 +847,7 @@ class TestRunModeFlags:
     @staticmethod
     def _run_cli(monkeypatch, tmp_path, run_type, erosion_model, general=None):
         """Runs tc1d-cli with a minimal YAML file and returns the params passed
-        to the batch, NA, or MCMC driver (the drivers themselves are not run).
+        to run_model() or the batch, NA, or MCMC driver (none of which are run).
         Additional values for the YAML general section can be given in `general`.
         """
         import yaml
@@ -864,10 +865,10 @@ class TestRunModeFlags:
 
         captured = {}
 
-        def fake_driver(params, batch_params):
+        def fake_driver(params, batch_params=None):
             captured["params"] = params
 
-        for driver in ["batch_run", "batch_run_na", "batch_run_mcmc"]:
+        for driver in ["run_model", "batch_run", "batch_run_na", "batch_run_mcmc"]:
             monkeypatch.setattr(tc1d_module, driver, fake_driver)
         monkeypatch.chdir(tmp_path)
         monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
@@ -893,7 +894,7 @@ class TestRunModeFlags:
 
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is True
-        assert params["batch_mode"] is False
+        assert params["batch_mode"] is True
         assert (tmp_path / "csv").is_dir()
 
     @pytest.mark.parametrize("run_type", ["na", "mcmc"])
@@ -1026,3 +1027,29 @@ class TestDeprecatedModeFlags:
         monkeypatch.setattr("sys.argv", ["tc1d-cli", "--run-type", "mcmc", option])
         with pytest.raises(SystemExit):
             tc1d_cli.main()
+
+
+class TestSetRunFlags:
+    @pytest.mark.parametrize(
+        "run_type, batch_mode, inverse_mode",
+        [
+            ("forward", False, False),
+            ("batch", True, False),
+            ("na", True, True),
+            ("mcmc", True, True),
+            ("MCMC", True, True),
+        ],
+    )
+    def test_flags_from_run_type(self, run_type, batch_mode, inverse_mode):
+        params = init_params(run_type=run_type)
+        set_run_flags(params)
+        assert params["batch_mode"] is batch_mode
+        assert params["inverse_mode"] is inverse_mode
+
+    def test_forward_run_from_cli(self, monkeypatch, tmp_path):
+        params = TestRunModeFlags._run_cli(
+            monkeypatch, tmp_path, "forward", {"ero_type": 1, "ero_option1": 5.0}
+        )
+        assert params["run_type"] == "forward"
+        assert params["batch_mode"] is False
+        assert params["inverse_mode"] is False
