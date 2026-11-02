@@ -3088,6 +3088,19 @@ def log_output(params, batch_mode=False):
     return outfile
 
 
+def copy_params_for_silent_run(params: dict) -> dict:
+    """Returns a copy of params for a model run by the batch or inverse drivers.
+
+    Models run by the drivers produce no screen output or plots. Using a copy
+    ensures run_model() never changes the parameters held by the driver.
+    """
+    model_params = params.copy()
+    model_params["verbose"] = -1
+    model_params["batch_mode"] = True
+    model_params["plot_results"] = False
+    return model_params
+
+
 def batch_run(params, batch_params):
     """Runs TC1D in batch mode"""
     # Define working directory path
@@ -3115,7 +3128,7 @@ def batch_run(params, batch_params):
             params[key] = model[key]
 
         try:
-            run_model(params)
+            run_model(copy_params_for_silent_run(params))
             print("Complete")
             success += 1
         # TODO: Should make a complete list of exceptions to catch
@@ -3266,20 +3279,8 @@ def batch_run_na(params, batch_params):
             print("Rejected: model would place the sample above surface.")
             return 1e10  # Or some large misfit to reject the model
 
-        # ------------------------------------------------------------
-        # BG: Silence forward-model verbosity during NA evaluations
-        # by forcing batch_mode=True just for this run_model() call.
-        # This prevents printing:
-        #   --- Calculating initial thermal model ---
-        #   --- Calculating transient thermal model ---
-        #   - Step ...
-        # ------------------------------------------------------------
-        _prev_batch_mode = params.get("batch_mode", False)
-        params["batch_mode"] = True
-        try:
-            misfit = run_model(params)
-        finally:
-            params["batch_mode"] = _prev_batch_mode
+        # Run the forward model silently using a copy of the parameters
+        misfit = run_model(copy_params_for_silent_run(params))
 
         print(f"The current misfit is: {misfit}\n")
         return misfit
@@ -3861,13 +3862,8 @@ def log_likelihood(x):
         return -np.inf
 
     try:
-        # BG: Silence forward-model verbosity during MCMC evaluations
-        _prev_batch_mode = params_local.get("batch_mode", False)
-        params_local["batch_mode"] = True
-        try:
-            misfit = run_model(params_local)
-        finally:
-            params_local["batch_mode"] = _prev_batch_mode
+        # Run the forward model silently using a copy of the parameters
+        misfit = run_model(copy_params_for_silent_run(params_local))
 
         if not np.isfinite(misfit):
             return -np.inf
