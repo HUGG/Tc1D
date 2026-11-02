@@ -686,7 +686,7 @@ def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
 
 
 def save_tt_history(
-    params: dict, tt_filename: str, time_history: np.ndarray, temp_history: np.ndarray
+    params: dict, tt_filename: Path, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
     "Writes a time-temperature history to a file."
     # Get time history in Ma
@@ -717,7 +717,7 @@ def save_tt_history(
 
 def save_ttdp_history(
     params: dict,
-    ttdp_filename: str,
+    ttdp_filename: Path,
     time_history: np.ndarray,
     temp_history: np.ndarray,
     depth_history: np.ndarray,
