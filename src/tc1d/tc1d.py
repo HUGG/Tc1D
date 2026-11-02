@@ -48,6 +48,22 @@ class UnstableSolutionError(Exception):
     pass
 
 
+# Screen output
+def vprint(params: dict, level: int, *args, **kwargs) -> None:
+    """Prints a message if the verbosity level is at least `level`.
+
+    Verbosity levels:
+    - -1: silent (used internally for batch and/or inverse models)
+    -  0: minimal output
+    -  1: standard output (default)
+    -  2: extended/debug output
+
+    Output is written using tqdm.write() to avoid breaking progress bars.
+    """
+    if params["verbose"] >= level:
+        tqdm.write(" ".join(str(arg) for arg in args), **kwargs)
+
+
 # Other classes
 class Intrusion:
     def __init__(self, temperature, start_time, duration, base_depth, thickness):
@@ -803,7 +819,7 @@ def calculate_ages_and_tcs(
     write_track_lengths,
 ):
     """Calculates thermochronometer ages and closure temperatures"""
-    if params["debug"]:
+    if params["verbose"] >= 2:
         print("")
         print(
             f"Calculating ages and closure temperatures for {len(time_history)} thermal history points."
@@ -2334,6 +2350,7 @@ def init_params(
     echo_info=True,
     echo_thermal_info=True,
     echo_ages=True,
+    verbose=1,
     debug=False,
     run_type="forward",
     length=125.0,
@@ -2464,8 +2481,10 @@ def init_params(
         Print thermal model info to the screen.
     echo_ages : bool, default=True
         Print calculated thermochronometer age(s) to the screen.
+    verbose : int, default=1
+        Screen output level: 0 = minimal, 1 = standard, 2 = extended/debug.
     debug : bool, default=False
-        Enable debug output.
+        Enable debug output. Equivalent to verbose=2.
     run_type : str, default="forward"
         Define type of run: forward, batch, na, or mcmc.
     length : float or int, default=125.0
@@ -2678,6 +2697,14 @@ def init_params(
     params : dict
         Dictionary of model parameter values.
     """
+    # Check verbosity level
+    if verbose not in (0, 1, 2):
+        raise ValueError(f"Bad verbose value: {verbose}. Must be 0, 1, or 2.")
+
+    # Ensure verbose level is 2 if debug flag is set
+    if debug:
+        verbose = 2
+
     params = {
         "cmd_line_call": False,
         "echo_inputs": echo_inputs,
@@ -2708,7 +2735,7 @@ def init_params(
         "compare_temps": compare_temps,
         "write_temps": write_temps,
         "write_age_output": write_age_output,
-        "debug": debug,
+        "verbose": verbose,
         "madtrax_aft": madtrax_aft,
         "madtrax_aft_kinetic_model": madtrax_aft_kinetic_model,
         "madtrax_zft_kinetic_model": madtrax_zft_kinetic_model,
@@ -3853,7 +3880,7 @@ def log_likelihood(x):
 
     except Exception as e:
         print(f"[ERROR] run_model failed: {e}")
-        if params_local.get("debug", False):
+        if params_local["verbose"] >= 2:
             import traceback
 
             traceback.print_exc()
@@ -4460,7 +4487,7 @@ def run_model(params):
             # obs_zhe_indices = np.intersect1d(obs_zhe_indices, obs_zero_depo_indices)
             # obs_zft_indices = np.intersect1d(obs_zft_indices, obs_zero_depo_indices)
 
-            if params["debug"]:
+            if params["verbose"] >= 2:
                 print(f"\n{num_file_ages} ages read from data file.")
 
         # Create array of past ages at which ages should be calculated, if not zero
@@ -4796,7 +4823,7 @@ def run_model(params):
                                 params["ero_option1"]
                             )
                             # Print starting depths if debugging is on
-                            if params["debug"]:
+                            if params["verbose"] >= 2:
                                 print(f"Calculated starting depth {i}: {depths[i]} m")
                     # Add tectonic erosional thickness for tectonic exhumation (ero_type 5)
                     if params["ero_type"] == 5:
@@ -4804,7 +4831,7 @@ def run_model(params):
                             params["ero_option1"]
                         )
                         # Print starting depths if debugging is on
-                        if params["debug"]:
+                        if params["verbose"] >= 2:
                             print(f"Calculated starting depth {i}: {depths[i]} m")
 
             # Reset loop variables
@@ -4894,7 +4921,7 @@ def run_model(params):
             total=nt,
             ncols=80,
             bar_format="{percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}{postfix}]",
-            disable=params["batch_mode"] or params["debug"],
+            disable=params["batch_mode"] or params["verbose"] >= 2,
         )
 
         # Start main time loop
@@ -4939,7 +4966,7 @@ def run_model(params):
                                 >= kilo2base(params["ero_option1"])
                             ):
                                 depths[i] += kilo2base(params["ero_option1"])
-                                if params["debug"]:
+                                if params["verbose"] >= 2:
                                     print(
                                         f"Adjusted depth of particle {i}, reaching surface at {surface_times_ma[i]} Ma: {depths[i]} m"
                                     )
@@ -4947,7 +4974,7 @@ def run_model(params):
                         if params["ero_type"] == 5:
                             depths[i] -= kilo2base(params["ero_option1"])
                             # Print adjusted depth if debugging is on
-                            if params["debug"]:
+                            if params["verbose"] >= 2:
                                 print(
                                     f"Adjusted depth of particle {i}, reaching surface at {surface_times_ma[i]} Ma: {depths[i]} m"
                                 )
@@ -5074,7 +5101,7 @@ def run_model(params):
                     f"Bad solution type: {params['solution_type']}. Must be 1, 2 or 3."
                 )
             # Calculate maximum temperature difference if using debug output
-            if params["debug"]:
+            if params["verbose"] >= 2:
                 max_temp_diff = abs(temp_prev - temp_new).max()
 
             # Store new temperatures for next temperature calculation
@@ -5168,7 +5195,7 @@ def run_model(params):
                             pressure_hists[i][idx] = interp_pressure(depths[i])
 
                         # Print array values if debugging is on
-                        if params["debug"]:
+                        if params["verbose"] >= 2:
                             print("")
                             print(
                                 f"Current time: {curtime} s ({curtime / myr2sec(1):.2f} Myr)"
@@ -5229,7 +5256,7 @@ def run_model(params):
                         )
                         ax1_anim.legend()
 
-            if params["debug"]:
+            if params["verbose"] >= 2:
                 print(
                     f"Maximum temp difference at time {curtime / myr2sec(1):.4f} Myr: {max_temp_diff:.4f} °C"
                 )
@@ -5393,7 +5420,7 @@ def run_model(params):
                 write_track_lengths,
             )
 
-            if params["debug"]:
+            if params["verbose"] >= 2:
                 print("")
                 print(f"--- Predicted ages for cooling history {i} ---")
                 print(
@@ -5506,7 +5533,7 @@ def run_model(params):
                         np.flip(time_ma),
                         np.flip(temp_hists[tt_hist_index]),
                     )
-                    if params["debug"]:
+                    if params["verbose"] >= 2:
                         print(
                             f"AHe age calculated from file data including depositional age of {depo_age_now:.2f} Ma: {pred_data_ages[i]:.2f} Ma"
                         )
@@ -5537,7 +5564,7 @@ def run_model(params):
                         np.flip(time_ma),
                         np.flip(temp_hists[tt_hist_index]),
                     )
-                    if params["debug"]:
+                    if params["verbose"] >= 2:
                         print(
                             f"ZHe age calculated from file data including depositional age of {depo_age_now:.2f} Ma: {pred_data_ages[i]:.2f} Ma"
                         )

@@ -33,6 +33,7 @@ YAML_ALLOWED_KEYS = {
         "run_type",
         "batch_mode",
         "inverse_mode",
+        "verbose",
         "debug",
         "echo_inputs",
         "no_echo_info",
@@ -323,6 +324,7 @@ def _apply_yaml_to_args(args, y: dict) -> None:
             "run_type",
             "batch_mode",
             "inverse_mode",
+            "verbose",
             "debug",
             "echo_inputs",
             "no_echo_info",
@@ -331,7 +333,9 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         ):
             if k in g:
                 # booleans:
-                if k in (
+                if k == "verbose":
+                    setattr(args, k, int(g[k]))
+                elif k in (
                     "batch_mode",
                     "inverse_mode",
                     "debug",
@@ -585,6 +589,7 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
         ("general", "run_type"): "run_type",
         ("general", "batch_mode"): "batch_mode",
         ("general", "inverse_mode"): "inverse_mode",
+        ("general", "verbose"): "verbose",
         ("general", "debug"): "debug",
         ("general", "echo_inputs"): "echo_inputs",
         ("general", "no_echo_info"): "no_echo_info",
@@ -684,6 +689,10 @@ def validate_args(args, parser, y=None) -> None:
         parser.error(
             f"Inconsistent config: run_type='{run_type}' is not compatible with inverse_mode=true"
         )
+
+    # verbose: values from YAML files are not checked by argparse
+    if args.verbose not in (0, 1, 2):
+        parser.error(f"verbose must be 0, 1, or 2, got: {args.verbose!r}")
 
     # batch_mode: batch_mode only meaningful for batch runs
     if args.batch_mode and run_type != "batch":
@@ -785,8 +794,16 @@ def main():
         default=False,
     )
     general.add_argument(
+        "--verbose",
+        dest="verbose",
+        help="Screen output level: 0 = minimal, 1 = standard, 2 = extended/debug",
+        default=1,
+        type=int,
+        choices=[0, 1, 2],
+    )
+    general.add_argument(
         "--debug",
-        help="Enable debug output",
+        help="Enable debug output (same as --verbose 2)",
         action="store_true",
         default=False,
     )
@@ -1717,6 +1734,12 @@ def main():
     display_plots = not args.no_display_plots
     plot_ma = not args.plot_myr
 
+    # Ensure verbose = 2 if debug is set
+    if args.debug:
+        verbose = 2
+    else:
+        verbose = args.verbose
+
     params = {
         "cmd_line_call": True,
         "echo_inputs": args.echo_inputs,
@@ -1745,7 +1768,7 @@ def main():
         "compare_temps": args.compare_temps,
         "write_temps": args.write_temps,
         "write_age_output": args.write_age_output,
-        "debug": args.debug,
+        "verbose": verbose,
         "madtrax_aft": args.madtrax_aft,
         "madtrax_aft_kinetic_model": args.madtrax_aft_kinetic_model,
         "madtrax_zft_kinetic_model": args.madtrax_zft_kinetic_model,

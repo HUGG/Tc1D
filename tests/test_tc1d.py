@@ -542,6 +542,7 @@ class TestConfigurationConsistency:
         "plot_results": "plot_results",
         "display_plots": "display_plots",
         "plot_ma": "plot_ma",
+        "debug": "verbose",
     }
 
     def test_yaml_additional_cli_mappings(self):
