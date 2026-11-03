@@ -1209,3 +1209,50 @@ class TestPastAges:
             return run_model(params)
 
         assert misfit(past_age_increment=0.5) == pytest.approx(misfit())
+
+
+class TestCrustalUplift:
+    """The Moho should move with the crust in crustal uplift models, unless
+    the Moho is fixed."""
+
+    @staticmethod
+    def _final_moho_depth(monkeypatch, tmp_path, capsys, **kwargs):
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=1.0,
+            dt=5000.0,
+            init_moho_depth=50.0,
+            ero_type=1,
+            ero_option1=2.0,
+            calc_ages=False,
+            plot_results=False,
+            echo_info=False,
+            **kwargs,
+        )
+        prep_model(params)
+        for line in capsys.readouterr().out.splitlines():
+            if line.startswith("- Final Moho depth:"):
+                return float(line.split()[-2])
+        raise AssertionError("Final Moho depth not found in model output")
+
+    @pytest.mark.parametrize("nx", [51, 201])
+    @pytest.mark.parametrize("mantle_velocity", [0.0, 0.5])
+    def test_moho_moves_with_crust(
+        self, monkeypatch, tmp_path, capsys, nx, mantle_velocity
+    ):
+        moho_depth = self._final_moho_depth(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            nx=nx,
+            crustal_uplift=True,
+            mantle_velocity=mantle_velocity,
+        )
+        # 2 km of erosion moves the Moho from 50 to 48 km
+        assert moho_depth == pytest.approx(48.0)
+
+    def test_fixed_moho(self, monkeypatch, tmp_path, capsys):
+        moho_depth = self._final_moho_depth(
+            monkeypatch, tmp_path, capsys, nx=51, crustal_uplift=True, fixed_moho=True
+        )
+        assert moho_depth == pytest.approx(50.0)

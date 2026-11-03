@@ -1189,7 +1189,7 @@ def main():
     erosion.add_argument(
         "--mantle-velocity",
         dest="mantle_velocity",
-        help="Velocity for mantle movement in fixed-Moho models (mm/yr)",
+        help="Velocity for mantle movement in crustal uplift models (mm/yr)",
         nargs="+",
         default=[0.0],
         type=float,

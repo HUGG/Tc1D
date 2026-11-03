@@ -1556,7 +1556,7 @@ def calculate_erosion_rate(
     fw_reference_frame : Boolean
         Reference frame for erosion_type 7.
     mantle_velocity : numeric
-        Velocity for mantle movement in fixed-Moho models (mm/yr)
+        Velocity for mantle movement in crustal uplift models (mm/yr)
 
     Returns
     -------
@@ -2519,7 +2519,8 @@ def init_params(
     init_moho_depth : float or int, default=50.0
         Initial depth of Moho in km.
     crustal_uplift : bool, default=False
-        Uplift only the crust in the thermal model.
+        Uplift only the crust in the thermal model. The mantle moves with
+        mantle_velocity, and the Moho moves with the crust unless fixed_moho is set.
     fixed_moho : bool, default=False
         Prevent changes in Moho depth (e.g., due to erosion).
     removal_fraction : float or int, default=0.0
@@ -2605,7 +2606,7 @@ def init_params(
     ero_stages : list of dict, default=None
         Erosion stages from YAML input file for ero_type 0
     mantle_velocity : float or int, default=0.0
-        Velocity for mantle movement in fixed-Moho models (mm/yr)
+        Velocity for mantle movement in crustal uplift models (mm/yr)
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
@@ -5341,6 +5342,12 @@ def run_model(params):
                 # Update Moho depth to use hanging wall Moho for hw in erosion type 7
                 if (params["ero_type"] == 7) and (not fw_reference_frame):
                     vx_moho = np.interp(float(fault_depth - dx), x, vx_array)
+                # For crustal uplift, the velocity switches from the crustal velocity
+                # to the mantle velocity across the Moho. The Moho velocity is equal
+                # to the velocity at the deepest node in the crust unless fixed_moho
+                # is used.
+                elif params["crustal_uplift"]:
+                    vx_moho = vx_array[x <= moho_depth][-1]
                 else:
                     vx_moho = np.interp(float(moho_depth), x, vx_array)
                 moho_depth -= vx_moho * dt

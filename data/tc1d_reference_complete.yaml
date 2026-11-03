@@ -172,8 +172,8 @@ erosion_model:
   #   7 = convergent/extensional tectonics
   ero_type: 0
 
-  mantle_velocity: 0.0         # Mantle vertical velocity [mm yr^-1] for fixed-Moho/
-                                # crustal-uplift configurations.
+  mantle_velocity: 0.0         # Mantle vertical velocity [mm yr^-1] for crustal
+                                # uplift models (crustal_uplift: true).
 
   # ero_option1..10 are model-specific parameters used by ero_type 1-7.
   # They are omitted from the active configuration because ero_type=0 is used.
