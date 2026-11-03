@@ -2633,6 +2633,8 @@ def init_params(
         Additional time added at starting temperature in t-T history in Myr.
     past_age_increment : float or int, default=0.0
         Time increment in past (in Myr) at which ages should be calculated. Works only if greater than 0.0.
+        Ages are calculated for samples reaching the surface at 0 Ma and every
+        past_age_increment prior to that, back to the start of the model.
     obs_ahe : list of float or int, default=[]
         Measured apatite (U-Th)/He age(s) in Ma.
     obs_ahe_stdev : list of float or int, default=[]
@@ -4712,15 +4714,22 @@ def run_model(params):
             surface_times_ma[:-1] = np.sort(obs_unique_depo_ages)[::-1]
         else:
             if params["past_age_increment"] > 0.0:
-                n_steps = int(
-                    np.floor(params["t_total"] / params["past_age_increment"])
+                # Surface times every past_age_increment from the present day back
+                # to (but not including) the start of the model, oldest first
+                n_surface_times = calculate_num_steps(
+                    params["t_total"], params["past_age_increment"]
                 )
-                surface_times_ma = np.linspace(
-                    0.0,
-                    params["t_total"] - params["past_age_increment"],
-                    num=n_steps,
-                    endpoint=True,
-                    dtype=float,
+                if n_surface_times < 2:
+                    warnings.warn(
+                        f"Past age increment ({params['past_age_increment']} Myr) is "
+                        f"not less than the model duration ({params['t_total']} Myr). "
+                        "Only present-day ages will be calculated.",
+                        stacklevel=2,
+                    )
+                # Round to 4 decimal places to avoid floating-point error in the
+                # times (e.g., 0.30000000000000004 Ma) and output filenames
+                surface_times_ma = np.round(
+                    params["past_age_increment"] * np.arange(n_surface_times), 4
                 )
                 surface_times_ma = np.flip(surface_times_ma)
             else:

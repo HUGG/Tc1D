@@ -1100,10 +1100,10 @@ class TestTimeSteps:
         assert history[0, 2] == pytest.approx(0.0, abs=1.0)
 
     def test_past_age_increment_not_dividing_time_steps(self, monkeypatch, tmp_path):
-        # With past ages every 0.3 Myr in a 1 Myr model, the surface times are 0,
+        # With past ages every 0.35 Myr in a 1 Myr model, the surface times are 0,
         # 0.35, and 0.7 Ma. The 0.35 Ma particle reaches the surface after 0.65 Myr,
         # which is not a whole number of 4000 year time steps (162.5).
-        self._run_forward(monkeypatch, tmp_path, dt=4000.0, past_age_increment=0.3)
+        self._run_forward(monkeypatch, tmp_path, dt=4000.0, past_age_increment=0.35)
         history = np.loadtxt(
             tmp_path / "csv" / "time_temp_depth_pressure_hist_0.35Ma.csv",
             delimiter=",",
@@ -1256,3 +1256,44 @@ class TestCrustalUplift:
             monkeypatch, tmp_path, capsys, nx=51, crustal_uplift=True, fixed_moho=True
         )
         assert moho_depth == pytest.approx(50.0)
+
+
+class TestPastAgeSurfaceTimes:
+    @staticmethod
+    def _surface_times(monkeypatch, tmp_path, time, past_age_increment):
+        """Returns the surface times (Ma) written to past_ages.csv."""
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=time,
+            dt=5000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=2.0,
+            past_age_increment=past_age_increment,
+            write_past_ages=True,
+            plot_results=False,
+            verbose=0,
+        )
+        prep_model(params)
+        past_ages = np.loadtxt(tmp_path / "csv" / "past_ages.csv", delimiter=",")
+        return np.atleast_2d(past_ages)[:, 0]
+
+    @pytest.mark.parametrize(
+        "time, increment, expected",
+        [
+            (1.0, 0.2, [0.8, 0.6, 0.4, 0.2, 0.0]),
+            # Increments that do not divide the model duration
+            (1.0, 0.3, [0.9, 0.6, 0.3, 0.0]),
+            (1.0, 0.4, [0.8, 0.4, 0.0]),
+            # Floating-point division of 0.3 / 0.1 gives 2.9999999999999996
+            (0.3, 0.1, [0.2, 0.1, 0.0]),
+        ],
+    )
+    def test_surface_times(self, monkeypatch, tmp_path, time, increment, expected):
+        surface_times = self._surface_times(monkeypatch, tmp_path, time, increment)
+        assert surface_times == pytest.approx(expected)
+
+    def test_increment_longer_than_model(self, monkeypatch, tmp_path):
+        with pytest.warns(UserWarning, match="Only present-day ages"):
+            surface_times = self._surface_times(monkeypatch, tmp_path, 1.0, 1.5)
+        assert surface_times == pytest.approx([0.0])
