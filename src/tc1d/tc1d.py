@@ -687,16 +687,18 @@ def tt_hist_to_ma(time_history: np.ndarray) -> np.ndarray:
 
 def get_write_increment(params: dict, time_ma: np.ndarray) -> int:
     """Determines frequency for output in tt and ttd histories."""
-    if len(time_ma) > 1000.0:
-        write_increment = int(round(len(time_ma) / 100, 0))
-    elif len(time_ma) > 100.0:
-        write_increment = int(round(len(time_ma) / 10, 0))
+    # Number of time steps in the history (histories also include the initial state)
+    n_steps = len(time_ma) - 1
+    if n_steps > 1000.0:
+        write_increment = int(round(n_steps / 100, 0))
+    elif n_steps > 100.0:
+        write_increment = int(round(n_steps / 10, 0))
     else:
         write_increment = 2
     # Use highest possible density of points in thermal history for ero_types 4 and 5
     # Gradients are very high following thrust emplacement or tectonic exhumation
     if (params["ero_type"] == 4) or (params["ero_type"] == 5):
-        write_increment = len(time_ma) // 1000 + 1
+        write_increment = n_steps // 1000 + 1
 
     return write_increment
 
@@ -2270,7 +2272,7 @@ def read_age_data_file(file, params):
                         th[np_index] = float(params["zr_thorium"])
                     vprint(
                         params,
-                        0,
+                        1,
                         f"         Using default U ({u[np_index]:.1f} ppm) and Th ({th[np_index]:.1f} ppm) values.",
                     )
                 # Append radius value if it exists, use default if missing (keeps list lengths consistent)
@@ -2287,7 +2289,7 @@ def read_age_data_file(file, params):
                         radius[np_index] = float(params["zr_rad"])
                     vprint(
                         params,
-                        0,
+                        1,
                         f"         Using default radius ({radius[np_index]:.1f} um) value.",
                     )
             # Append sample ID to list
@@ -3406,7 +3408,10 @@ def batch_run_na(params, batch_params):
         # Run the forward model silently using a copy of the parameters
         misfit = run_model(copy_params_for_silent_run(params))
 
-        vprint(params, 2, f"{values_text} -> misfit {misfit:.4f}")
+        if misfit is None:
+            vprint(params, 2, f"{values_text} -> no misfit (no measured ages)")
+        else:
+            vprint(params, 2, f"{values_text} -> misfit {misfit:.4f}")
         return misfit
 
     param_list = list(ParameterGrid(batch_params))

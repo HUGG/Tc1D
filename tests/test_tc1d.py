@@ -1027,10 +1027,12 @@ class TestDeprecatedModeFlags:
         assert flag in err and "will be ignored" in err
 
     @pytest.mark.parametrize("option", ["--inverse-mode", "--batch-mode"])
-    def test_cli_options_removed(self, monkeypatch, option):
+    def test_cli_options_removed(self, monkeypatch, capsys, option):
         monkeypatch.setattr("sys.argv", ["tc1d-cli", "--run-type", "mcmc", option])
-        with pytest.raises(SystemExit):
+        with pytest.raises(SystemExit) as exit_info:
             tc1d_cli.main()
+        assert exit_info.value.code == 2
+        assert f"unrecognized arguments: {option}" in capsys.readouterr().err
 
 
 class TestSetRunFlags:
@@ -1098,8 +1100,19 @@ class TestTimeSteps:
         assert history[0, 2] == pytest.approx(0.0, abs=1.0)
 
     def test_past_age_increment_not_dividing_time_steps(self, monkeypatch, tmp_path):
-        # Past ages every 0.3 Myr are not a whole number of 5000 year time steps
-        self._run_forward(monkeypatch, tmp_path, dt=5000.0, past_age_increment=0.3)
+        # With past ages every 0.3 Myr in a 1 Myr model, the surface times are 0,
+        # 0.35, and 0.7 Ma. The 0.35 Ma particle reaches the surface after 0.65 Myr,
+        # which is not a whole number of 4000 year time steps (162.5).
+        self._run_forward(monkeypatch, tmp_path, dt=4000.0, past_age_increment=0.3)
+        history = np.loadtxt(
+            tmp_path / "csv" / "time_temp_depth_pressure_hist_0.35Ma.csv",
+            delimiter=",",
+            skiprows=1,
+        )
+        # The history is rounded up to whole time steps (163 steps), and starts
+        # at the start of the model and ends at the surface
+        assert history[0, 2] == pytest.approx(0.0, abs=1.0)
+        assert history[-1, 0] == pytest.approx(163 * 0.004)
 
 
 class TestThermalHistories:
