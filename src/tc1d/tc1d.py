@@ -1678,11 +1678,10 @@ def calculate_erosion_rate(
     elif params["ero_type"] == 2:
         thicknesses = []
         transition_times_sec = []
-        total_time_Myr = (
-            params["t_total"]
-            if isinstance(params["t_total"], float)
-            else params["t_total"][0]
-        )
+        if isinstance(params["t_total"], (list, tuple, np.ndarray)):
+            total_time_Myr = float(params["t_total"][0])
+        else:
+            float(params["t_total"])
         # Ensure total_time_Myr is in Myr (params["t_total"] is likely already in Myr here)
         for opt_idx in range(1, 11, 2):  # Check ero_option1,3,5,7,9
             thick = params.get(f"ero_option{opt_idx}", 0.0)
