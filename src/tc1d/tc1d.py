@@ -6992,6 +6992,14 @@ def run_model(params):
         # Write output to a file
         outfile = wd / "csv" / params["log_file"]
 
+        # Use -9999.0 for all age and Tc values if ages are not calculated
+        if not params["calc_ages"]:
+            n_obs_ahe = n_obs_aft = n_obs_zhe = n_obs_zft = 0
+            num_passed_ages = num_file_ages = 0
+            no_ages = np.array([-9999.0])
+            corr_ahe_ages = ahe_temps = aft_ages = aft_temps = no_ages
+            corr_zhe_ages = zhe_temps = zft_ages = zft_temps = no_ages
+
         # Define measured ages for batch output
         if n_obs_ahe == 0:
             obs_ahe = -9999.0

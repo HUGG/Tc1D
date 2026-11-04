@@ -1338,3 +1338,19 @@ class TestCrashFixes:
         self._run(monkeypatch, tmp_path, run_type="batch", ero_option1=(1.0, 2.0))
         log = (tmp_path / "csv" / "tc1d_batch_log.csv").read_text().splitlines()
         assert len(log) == 3  # header and two models
+
+    @pytest.mark.parametrize("run_type", ["forward", "batch"])
+    def test_log_output_without_ages(self, monkeypatch, tmp_path, run_type):
+        ero_option2 = [0.0, 1.0] if run_type == "batch" else 0.0
+        params = self._run(
+            monkeypatch,
+            tmp_path,
+            run_type=run_type,
+            ero_option2=ero_option2,
+            calc_ages=False,
+            log_output=True,
+        )
+        log = (tmp_path / "csv" / params["log_file"]).read_text().splitlines()
+        # Header plus one row per model, with -9999.0 for the age values
+        assert len(log) == (3 if run_type == "batch" else 2)
+        assert "-9999.0000" in log[1]
