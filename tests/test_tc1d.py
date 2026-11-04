@@ -1297,3 +1297,35 @@ class TestPastAgeSurfaceTimes:
         with pytest.warns(UserWarning, match="Only present-day ages"):
             surface_times = self._surface_times(monkeypatch, tmp_path, 1.0, 1.5)
         assert surface_times == pytest.approx([0.0])
+
+
+class TestCrashFixes:
+    """Input combinations that previously crashed."""
+
+    @staticmethod
+    def _run(monkeypatch, tmp_path, **kwargs):
+        monkeypatch.chdir(tmp_path)
+        model = dict(
+            time=1.0,
+            dt=20000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=2.0,
+            plot_results=False,
+            verbose=0,
+        )
+        model.update(kwargs)
+        params = init_params(**model)
+        prep_model(params)
+        return params
+
+    def test_ero_type2_integer_time(self, monkeypatch, tmp_path):
+        self._run(
+            monkeypatch,
+            tmp_path,
+            time=1,
+            ero_type=2,
+            ero_option1=1.0,
+            ero_option2=0.5,
+            ero_option3=1.0,
+        )
