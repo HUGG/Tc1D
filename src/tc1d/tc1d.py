@@ -3091,10 +3091,10 @@ def prep_model(params):
             batch_run_mcmc(params, batch_params)
 
     else:
-        # If called as a function, find parameters given as lists
+        # If called as a function, find parameters given as lists or tuples
         for key in batch_keys:
-            if isinstance(params[key], list):
-                batch_params[key] = params[key]
+            if isinstance(params[key], (list, tuple)):
+                batch_params[key] = list(params[key])
 
         # NA and MCMC inversions are only supported using tc1d-cli
         if params["run_type"].lower() in ["na", "mcmc"]:
@@ -3115,7 +3115,9 @@ def prep_model(params):
 
         # Now we see what to do for running the model(s)
         if not params["batch_mode"]:
-            # Convert list values, run single model
+            # Convert single-value lists to non-collection values, run single model
+            for key in batch_params:
+                params[key] = batch_params[key][0]
             run_model(params)
         else:
             # Run in batch mode

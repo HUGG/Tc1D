@@ -1329,3 +1329,12 @@ class TestCrashFixes:
             ero_option2=0.5,
             ero_option3=1.0,
         )
+
+    def test_single_value_lists(self, monkeypatch, tmp_path):
+        params = self._run(monkeypatch, tmp_path, ero_option1=[2.0])
+        assert params["ero_option1"] == 2.0
+
+    def test_tuples_for_batch_runs(self, monkeypatch, tmp_path):
+        self._run(monkeypatch, tmp_path, run_type="batch", ero_option1=(1.0, 2.0))
+        log = (tmp_path / "csv" / "tc1d_batch_log.csv").read_text().splitlines()
+        assert len(log) == 3  # header and two models
