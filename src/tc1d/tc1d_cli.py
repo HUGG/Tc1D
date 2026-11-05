@@ -281,6 +281,17 @@ def _load_yaml_dict(path: str) -> dict:
     return data
 
 
+def _cli_warning(message: str, details: list | None = None) -> None:
+    """Print a warning from tc1d-cli to stderr.
+
+    The message is printed with the prefix "tc1d-cli: warning: " followed by any
+    additional lines in details (printed as given).
+    """
+    print(f"tc1d-cli: warning: {message}", file=sys.stderr)
+    for line in details or []:
+        print(line, file=sys.stderr)
+
+
 def _as_list(x):
     """Keep argparse nargs='+' behaviour: store scalars as one-element lists."""
     return x if isinstance(x, list) else [x]
@@ -355,17 +366,14 @@ def _apply_yaml_to_args(args, y: dict) -> None:
         if "inverse_mode" in g and _as_bool(g["inverse_mode"]) != (
             run_type in ("na", "mcmc")
         ):
-            print(
-                f"tc1d-cli: warning: inverse_mode={_as_bool(g['inverse_mode'])} in the "
-                f"YAML input file will be ignored. The run mode is set by run_type "
-                f"({run_type!r}).",
-                file=sys.stderr,
+            _cli_warning(
+                f"inverse_mode={_as_bool(g['inverse_mode'])} in the YAML input file "
+                f"will be ignored. The run mode is set by run_type ({run_type!r})."
             )
         if "batch_mode" in g and _as_bool(g["batch_mode"]) and run_type != "batch":
-            print(
-                "tc1d-cli: warning: batch_mode=True in the YAML input file will be ignored. "
-                f"The run mode is set by run_type ({run_type!r}).",
-                file=sys.stderr,
+            _cli_warning(
+                "batch_mode=True in the YAML input file will be ignored. "
+                f"The run mode is set by run_type ({run_type!r})."
             )
 
     # ---- geometry_time
@@ -664,20 +672,17 @@ def _warn_yaml_cli_conflicts(parser, cli_args, default_args, y: dict) -> None:
     if not conflicts:
         return
 
-    msg_lines = [
-        "YAML input file is active: YAML values override CLI flags for the same keys.",
-        "Ignored CLI flags (also defined in YAML):",
-    ]
+    details = ["Ignored CLI flags (also defined in YAML):"]
     for dest, cli_val, y_val in conflicts:
-        msg_lines.append(f"  - {dest}: CLI={cli_val!r} ignored, YAML={y_val!r} used")
-
-    msg_lines.append(
+        details.append(f"  - {dest}: CLI={cli_val!r} ignored, YAML={y_val!r} used")
+    details.append(
         "Tip: remove the key from YAML if you want to control it from the command line."
     )
 
-    print("tc1d-cli: warning: " + msg_lines[0], file=sys.stderr)
-    for line in msg_lines[1:]:
-        print(line, file=sys.stderr)
+    _cli_warning(
+        "YAML input file is active: YAML values override CLI flags for the same keys.",
+        details,
+    )
 
 
 def validate_args(args, parser, y=None) -> None:

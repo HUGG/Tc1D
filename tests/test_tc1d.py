@@ -30,6 +30,7 @@ from tc1d.tc1d import (
 )
 from tc1d.tc1d_cli import (
     _apply_yaml_to_args,
+    _cli_warning,
     _validate_yaml_keys,
     _load_yaml_dict,
     YAML_ALLOWED_KEYS,
@@ -1595,3 +1596,17 @@ class TestLogFile:
             assert float(values["Measured apatite (U-Th)/He age (Ma)"]) == -9999.0
         assert float(values["Measured zircon (U-Th)/He age (Ma)"]) == 28.0
         assert float(values["Measured zircon (U-Th)/He standard deviation (Ma)"]) == 1.5
+
+
+class TestCliWarning:
+    def test_cli_warning(self, capsys):
+        _cli_warning("Something to note.", ["  - detail 1", "  - detail 2"])
+        captured = capsys.readouterr()
+        assert captured.out == ""
+        assert captured.err == (
+            "tc1d-cli: warning: Something to note.\n  - detail 1\n  - detail 2\n"
+        )
+
+    def test_cli_warning_without_details(self, capsys):
+        _cli_warning("Something to note.")
+        assert capsys.readouterr().err == "tc1d-cli: warning: Something to note.\n"
