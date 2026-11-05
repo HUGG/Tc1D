@@ -7055,8 +7055,8 @@ def run_model(params):
             obs_zhe_stdev = -9999.0
         else:
             if ages_from_data_file:
-                obs_zhe = obs_ages[obs_ahe_indices[0]]
-                obs_zhe_stdev = obs_stdev[obs_ahe_indices[0]]
+                obs_zhe = obs_ages[obs_zhe_indices[0]]
+                obs_zhe_stdev = obs_stdev[obs_zhe_indices[0]]
             else:
                 obs_zhe = params["obs_zhe"][0]
                 obs_zhe_stdev = params["obs_zhe_stdev"][0]
