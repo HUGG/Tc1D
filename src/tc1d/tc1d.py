@@ -3177,7 +3177,8 @@ def log_output(params, batch_mode=False):
         if write_header:
             f.write(
                 "Model ID,Simulation time (Myr),Time step (yr),Model thickness (km),Node points,"
-                "Surface temperature (C),Basal temperature (C),Mantle adiabat,"
+                "Basal boundary condition type,Surface temperature (C),Basal temperature (C),"
+                "Basal heat flow (mW m^-2),Mantle adiabat reference temperature (C),Mantle adiabat,"
                 "Crustal density (kg m^-3),Mantle removal fraction,Mantle removal start time (Ma),"
                 "Mantle removal end time (Ma),Erosion model type,Erosion model option 1,"
                 "Erosion model option 2,Erosion model option 3,Erosion model option 4,Erosion model option 5,"
@@ -3186,9 +3187,9 @@ def log_output(params, batch_mode=False):
                 "Initial Moho depth (km),Initial Moho temperature (C),"
                 "Initial surface heat flow (mW m^-2),Initial surface elevation (km),Initial dimensionless heat production,"
                 "Final Moho depth (km),Final Moho temperature (C),Final surface heat flow (mW m^-2),"
-                "Final surface elevation (km),Final dimensionless heat production,Total exhumation (km),Average Peclet number,Minimum Peclet number, Maximum Peclet number,Apatite grain radius (um),Apatite U "
-                "concentration (ppm), Apatite Th concentration (ppm),Zircon grain radius (um),Zircon U "
-                "concentration (ppm), Zircon Th concentration (ppm),Predicted apatite (U-Th)/He age (Ma),"
+                "Final surface elevation (km),Final dimensionless heat production,Total exhumation (km),Average Peclet number,Minimum Peclet number,Maximum Peclet number,Apatite grain radius (um),Apatite U "
+                "concentration (ppm),Apatite Th concentration (ppm),Zircon grain radius (um),Zircon U "
+                "concentration (ppm),Zircon Th concentration (ppm),Predicted apatite (U-Th)/He age (Ma),"
                 "Predicted apatite (U-Th)/He closure temperature (C),Measured apatite (U-Th)/He age (Ma),"
                 "Measured apatite (U-Th)/He standard deviation (Ma),Predicted apatite fission-track age (Ma),"
                 "Predicted apatite fission-track closure temperature (C),Measured apatite fission-track age (Ma),"
@@ -3199,7 +3200,6 @@ def log_output(params, batch_mode=False):
                 "Measured zircon fission-track standard deviation (Ma),Misfit,Misfit type,Number of ages for misfit\n"
             )
             write_header = False
-        f.write(f"{params['model_id']},")
 
     return outfile
 
@@ -3266,15 +3266,16 @@ def batch_run(params, batch_params):
             vprint(params, 1, f"Model {i + 1}/{n_models} ({model_text}): FAILED ({e})")
             # FIXME: outfile is not defined when models crash...
             # Should this also be handled in log_output()?
+            # Output values are left empty for failed models
             with open(outfile, "a+") as f:
                 f.write(
-                    f"{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},{params['bc_type']},"
+                    f"{params['model_id']},{params['t_total']:.4f},{params['dt']:.4f},{params['max_depth']:.4f},{params['nx']},{params['bc_type']},"
                     f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                     f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                     f"{params['removal_end_time']:.4f},"
                     f"{params['ero_type']},{params['ero_option1']:.4f},"
                     f"{params['ero_option2']:.4f},{params['ero_option3']:.4f},{params['ero_option4']:.4f},{params['ero_option5']:.4f},{params['ero_option6']:.4f},{params['ero_option7']:.4f},{params['ero_option8']:.4f},{params['ero_option9']:.4f},{params['ero_option10']:.4f},{params['mantle_velocity']:.4f},{params['init_moho_depth']:.4f},,,,,,,,,,,,,,{params['ap_rad']:.4f},{params['ap_uranium']:.4f},"
-                    f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},{params['zr_thorium']:.4f},,,,,,,,,,,,,,,\n"
+                    f"{params['ap_thorium']:.4f},{params['zr_rad']:.4f},{params['zr_uranium']:.4f},{params['zr_thorium']:.4f},,,,,,,,,,,,,,,,,,,\n"
                 )
             failed += 1
 
@@ -3438,6 +3439,8 @@ def batch_run_na(params, batch_params):
 
     param_list = list(ParameterGrid(batch_params))
     log_output(params, batch_mode=True)
+    # Inversion models are not given model IDs in the log file
+    params["model_id"] = ""
 
     # FIXME: Are these needed???
     # success = 0
@@ -4069,6 +4072,8 @@ def batch_run_mcmc(params, batch_params):
 
     # print("--- Starting MCMC inverse mode ---\n")
     log_output(params, batch_mode=True)
+    # Inversion models are not given model IDs in the log file
+    params["model_id"] = ""
 
     # ------------------------------------------------------------
     # BG: MCMC does NOT need a ParameterGrid (that is for batch/grids).
@@ -7093,7 +7098,7 @@ def run_model(params):
         # Open log file for writing
         with open(outfile, "a+") as f:
             f.write(
-                f"{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},{params['bc_type']},"
+                f"{params['model_id']},{t_total / myr2sec(1):.4f},{dt / yr2sec(1):.4f},{max_depth / kilo2base(1):.4f},{params['nx']},{params['bc_type']},"
                 f"{params['temp_surf']:.4f},{params['temp_base']:.4f},{params['flux_base']:.4f},{params['temp_adiabat_ref']:.4f},{params['mantle_adiabat']},"
                 f"{params['rho_crust']:.4f},{params['removal_fraction']:.4f},{params['removal_start_time']:.4f},"
                 f"{params['removal_end_time']:.4f},{params['ero_type']},{params['ero_option1']:.4f},"

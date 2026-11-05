@@ -1480,3 +1480,92 @@ class TestCrashFixes:
             tmp_path / "csv" / "na_searcher_results.csv", delimiter=",", skiprows=1
         )
         np.testing.assert_allclose(results[:, -1], [2.0, 1.0e10, 4.0, 1.0e10, 3.0])
+
+
+class TestLogFile:
+    """Every row in the log file should have one value per header column."""
+
+    OBS_AGE_FILE = str(Path(__file__).parent.parent / "data" / "sample_data.csv")
+
+    @staticmethod
+    def _read_log(log_file):
+        import csv
+
+        rows = list(csv.reader(log_file.open()))
+        header, data = rows[0], rows[1:]
+        assert len(data) > 0
+        for row in data:
+            assert len(row) == len(header)
+        return header, data
+
+    def test_forward_log(self, monkeypatch, tmp_path):
+        params = TestCrashFixes._run(
+            monkeypatch,
+            tmp_path,
+            temp_surf=5.0,
+            log_output=True,
+            model_id="RUN1",
+        )
+        header, data = self._read_log(tmp_path / "csv" / params["log_file"])
+        values = dict(zip(header, data[0]))
+        assert values["Model ID"] == "RUN1"
+        assert values["Node points"] == "21"
+        assert float(values["Surface temperature (C)"]) == 5.0
+        assert float(values["Total exhumation (km)"]) == pytest.approx(2.0)
+
+    def test_batch_log_with_failed_model(self, monkeypatch, tmp_path):
+        # The explicit solution (type 1) is unstable for these grid and time steps
+        TestCrashFixes._run(
+            monkeypatch,
+            tmp_path,
+            run_type="batch",
+            nx=101,
+            dt=50000.0,
+            solution_type=[1, 2],
+        )
+        _, data = self._read_log(tmp_path / "csv" / "tc1d_batch_log.csv")
+        assert [row[0] for row in data] == ["M0001", "M0002"]
+
+    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
+    def test_inversion_log(self, monkeypatch, tmp_path, run_type):
+        import matplotlib
+        import yaml
+
+        matplotlib.use("Agg")
+        config = {
+            "general": {"run_type": run_type, "verbose": 0},
+            "geometry_time": {"time": 1.0, "dt": 20000.0, "nx": 21},
+            "erosion_model": {
+                "ero_type": 2,
+                "ero_option1": [0.5, 2.0],
+                "ero_option2": 0.5,
+                "ero_option3": [0.5, 2.0],
+            },
+            "observations": {"obs_age_file": self.OBS_AGE_FILE},
+            "plotting": {"no_plot_results": True, "no_display_plots": True},
+            "inversion": {
+                "neighbourhood_algorithm": {
+                    "na_ns": 2,
+                    "na_nr": 1,
+                    "na_ni": 2,
+                    "na_n": 1,
+                    "na_n_resample": 4,
+                    "na_n_walkers": 1,
+                },
+                "mcmc": {
+                    "mcmc_nwalkers": 4,
+                    "mcmc_nsteps": 1,
+                    "mcmc_discard": 0,
+                    "mcmc_thin": 1,
+                },
+            },
+        }
+        input_file = tmp_path / "input.yaml"
+        input_file.write_text(yaml.safe_dump(config))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        tc1d_cli.main()
+
+        _, data = self._read_log(tmp_path / "csv" / "tc1d_batch_log.csv")
+        # Models run during inversions are not given model IDs
+        assert set(row[0] for row in data) == {""}
