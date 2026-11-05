@@ -1619,3 +1619,21 @@ class TestScreenOutput:
         output = capsys.readouterr().out
         assert "--- Calculating transient thermal model ---" in output
         assert "(Pass" not in output
+
+    @pytest.mark.parametrize("echo_inputs, verbose", [(True, 1), (True, 0), (False, 1)])
+    def test_echo_inputs(self, monkeypatch, tmp_path, capsys, echo_inputs, verbose):
+        TestCrashFixes._run(
+            monkeypatch,
+            tmp_path,
+            echo_inputs=echo_inputs,
+            verbose=verbose,
+            temp_surf=5.0,
+        )
+        output = capsys.readouterr().out
+        if echo_inputs and verbose >= 1:
+            assert "--- Model input values ---" in output
+            assert "- temp_surf: 5.0" in output
+            assert "- t_total: 1.0" in output
+            assert "- batch_mode:" not in output
+        else:
+            assert "--- Model input values ---" not in output

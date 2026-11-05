@@ -2507,7 +2507,8 @@ def init_params(
     Parameters
     ----------
     echo_inputs : bool, default=False
-        Print input values to the screen.
+        Print the model input values to the screen before running the model(s)
+        (for verbose >= 1).
     echo_info : bool, default=True
         Print basic model info to the screen.
     echo_thermal_info : bool, default=True
@@ -2968,6 +2969,27 @@ def set_run_flags(params: dict) -> None:
     params["inverse_mode"] = run_type in ["na", "mcmc"]
 
 
+def echo_model_inputs(params: dict) -> None:
+    """Prints the model input values to the screen.
+
+    The values are printed as they will be used by the model, i.e., after
+    combining YAML and command-line inputs when using tc1d-cli. Internal flags
+    that are not model inputs are not printed.
+    """
+    internal_keys = [
+        "cmd_line_call",
+        "batch_mode",
+        "inverse_mode",
+        "ero_stages_template",
+    ]
+    print("--- Model input values ---")
+    print("")
+    for key, value in params.items():
+        if key not in internal_keys:
+            print(f"- {key}: {value}")
+    print("")
+
+
 def prep_model(params):
     """Prepares models to be run as single models or in batch mode.
 
@@ -3070,6 +3092,10 @@ def prep_model(params):
         print(
             f"{26 * '='} This is Tc1D version {__version__} {second_star_len * '='}\n"
         )
+
+        # Print model input values, if requested
+        if params["echo_inputs"] and params["verbose"] >= 1:
+            echo_model_inputs(params)
 
     # Check that prep_model was called from the command line
     if params["cmd_line_call"]:

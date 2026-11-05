@@ -752,7 +752,7 @@ def main():
     general.add_argument(
         "--echo-inputs",
         dest="echo_inputs",
-        help="Print input values to the screen",
+        help="Print the model input values (after applying any YAML inputs) to the screen",
         action="store_true",
         default=False,
     )
