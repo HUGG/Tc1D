@@ -1569,3 +1569,29 @@ class TestLogFile:
         _, data = self._read_log(tmp_path / "csv" / "tc1d_batch_log.csv")
         # Models run during inversions are not given model IDs
         assert set(row[0] for row in data) == {""}
+
+    @pytest.mark.parametrize("age_types", [["AHe", "ZHe"], ["ZHe"]])
+    def test_measured_ages_in_log(self, monkeypatch, tmp_path, age_types):
+        """Measured ages from an age data file are written to the matching log
+        columns, including when there are no AHe ages."""
+        ages = {
+            "AHe": "AHe, 9.0, 0.5, 40.0, 60.0, S1,\n",
+            "ZHe": "ZHe, 28.0, 1.5, 900.0, 60.0, S1,\n",
+        }
+        age_file = tmp_path / "ages.csv"
+        age_file.write_text(
+            "Age type, Age (Ma), Standard deviation (Ma), eU concentration (ppm), "
+            "Grain radius (um), Sample ID, Depositional age (Ma)\n"
+            + "".join(ages[age_type] for age_type in age_types)
+        )
+        params = TestCrashFixes._run(
+            monkeypatch, tmp_path, obs_age_file=str(age_file), log_output=True
+        )
+        header, data = self._read_log(tmp_path / "csv" / params["log_file"])
+        values = dict(zip(header, data[0]))
+        if "AHe" in age_types:
+            assert float(values["Measured apatite (U-Th)/He age (Ma)"]) == 9.0
+        else:
+            assert float(values["Measured apatite (U-Th)/He age (Ma)"]) == -9999.0
+        assert float(values["Measured zircon (U-Th)/He age (Ma)"]) == 28.0
+        assert float(values["Measured zircon (U-Th)/He standard deviation (Ma)"]) == 1.5
