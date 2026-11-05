@@ -18,6 +18,7 @@ from tc1d.tc1d import (
     erosion_exponential,
     calculate_erosion_rate,
     calculate_exhumation_magnitude,
+    calculate_misfit,
     calculate_num_steps,
     check_run_type,
     get_history_indices,
@@ -1388,3 +1389,16 @@ class TestCrashFixes:
         )
         summary = (tmp_path / "csv" / "age_summary.csv").read_text().splitlines()
         assert len(summary) == 3  # header and the two samples
+
+    @pytest.mark.parametrize("n_ages, num_params", [(1, 0), (2, 1), (2, 2)])
+    def test_misfit_type2_too_few_ages(self, n_ages, num_params):
+        ages = np.linspace(10.0, 20.0, n_ages)
+        with pytest.raises(ValueError, match="Misfit type 2 requires more"):
+            calculate_misfit(ages + 1.0, ages, ages / 10.0, 2, num_params)
+
+    def test_misfit_type2(self):
+        # Sum of squared normalized residuals divided by (N - num_params - 1)
+        measured = np.array([10.0, 12.0, 14.0])
+        predicted = np.array([11.0, 12.0, 12.0])
+        stdev = np.array([1.0, 1.0, 1.0])
+        assert calculate_misfit(predicted, measured, stdev, 2, 1) == pytest.approx(5.0)

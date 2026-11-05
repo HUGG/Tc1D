@@ -2353,6 +2353,12 @@ def calculate_misfit(
     -------
     misfit : float
         Calculated misfit value.
+
+    Raises
+    ------
+    ValueError
+        If misfit type 2 is used with too few ages for the number of model
+        parameters (the number of ages must be greater than num_params + 1).
     """
     # Caclulate general misfit, modify for types 1 and 2 as needed
     misfit = ((predicted_ages - measured_ages) ** 2 / measured_stdev**2).sum()
@@ -2361,7 +2367,13 @@ def calculate_misfit(
         misfit = np.sqrt(misfit) / len(predicted_ages)
 
     if misfit_type == 2:
-        misfit = misfit / (len(predicted_ages) - num_params - 1)
+        degrees_of_freedom = len(predicted_ages) - num_params - 1
+        if degrees_of_freedom <= 0:
+            raise ValueError(
+                f"Misfit type 2 requires more measured ages ({len(predicted_ages)}) "
+                f"than the number of model parameters plus one ({num_params + 1})."
+            )
+        misfit = misfit / degrees_of_freedom
 
     return misfit
 
