@@ -1370,3 +1370,21 @@ class TestCrashFixes:
             ValueError, match="must be younger than the model starting time"
         ):
             self._run(monkeypatch, tmp_path, obs_age_file=str(age_file))
+
+    def test_age_file_with_blank_lines(self, monkeypatch, tmp_path):
+        # Blank lines between samples and at the end of the file
+        age_file = tmp_path / "ages.csv"
+        age_file.write_text(
+            "Age type, Age (Ma), Standard deviation (Ma), eU concentration (ppm), "
+            "Grain radius (um), Sample ID, Depositional age (Ma)\n"
+            "AHe, 9.0, 0.5, 40.0, 60.0, S1,\n"
+            "\n"
+            "ZHe, 28.0, 1.5, 900.0, 60.0, S1,\n"
+            "\n"
+            "   \n"
+        )
+        self._run(
+            monkeypatch, tmp_path, obs_age_file=str(age_file), write_age_output=True
+        )
+        summary = (tmp_path / "csv" / "age_summary.csv").read_text().splitlines()
+        assert len(summary) == 3  # header and the two samples

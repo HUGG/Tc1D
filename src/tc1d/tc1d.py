@@ -2210,7 +2210,8 @@ def read_age_data_file(file, params):
     """
     # Read in data file and create nested lists of values
     with open(file, "r") as file:
-        data = file.read().splitlines()
+        # Skip blank lines (e.g., a blank line at the end of the file)
+        data = [line for line in file.read().splitlines() if line.strip()]
 
         # Create NumPy arrays for file data
         data_len = len(data) - 1
