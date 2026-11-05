@@ -3262,7 +3262,7 @@ def batch_run(params, batch_params):
             vprint(params, 2, f"Model {i + 1}/{n_models} ({model_text}): complete")
             success += 1
         # TODO: Should make a complete list of exceptions to catch
-        except ValueError as e:
+        except (ValueError, UnstableSolutionError) as e:
             vprint(params, 1, f"Model {i + 1}/{n_models} ({model_text}): FAILED ({e})")
             # FIXME: outfile is not defined when models crash...
             # Should this also be handled in log_output()?
@@ -3423,7 +3423,12 @@ def batch_run_na(params, batch_params):
             return 1e10  # Or some large misfit to reject the model
 
         # Run the forward model silently using a copy of the parameters
-        misfit = run_model(copy_params_for_silent_run(params))
+        # Reject models that fail (like done for batch runs and MCMC)
+        try:
+            misfit = run_model(copy_params_for_silent_run(params))
+        except (ValueError, UnstableSolutionError) as e:
+            vprint(params, 1, f"[ERROR] run_model failed for {values_text}: {e}")
+            return 1e10
 
         if misfit is None:
             vprint(params, 2, f"{values_text} -> no misfit (no measured ages)")

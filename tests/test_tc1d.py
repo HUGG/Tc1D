@@ -1402,3 +1402,81 @@ class TestCrashFixes:
         predicted = np.array([11.0, 12.0, 12.0])
         stdev = np.array([1.0, 1.0, 1.0])
         assert calculate_misfit(predicted, measured, stdev, 2, 1) == pytest.approx(5.0)
+
+    def test_batch_continues_after_unstable_model(self, monkeypatch, tmp_path):
+        # The explicit solution (type 1) is unstable for these grid and time steps
+        self._run(
+            monkeypatch,
+            tmp_path,
+            run_type="batch",
+            nx=101,
+            dt=50000.0,
+            solution_type=[1, 2],
+        )
+        log = (tmp_path / "csv" / "tc1d_batch_log.csv").read_text().splitlines()
+        assert len(log) == 3  # header, failed model, and successful model
+
+    def test_na_continues_after_failed_model(self, monkeypatch, tmp_path):
+        """Models that fail during an NA inversion should be rejected, not stop
+        the inversion. The search and appraisal are replaced by simple stand-ins
+        so that only the objective function is tested."""
+        import matplotlib
+        import yaml
+        import tc1d.tc1d as tc1d_module
+
+        matplotlib.use("Agg")
+
+        # Forward model stand-in: fails for ero_option1 > 5, otherwise returns
+        # ero_option1 as the misfit
+        def fake_run_model(params):
+            if params["ero_option1"] > 5.0:
+                raise ValueError("test model failure")
+            return params["ero_option1"]
+
+        class FakeSearcher:
+            def __init__(self, objective, ns, nr, ni, n, bounds):
+                self.objective = objective
+                self.ni = ni
+                self.bounds = bounds
+
+            def run(self):
+                self.samples = np.array(
+                    [[2.0, 1.0], [8.0, 2.0], [4.0, 3.0], [9.0, 1.5], [3.0, 2.5]]
+                )
+                self.objectives = np.array([self.objective(x) for x in self.samples])
+
+        class FakeAppraiser:
+            def __init__(self, initial_ensemble, log_ppd, bounds, **kwargs):
+                self.samples = initial_ensemble
+                self.mean = initial_ensemble.mean(axis=0)
+                self.sample_mean_error = np.zeros(2)
+                self.covariance = np.cov(initial_ensemble.T)
+                self.sample_covariance_error = np.zeros((2, 2))
+
+            def run(self):
+                pass
+
+        monkeypatch.setattr(tc1d_module, "run_model", fake_run_model)
+        monkeypatch.setattr(tc1d_module, "NASearcher", FakeSearcher)
+        monkeypatch.setattr(tc1d_module, "NAAppraiser", FakeAppraiser)
+        monkeypatch.chdir(tmp_path)
+
+        config = {
+            "general": {"run_type": "na", "verbose": 0},
+            "erosion_model": {
+                "ero_type": 1,
+                "ero_option1": [1.0, 10.0],
+                "ero_option2": [0.0, 5.0],
+            },
+            "plotting": {"no_display_plots": True},
+        }
+        input_file = tmp_path / "input.yaml"
+        input_file.write_text(yaml.safe_dump(config))
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        tc1d_cli.main()
+
+        # Failed models (ero_option1 = 8 and 9) get a large misfit
+        results = np.loadtxt(
+            tmp_path / "csv" / "na_searcher_results.csv", delimiter=",", skiprows=1
+        )
+        np.testing.assert_allclose(results[:, -1], [2.0, 1.0e10, 4.0, 1.0e10, 3.0])
