@@ -1354,3 +1354,17 @@ class TestCrashFixes:
         # Header plus one row per model, with -9999.0 for the age values
         assert len(log) == (3 if run_type == "batch" else 2)
         assert "-9999.0000" in log[1]
+
+    @pytest.mark.parametrize("depo_age", [1.0, 2.0])
+    def test_depositional_age_not_younger_than_model(
+        self, monkeypatch, tmp_path, depo_age
+    ):
+        # Depositional ages equal to or older than the 1 Myr model duration
+        age_file = tmp_path / "ages.csv"
+        age_file.write_text(
+            "Age type, Age (Ma), Standard deviation (Ma), eU concentration (ppm), "
+            "Grain radius (um), Sample ID, Depositional age (Ma)\n"
+            f"AHe, 9.0, 0.5, 40.0, 60.0, S1, {depo_age}\n"
+        )
+        with pytest.raises(ValueError, match="must be less than the model duration"):
+            self._run(monkeypatch, tmp_path, obs_age_file=str(age_file))

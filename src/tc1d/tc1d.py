@@ -4678,6 +4678,12 @@ def run_model(params):
             obs_zero_depo_indices = np.where(obs_depo_age_file <= eps)[0]
             obs_nz_depo_indices = np.where(obs_depo_age_file > eps)[0]
             obs_unique_depo_ages = np.unique(obs_depo_age_file[obs_nz_depo_indices])
+            if np.any(obs_unique_depo_ages >= params["t_total"]):
+                raise ValueError(
+                    f"Depositional ages in the age data file must be younger than the "
+                    f"model starting time ({params['t_total']} Ma), but the oldest depositional age is "
+                    f"{obs_unique_depo_ages.max()} Ma."
+                )
 
             # Create list of indices for samples with nonzero depositional ages
             obs_ahe_depo_indices = np.intersect1d(obs_ahe_indices, obs_nz_depo_indices)
