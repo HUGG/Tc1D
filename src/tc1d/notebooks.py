@@ -123,7 +123,7 @@ def fetch_notebooks(dest=DEFAULT_DEST, ver=None, force=False):
                 raise RuntimeError(
                     f"No notebook archive found for version '{ver}'. Releases "
                     "older than the introduction of this command do not include "
-                    "one. Try '--version latest', or download the notebooks "
+                    "one. Try '--release latest', or download the notebooks "
                     f"from {REPO_URL}/tree/main/notebooks"
                 ) from err
             raise
@@ -154,15 +154,22 @@ def main(argv=None):
         help=f"Directory to save the notebooks in (default: {DEFAULT_DEST})",
     )
     parser.add_argument(
-        "-v",
-        "--version",
+        "-r",
+        "--release",
         dest="ver",
-        metavar="VERSION",
+        metavar="RELEASE",
         default=None,
         help=(
-            "Tc1D version of the notebooks to download, e.g. 0.7.0, or 'latest' "
+            "Tc1D release of the notebooks to download, e.g. 0.7.0, or 'latest' "
             f"(default: installed version, {__version__})"
         ),
+    )
+    # Previous name of --release, kept (hidden) so existing commands still work
+    parser.add_argument(
+        "--version",
+        dest="ver",
+        default=None,
+        help=argparse.SUPPRESS,
     )
     parser.add_argument(
         "-f",

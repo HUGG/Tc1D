@@ -150,7 +150,7 @@ To get a local copy of all of the notebooks and their data files, run
 
    tc1d-notebooks
 
-This downloads the notebooks matching your installed version of T\ :sub:`c`\ 1D into a new ``tc1d-notebooks`` directory. Use ``tc1d-notebooks --help`` to see how to choose a different location or version.
+This downloads the notebooks matching your installed version of T\ :sub:`c`\ 1D into a new ``tc1d-notebooks`` directory. Use ``tc1d-notebooks --help`` to see how to choose a different location or release.
 The notebooks are also available as a ZIP file attached to each `Tc1D release <https://github.com/HUGG/Tc1D/releases>`_ and the notebooks for the latest release can be `downloaded directly <https://github.com/HUGG/Tc1D/releases/latest/download/tc1d-notebooks.zip>`_.
 
 To run the notebooks locally you will also need JupyterLab, which can be installed along with T\ :sub:`c`\ 1D using

@@ -85,3 +85,38 @@ def test_fetch_notebooks_dev_version_uses_latest(tmp_path, fake_download, monkey
     monkeypatch.setattr(notebooks, "__version__", "0.7.1.dev2")
     notebooks.fetch_notebooks(dest=tmp_path / "nb")
     assert fake_download == [notebooks.archive_url("latest")]
+
+
+@pytest.mark.parametrize(
+    "argv, expected_ver",
+    [
+        ([], None),
+        (["--release", "0.7.0"], "0.7.0"),
+        (["-r", "latest"], "latest"),
+        # Previous option name, still accepted
+        (["--version", "latest"], "latest"),
+    ],
+)
+def test_main_release_option(monkeypatch, argv, expected_ver):
+    calls = []
+
+    def fake_fetch_notebooks(dest, ver, force):
+        calls.append(ver)
+
+    monkeypatch.setattr(notebooks, "fetch_notebooks", fake_fetch_notebooks)
+    assert notebooks.main(argv) == 0
+    assert calls == [expected_ver]
+
+
+def test_main_short_v_option_removed(monkeypatch):
+    monkeypatch.setattr(notebooks, "fetch_notebooks", lambda **kwargs: None)
+    with pytest.raises(SystemExit):
+        notebooks.main(["-v", "latest"])
+
+
+def test_main_help_shows_release_option(capsys):
+    with pytest.raises(SystemExit):
+        notebooks.main(["--help"])
+    help_text = capsys.readouterr().out
+    assert "--release RELEASE" in help_text
+    assert "--version" not in help_text
