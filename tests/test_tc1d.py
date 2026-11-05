@@ -1359,12 +1359,14 @@ class TestCrashFixes:
     def test_depositional_age_not_younger_than_model(
         self, monkeypatch, tmp_path, depo_age
     ):
-        # Depositional ages equal to or older than the 1 Myr model duration
+        # Depositional ages equal to or older than the model start (1 Ma)
         age_file = tmp_path / "ages.csv"
         age_file.write_text(
             "Age type, Age (Ma), Standard deviation (Ma), eU concentration (ppm), "
             "Grain radius (um), Sample ID, Depositional age (Ma)\n"
             f"AHe, 9.0, 0.5, 40.0, 60.0, S1, {depo_age}\n"
         )
-        with pytest.raises(ValueError, match="must be less than the model duration"):
+        with pytest.raises(
+            ValueError, match="must be younger than the model starting time"
+        ):
             self._run(monkeypatch, tmp_path, obs_age_file=str(age_file))
