@@ -4564,10 +4564,11 @@ def run_model(params):
     # Set initial exhumation velocity
     vx_init[:] = mmyr2ms(params["vx_init"])
 
-    # Set number of passes needed based on erosion model type
-    # Types 1-7 need only 1 pass
-    if params["ero_type"] < 8:
-        num_pass = 1
+    # Set number of passes through the time loop
+    # All current erosion model types need only 1 pass. A second pass may be added
+    # in the future (e.g., a first pass to define the erosion history in models
+    # coupled to a surface process model and a second to calculate ages).
+    num_pass = 1
 
     # Create array of plot times
     t_plots = myr2sec(np.array(params["t_plots"]))
@@ -5154,10 +5155,13 @@ def run_model(params):
                     ax2.plot(density_init, -x / 1000, "k-", label=time_label)
 
         if params["verbose"] >= 1:
+            # Only show the pass number if there is more than one pass
+            if num_pass > 1:
+                pass_text = f" (Pass {j + 1}/{num_pass})"
+            else:
+                pass_text = ""
             print("")
-            print(
-                f"--- Calculating transient thermal model (Pass {j + 1}/{num_pass}) ---"
-            )
+            print(f"--- Calculating transient thermal model{pass_text} ---")
             print("")
 
         # Create progress bar for time steps (standard output level only)

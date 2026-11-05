@@ -1610,3 +1610,12 @@ class TestCliWarning:
     def test_cli_warning_without_details(self, capsys):
         _cli_warning("Something to note.")
         assert capsys.readouterr().err == "tc1d-cli: warning: Something to note.\n"
+
+
+class TestScreenOutput:
+    def test_no_pass_number_for_single_pass(self, monkeypatch, tmp_path, capsys):
+        # The pass number is only shown when the model uses more than one pass
+        TestCrashFixes._run(monkeypatch, tmp_path, verbose=1, echo_info=False)
+        output = capsys.readouterr().out
+        assert "--- Calculating transient thermal model ---" in output
+        assert "(Pass" not in output
