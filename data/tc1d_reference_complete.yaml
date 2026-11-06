@@ -212,7 +212,7 @@ age_prediction:
   no_calc_ages: false           # false = calculate thermochronometer ages.
 
   ketch_aft: true               # Use Ketcham AFT model.
-  madtrax_aft: false            # Use MadTrax apatite FT model instead/also as configured.
+  madtrax_aft: false            # Use MadTrax apatite FT model instead of Ketcham.
 
   madtrax_aft_kinetic_model: 1  # MadTrax apatite FT kinetic model selector.
   madtrax_zft_kinetic_model: 1  # MadTrax zircon FT kinetic model selector.

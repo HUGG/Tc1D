@@ -27,6 +27,7 @@ from tc1d.tc1d import (
     init_params,
     prep_model,
     run_model,
+    set_aft_model,
     set_run_flags,
 )
 from tc1d.tc1d_cli import (
@@ -1670,3 +1671,105 @@ class TestMadTraxAft:
         assert mt_age == pytest.approx(ke_age, rel=0.2)
         assert 60.0 < mt_temp < 150.0
         assert 0.0 < mt_ftl < 17.0
+
+
+class TestAftModelSelection:
+    """Only one AFT model is used at a time."""
+
+    @pytest.mark.parametrize("ketch_aft", [True, False])
+    def test_madtrax_replaces_ketcham(self, ketch_aft):
+        params = {"madtrax_aft": True, "ketch_aft": ketch_aft, "calc_ages": True}
+        set_aft_model(params)
+        assert params["madtrax_aft"] is True
+        assert params["ketch_aft"] is False
+
+    def test_ketcham_by_default(self):
+        params = {"madtrax_aft": False, "ketch_aft": True, "calc_ages": True}
+        set_aft_model(params)
+        assert params["ketch_aft"] is True
+
+    def test_no_aft_model_selected(self):
+        params = {"madtrax_aft": False, "ketch_aft": False, "calc_ages": True}
+        with pytest.raises(ValueError, match="No AFT age model selected"):
+            set_aft_model(params)
+
+    def test_no_aft_model_without_ages(self):
+        params = {"madtrax_aft": False, "ketch_aft": False, "calc_ages": False}
+        set_aft_model(params)
+
+    @staticmethod
+    def _aft_output(monkeypatch, tmp_path, capsys, **kwargs):
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=10.0,
+            dt=20000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=5.0,
+            plot_results=False,
+            verbose=0,
+            **kwargs,
+        )
+        prep_model(params)
+        output = capsys.readouterr().out
+        return [line for line in output.splitlines() if "AFT age" in line]
+
+    def test_single_aft_age_printed(self, monkeypatch, tmp_path, capsys):
+        ketcham = self._aft_output(monkeypatch, tmp_path, capsys)
+        madtrax = self._aft_output(monkeypatch, tmp_path, capsys, madtrax_aft=True)
+        assert len(ketcham) == 1
+        assert ketcham[0].endswith("(Ketcham)")
+        assert len(madtrax) == 1
+        assert madtrax[0].endswith("(MadTrax)")
+        # The printed age should be the MadTrax age, not the Ketcham age
+        assert madtrax[0].split("(")[0] != ketcham[0].split("(")[0]
+
+    @pytest.mark.parametrize(
+        "age_prediction, ketch_aft, madtrax_aft",
+        [
+            ({}, True, False),
+            ({"madtrax_aft": True}, False, True),
+            ({"ketch_aft": True, "madtrax_aft": True}, False, True),
+            ({"ketch_aft": False, "madtrax_aft": True}, False, True),
+        ],
+    )
+    def test_cli_yaml_options(
+        self, monkeypatch, tmp_path, age_prediction, ketch_aft, madtrax_aft
+    ):
+        import yaml
+        import tc1d.tc1d as tc1d_module
+
+        config = {
+            "general": {"run_type": "forward"},
+            "erosion_model": {"ero_type": 1, "ero_option1": 1.0},
+            "age_prediction": age_prediction,
+        }
+        input_file = tmp_path / "input.yaml"
+        input_file.write_text(yaml.safe_dump(config))
+
+        captured = {}
+
+        def fake_run_model(params):
+            captured["params"] = params
+
+        monkeypatch.setattr(tc1d_module, "run_model", fake_run_model)
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        tc1d_cli.main()
+        assert captured["params"]["ketch_aft"] is ketch_aft
+        assert captured["params"]["madtrax_aft"] is madtrax_aft
+
+    def test_cli_no_aft_model(self, monkeypatch, tmp_path):
+        import yaml
+
+        config = {
+            "general": {"run_type": "forward"},
+            "erosion_model": {"ero_type": 1, "ero_option1": 1.0},
+            "age_prediction": {"ketch_aft": False},
+        }
+        input_file = tmp_path / "input.yaml"
+        input_file.write_text(yaml.safe_dump(config))
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        with pytest.raises(ValueError, match="No AFT age model selected"):
+            tc1d_cli.main()

@@ -1212,14 +1212,14 @@ def main():
     prediction.add_argument(
         "--ketch-aft",
         dest="ketch_aft",
-        help="Use the Ketcham et al. (2007) model for predicting FT ages",
+        help="Use the Ketcham et al. (1999) model for predicting FT ages (default, unless --madtrax-aft is used)",
         action="store_true",
         default=True,
     )
     prediction.add_argument(
         "--madtrax-aft",
         dest="madtrax_aft",
-        help="Use the MadTrax algorithm for predicting apatite FT ages",
+        help="Use the MadTrax algorithm instead of the Ketcham model for predicting apatite FT ages",
         action="store_true",
         default=False,
     )

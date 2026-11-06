@@ -2625,9 +2625,11 @@ def init_params(
     calc_ages : bool, default=True
         Enable calculation of thermochronometer ages.
     ketch_aft : bool, default=True
-        Use the Ketcham et al. (1999) model for predicting FT ages.
+        Use the Ketcham et al. (1999) model for predicting FT ages. Ignored
+        (set to False) if madtrax_aft is True.
     madtrax_aft : bool, default=False
-        Use the MadTrax algorithm for predicting apatite FT ages.
+        Use the MadTrax algorithm instead of the Ketcham model for predicting
+        apatite fission-track ages.
     madtrax_aft_kinetic_model : int, default=1
         Kinetic model to use for AFT age prediction with MadTrax (see https://tc1d.readthedocs.io).
     madtrax_zft_kinetic_model : int, default=1
@@ -2971,6 +2973,31 @@ def set_run_flags(params: dict) -> None:
     params["inverse_mode"] = run_type in ["na", "mcmc"]
 
 
+def set_aft_model(params: dict) -> None:
+    """Selects the model used to predict apatite fission-track (AFT) ages.
+
+    Only one AFT model can be used at a time. MadTrax is used when madtrax_aft
+    is True, otherwise the Ketcham model is used. ketch_aft is set to False
+    when MadTrax is selected.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+
+    Raises
+    ------
+    ValueError
+        If ages are calculated and both ketch_aft and madtrax_aft are False.
+    """
+    if params["madtrax_aft"]:
+        params["ketch_aft"] = False
+    elif params["calc_ages"] and not params["ketch_aft"]:
+        raise ValueError(
+            "No AFT age model selected. Set either ketch_aft or madtrax_aft to True."
+        )
+
+
 def echo_model_inputs(params: dict) -> None:
     """Prints the model input values to the screen.
 
@@ -3006,6 +3033,9 @@ def prep_model(params):
     """
     # Define working directory path
     wd = Path.cwd()
+
+    # Select the AFT age model (Ketcham or MadTrax)
+    set_aft_model(params)
 
     # Create needed output directories
     if (
