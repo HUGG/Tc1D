@@ -1815,3 +1815,45 @@ class TestAftModelSelection:
         monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
         with pytest.raises(ValueError, match="No AFT age model selected"):
             tc1d_cli.main()
+
+
+class TestMadTraxPadTime:
+    """Time padding is included in MadTrax AFT and ZFT ages."""
+
+    @staticmethod
+    def _ages(temp_start, pad_time):
+        # Linear cooling from temp_start to 10 °C over 20 Myr
+        time_history = np.linspace(0.0, myr2sec(20.0), 201)
+        temp_history = np.linspace(temp_start, 10.0, 201)
+        depth_history = np.linspace(5000.0, 0.0, 201)
+        pressure_history = depth_history * 2700.0 * 9.81
+        params = init_params(
+            madtrax_aft=True, ketch_aft=False, pad_time=pad_time, verbose=0
+        )
+        results = calculate_ages_and_tcs(
+            params,
+            time_history,
+            temp_history,
+            depth_history,
+            pressure_history,
+            False,
+        )
+        # MadTrax AFT and ZFT ages
+        return results[3], results[9]
+
+    def test_padding_makes_unreset_ages_older(self):
+        # Neither age is reset when cooling from 40 °C, so the padding time
+        # should be added to both ages
+        aft_age, zft_age = self._ages(temp_start=40.0, pad_time=0.0)
+        aft_age_pad, zft_age_pad = self._ages(temp_start=40.0, pad_time=50.0)
+        assert aft_age_pad > aft_age + 40.0
+        assert zft_age_pad > zft_age + 40.0
+
+    def test_padding_does_not_change_reset_ages(self):
+        # Both ages are reset when cooling from 400 °C. MadTrax uses at least
+        # 100 time steps, so the ages differ slightly as the padding makes the
+        # time steps longer.
+        aft_age, zft_age = self._ages(temp_start=400.0, pad_time=0.0)
+        aft_age_pad, zft_age_pad = self._ages(temp_start=400.0, pad_time=50.0)
+        assert aft_age_pad == pytest.approx(aft_age, abs=0.5)
+        assert zft_age_pad == pytest.approx(zft_age, abs=0.5)

@@ -854,10 +854,30 @@ def calculate_ages_and_tcs(
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
 
+    # Create time-temperature history for MadTrax (oldest point first)
+    if params["pad_time"] > 0.0:
+        pad_times = np.arange(
+            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
+        )
+        # Only add padding points older than the oldest point in the history,
+        # using the temperature of that oldest point
+        pad_times = np.flip(pad_times[pad_times > time_ma[0]])
+        madtrax_time = np.concatenate([pad_times, time_ma])
+        madtrax_temp = np.concatenate(
+            [np.full(len(pad_times), temp_history[0]), temp_history]
+        )
+    else:
+        madtrax_time = time_ma
+        madtrax_temp = temp_history
+
     # Calculate AFT age using MadTrax
     if params["madtrax_aft"]:
         aft_age_yr, aft_ftld, aft_mean_ftl, _ = madtrax_apatite(
-            time_ma, temp_history, len(time_ma), 1, params["madtrax_aft_kinetic_model"]
+            madtrax_time,
+            madtrax_temp,
+            len(madtrax_time),
+            1,
+            params["madtrax_aft_kinetic_model"],
         )
         # MadTrax returns the AFT age in years, so convert it to Ma
         aft_age = aft_age_yr / 1.0e6
@@ -871,7 +891,7 @@ def calculate_ages_and_tcs(
     # Calculate ZFT age using MadTrax
     # FIXME: out_flag temporarily set to zero!
     zft_age, _, _, _ = madtrax_zircon(
-        time_ma, temp_history, params["madtrax_zft_kinetic_model"], 0
+        madtrax_time, madtrax_temp, params["madtrax_zft_kinetic_model"], 0
     )
 
     # Extract time-temperature path for age calculations (youngest point first)
