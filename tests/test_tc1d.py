@@ -1645,7 +1645,7 @@ class TestMadTraxAft:
     """AFT ages and track lengths from MadTrax."""
 
     @staticmethod
-    def _aft_results(madtrax_aft, ketch_aft):
+    def _aft_results(madtrax_aft, ketch_aft, write_track_lengths=False):
         # Linear cooling from 200 to 10 °C over 50 Myr
         time_history = np.linspace(0.0, myr2sec(50.0), 501)
         temp_history = np.linspace(200.0, 10.0, 501)
@@ -1658,7 +1658,7 @@ class TestMadTraxAft:
             temp_history,
             depth_history,
             pressure_history,
-            False,
+            write_track_lengths,
         )
         # AFT age, mean track length and closure temperature
         return results[3], results[4], results[5]
@@ -1671,6 +1671,48 @@ class TestMadTraxAft:
         assert mt_age == pytest.approx(ke_age, rel=0.2)
         assert 60.0 < mt_temp < 150.0
         assert 0.0 < mt_ftl < 17.0
+
+    @pytest.mark.parametrize("madtrax_aft", [True, False])
+    def test_track_length_file(self, monkeypatch, tmp_path, madtrax_aft):
+        monkeypatch.chdir(tmp_path)
+        _, mean_ftl, _ = self._aft_results(
+            madtrax_aft=madtrax_aft,
+            ketch_aft=not madtrax_aft,
+            write_track_lengths=True,
+        )
+        ft_lengths = np.genfromtxt("ft_length.csv", delimiter=",", skip_header=1)
+        length = ft_lengths[:, 0]
+        prob = ft_lengths[:, 1]
+        if madtrax_aft:
+            # 1-µm bins from 0-1 µm to 16-17 µm
+            assert len(length) == 17
+            assert length[0] == 0.5
+            assert length[-1] == 16.5
+        # Probability densities should integrate to one, and the mean length
+        # should match the mean length from the age model
+        bin_width = length[1] - length[0]
+        assert prob.sum() * bin_width == pytest.approx(1.0, abs=1e-3)
+        assert (length * prob).sum() * bin_width == pytest.approx(mean_ftl, abs=0.05)
+
+    def test_madtrax_track_length_output(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=10.0,
+            dt=20000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=5.0,
+            madtrax_aft=True,
+            write_ft_lengths=True,
+            plot_results=True,
+            plot_ft_length_dist=True,
+            save_plots=True,
+            display_plots=False,
+            verbose=0,
+        )
+        prep_model(params)
+        assert (tmp_path / "csv" / "ft_length.csv").exists()
+        assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
 
 
 class TestAftModelSelection:

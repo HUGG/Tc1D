@@ -647,6 +647,18 @@ def he_ages(
     return result.ahe, result.ahe_corr, result.zhe, result.zhe_corr
 
 
+def write_ft_length_file(lengths, pdf):
+    """Writes an AFT track-length distribution to ft_length.csv."""
+    np.savetxt(
+        "ft_length.csv",
+        np.column_stack([lengths, pdf]),
+        delimiter=",",
+        header="Track length (um),Probability",
+        comments="",
+        fmt=("%.2f", "%.8e"),
+    )
+
+
 def ft_ages(time_ma, temp_history, write_track_lengths):
     """Calculates AFT ages using tcages (ketch).
 
@@ -657,14 +669,7 @@ def ft_ages(time_ma, temp_history, write_track_lengths):
     result = tcages.aft_age(time_ma, temp_history, alo=16.3)
 
     if write_track_lengths:
-        np.savetxt(
-            "ft_length.csv",
-            np.column_stack([result.lengths, result.pdf]),
-            delimiter=",",
-            header="Track length (um),Probability",
-            comments="",
-            fmt=("%.2f", "%.8e"),
-        )
+        write_ft_length_file(result.lengths, result.pdf)
 
     return float(result.age), float(result.mean_length)
 
@@ -851,11 +856,17 @@ def calculate_ages_and_tcs(
 
     # Calculate AFT age using MadTrax
     if params["madtrax_aft"]:
-        aft_age_yr, _, aft_mean_ftl, _ = madtrax_apatite(
+        aft_age_yr, aft_ftld, aft_mean_ftl, _ = madtrax_apatite(
             time_ma, temp_history, len(time_ma), 1, params["madtrax_aft_kinetic_model"]
         )
         # MadTrax returns the AFT age in years, so convert it to Ma
         aft_age = aft_age_yr / 1.0e6
+        if write_track_lengths:
+            # MadTrax track-length distribution is in percent for 1-µm bins,
+            # so the bin centres are 0.5-16.5 µm and the probability density
+            # (per µm) is the percentage divided by 100
+            ftl_bin_centres = np.arange(len(aft_ftld)) + 0.5
+            write_ft_length_file(ftl_bin_centres, aft_ftld / 100.0)
 
     # Calculate ZFT age using MadTrax
     # FIXME: out_flag temporarily set to zero!

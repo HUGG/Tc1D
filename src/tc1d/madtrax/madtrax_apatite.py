@@ -230,7 +230,8 @@ def madtrax_apatite(
 
     ftldsd = np.sqrt(devftld / 100.0)
 
-    # Collection of all results (age, final length, mean length, standard deviation)
-    result = [fta * 10**6, ftld[16], ftldmean, ftldsd]
+    # Collection of all results (age in years, track-length distribution in
+    # percent for 1-µm bins from 0-1 µm to 16-17 µm, mean length, standard deviation)
+    result = [fta * 10**6, ftld, ftldmean, ftldsd]
 
     return result
