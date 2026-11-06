@@ -18,6 +18,7 @@ from tc1d.tc1d import (
     erosion_exponential,
     calculate_erosion_rate,
     calculate_exhumation_magnitude,
+    calculate_ages_and_tcs,
     calculate_misfit,
     calculate_num_steps,
     check_run_type,
@@ -1637,3 +1638,35 @@ class TestScreenOutput:
             assert "- batch_mode:" not in output
         else:
             assert "--- Model input values ---" not in output
+
+
+class TestMadTraxAft:
+    """AFT ages and track lengths from MadTrax."""
+
+    @staticmethod
+    def _aft_results(madtrax_aft, ketch_aft):
+        # Linear cooling from 200 to 10 °C over 50 Myr
+        time_history = np.linspace(0.0, myr2sec(50.0), 501)
+        temp_history = np.linspace(200.0, 10.0, 501)
+        depth_history = np.linspace(8000.0, 0.0, 501)
+        pressure_history = depth_history * 2700.0 * 9.81
+        params = init_params(madtrax_aft=madtrax_aft, ketch_aft=ketch_aft, verbose=0)
+        results = calculate_ages_and_tcs(
+            params,
+            time_history,
+            temp_history,
+            depth_history,
+            pressure_history,
+            False,
+        )
+        # AFT age, mean track length and closure temperature
+        return results[3], results[4], results[5]
+
+    def test_madtrax_aft_age_in_ma(self):
+        mt_age, mt_ftl, mt_temp = self._aft_results(madtrax_aft=True, ketch_aft=False)
+        ke_age, _, _ = self._aft_results(madtrax_aft=False, ketch_aft=True)
+        # Age should be in Ma and comparable to the Ketcham age
+        assert 0.0 < mt_age < 50.0
+        assert mt_age == pytest.approx(ke_age, rel=0.2)
+        assert 60.0 < mt_temp < 150.0
+        assert 0.0 < mt_ftl < 17.0

@@ -851,9 +851,11 @@ def calculate_ages_and_tcs(
 
     # Calculate AFT age using MadTrax
     if params["madtrax_aft"]:
-        aft_age, _, _, _ = madtrax_apatite(
+        aft_age_yr, _, aft_mean_ftl, _ = madtrax_apatite(
             time_ma, temp_history, len(time_ma), 1, params["madtrax_aft_kinetic_model"]
         )
+        # MadTrax returns the AFT age in years, so convert it to Ma
+        aft_age = aft_age_yr / 1.0e6
 
     # Calculate ZFT age using MadTrax
     # FIXME: out_flag temporarily set to zero!
@@ -5741,7 +5743,7 @@ def run_model(params):
                 f"- AHe age: {corr_ahe_ages[-1]:.2f} Ma (uncorrected age: {ahe_age:.2f} Ma)"
             )
             if params["madtrax_aft"]:
-                print(f"- AFT age: {aft_ages[-1] / 1e6:.2f} Ma (MadTrax)")
+                print(f"- AFT age: {aft_ages[-1]:.2f} Ma (MadTrax)")
             if params["ketch_aft"]:
                 print(f"- AFT age: {aft_ages[-1]:.2f} Ma (Ketcham)")
             print(
