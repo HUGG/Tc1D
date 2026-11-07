@@ -722,7 +722,7 @@ def get_history_indices(n_points: int, write_increment: int) -> list:
 
 
 def get_pad_times(params: dict, time_ma: np.ndarray) -> np.ndarray:
-    """Returns the times points used to pad a thermal history.
+    """Returns the time points used to pad a thermal history.
 
     If pad_time is greater than zero, time is added in 1 Myr increments to the oldest
     point in the history, increasing the effective runtime by pad_time Myr. Only points
