@@ -3079,6 +3079,42 @@ def set_aft_model(params: dict) -> None:
         )
 
 
+def disable_output_for_inversions(params: dict) -> list:
+    """Disables output from individual forward models in inversions.
+
+    The output files for individual forward models (thermal histories,
+    track-length distributions, temperatures, past ages, and age summaries) are
+    not written for inversions, as they would be written for each model in the
+    inversion. These files can be written by running a forward model with the
+    preferred input values found from the inversion.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+
+    Returns
+    -------
+    disabled : list
+        Names of the output options that were enabled and have been disabled.
+    """
+    output_keys = [
+        "write_tt_history",
+        "write_ttdp_history",
+        "write_ft_lengths",
+        "write_temps",
+        "write_past_ages",
+        "write_age_output",
+    ]
+    disabled = []
+    if params["inverse_mode"]:
+        for key in output_keys:
+            if params[key]:
+                params[key] = False
+                disabled.append(key)
+    return disabled
+
+
 def echo_model_inputs(params: dict) -> None:
     """Prints the model input values to the screen.
 
@@ -3221,6 +3257,16 @@ def prep_model(params):
 
         # Set batch_mode and inverse_mode from the run type
         set_run_flags(params)
+
+        # Disable output files for individual models in inversions
+        disabled_output = disable_output_for_inversions(params)
+        if disabled_output and rank == 0:
+            warnings.warn(
+                "Output files for individual models are not written for NA or MCMC "
+                f"inversions. Ignoring: {', '.join(disabled_output)}. Run a forward "
+                "model to write these files.",
+                stacklevel=2,
+            )
 
         # Create batch_mode output directories if using batch, NA, or MCMC mode
         if params["batch_mode"]:
@@ -4581,14 +4627,11 @@ def run_model(params):
     # Define working directory
     wd = Path.cwd()
 
+    # Output files for individual models are not written for inversions in prep_model()
+    # (see disable_output_for_inversions())
     write_tt_history = params["write_tt_history"]
     write_ttdp_history = params["write_ttdp_history"]
     write_track_lengths = params["write_ft_lengths"]
-    if params["inverse_mode"]:
-        # Only allow tT histories and track lengths to be saved to file in forward and batch modes
-        write_tt_history = False
-        write_ttdp_history = False
-        write_track_lengths = False
 
     # Conversion factors and unit conversions
     max_depth = kilo2base(params["max_depth"])

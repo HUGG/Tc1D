@@ -22,6 +22,7 @@ from tc1d.tc1d import (
     calculate_misfit,
     calculate_num_steps,
     check_run_type,
+    disable_output_for_inversions,
     get_history_indices,
     get_pad_times,
     get_tt_path,
@@ -856,10 +857,13 @@ class TestRunModeFlags:
     """Check the run flags set by prep_model() for each run type."""
 
     @staticmethod
-    def _run_cli(monkeypatch, tmp_path, run_type, erosion_model, general=None):
+    def _run_cli(
+        monkeypatch, tmp_path, run_type, erosion_model, general=None, output=None
+    ):
         """Runs tc1d-cli with a minimal YAML file and returns the params passed
         to run_model() or the batch, NA, or MCMC driver (none of which are run).
-        Additional values for the YAML general section can be given in `general`.
+        Additional values for the YAML general and output sections can be given
+        in `general` and `output`.
         """
         import yaml
         import tc1d.tc1d as tc1d_module
@@ -871,6 +875,8 @@ class TestRunModeFlags:
             },
             "erosion_model": erosion_model,
         }
+        if output is not None:
+            config["output"] = output
         input_file = tmp_path / "input.yaml"
         input_file.write_text(yaml.safe_dump(config))
 
@@ -1948,3 +1954,54 @@ class TestTimePadding:
         assert np.allclose(ttdp[-3:, 0], [2.0, 3.0, 4.0])
         for row in ttdp[-3:]:
             assert np.allclose(row[1:], [100.0, 3000.0, 80.0])
+
+
+class TestInverseOutput:
+    """Output files for individual models are not written for inversions."""
+
+    OUTPUT = {
+        "write_tt_history": True,
+        "write_ttdp_history": True,
+        "write_ft_lengths": True,
+        "write_temps": True,
+        "write_past_ages": True,
+        "write_age_output": True,
+    }
+
+    def test_disable_output_for_inversions(self):
+        params = {"inverse_mode": True, **self.OUTPUT, "write_temps": False}
+        disabled = disable_output_for_inversions(params)
+        assert "write_temps" not in disabled
+        assert len(disabled) == len(self.OUTPUT) - 1
+        for key in self.OUTPUT:
+            assert params[key] is False
+
+    def test_output_kept_for_other_runs(self):
+        params = {"inverse_mode": False, **self.OUTPUT}
+        assert disable_output_for_inversions(params) == []
+        for key in self.OUTPUT:
+            assert params[key] is True
+
+    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
+    def test_cli_inversion_disables_output(self, monkeypatch, tmp_path, run_type):
+        with pytest.warns(UserWarning, match="not written for NA or MCMC"):
+            params = TestRunModeFlags._run_cli(
+                monkeypatch,
+                tmp_path,
+                run_type,
+                {"ero_type": 1, "ero_option1": [1.0, 5.0]},
+                output=self.OUTPUT,
+            )
+        for key in self.OUTPUT:
+            assert params[key] is False
+
+    def test_cli_batch_keeps_output(self, monkeypatch, tmp_path):
+        params = TestRunModeFlags._run_cli(
+            monkeypatch,
+            tmp_path,
+            "batch",
+            {"ero_type": 1, "ero_option1": [1.0, 5.0]},
+            output=self.OUTPUT,
+        )
+        for key in self.OUTPUT:
+            assert params[key] is True
