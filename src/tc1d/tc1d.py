@@ -721,6 +721,74 @@ def get_history_indices(n_points: int, write_increment: int) -> list:
     return indices
 
 
+def get_pad_times(params: dict, time_ma: np.ndarray) -> np.ndarray:
+    """Returns the times points used to pad a thermal history.
+
+    If pad_time is greater than zero, time is added in 1 Myr increments to the oldest
+    point in the history, increasing the effective runtime by pad_time Myr. Only points
+    older than the oldest point are used, as repeated time points cause the RDAAM
+    calculation to fail.
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+    time_ma : numpy.ndarray
+        Times in the thermal history (Ma).
+
+    Returns
+    -------
+    pad_times : numpy.ndarray
+        Times of the padding points (Ma), youngest point first. Empty if pad_time
+        is zero.
+    """
+    if params["pad_time"] > 0.0:
+        oldest_time = time_ma.max()
+        pad_times = np.arange(oldest_time, oldest_time + params["pad_time"] + 0.1, 1.0)
+        pad_times = pad_times[pad_times > oldest_time]
+    else:
+        pad_times = np.array([])
+    return pad_times
+
+
+def get_tt_path(
+    params: dict, time_ma: np.ndarray, temp_history: np.ndarray
+) -> tuple[list, list]:
+    """Returns the time-temperature path used for age predictions.
+
+    The path includes every nth point in the thermal history produced during the
+    simulation (see get_write_increment() and get_history_indices()), followed
+    by any time padding points using the temperature of the oldest point in the
+    recorded thermal history (see get_pad_times()).
+
+    Parameters
+    ----------
+    params : dict
+        Dictionary of model parameter values.
+    time_ma : numpy.ndarray
+        Times in the thermal history (Ma), oldest point first.
+    temp_history : numpy.ndarray
+        Temperatures in the thermal history (°C), oldest point first.
+
+    Returns
+    -------
+    time_path : list
+        Times in the time-temperature path (Ma), youngest point first.
+    temp_path : list
+        Temperatures in the time-temperature path (°C), youngest point first.
+    """
+    write_increment = get_write_increment(params, time_ma)
+    time_path = []
+    temp_path = []
+    for i in get_history_indices(len(time_ma), write_increment):
+        time_path.append(time_ma[i])
+        temp_path.append(temp_history[i])
+    for pad_time in get_pad_times(params, time_ma):
+        time_path.append(pad_time)
+        temp_path.append(temp_history[0])
+    return time_path, temp_path
+
+
 def save_tt_history(
     params: dict, tt_filename: Path, time_history: np.ndarray, temp_history: np.ndarray
 ) -> None:
@@ -728,29 +796,14 @@ def save_tt_history(
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
 
-    # Get time-temp history output increment
-    write_increment = get_write_increment(params, time_ma)
+    # Get time-temperature path (youngest point first), including any time padding
+    time_path, temp_path = get_tt_path(params, time_ma, temp_history)
 
     # Write time-temperature history file
     with open(tt_filename, "w") as csvfile:
         writer = csv.writer(csvfile, delimiter=",", lineterminator="\n")
-
-        # Write time-temperature history in reverse order!
-        for i in get_history_indices(len(time_ma), write_increment):
-            writer.writerow([time_ma[i], temp_history[i]])
-
-        # Write fake times if time history padding is enabled
-        if params["pad_time"] > 0.0:
-            # Make array of pad times with 1.0 Myr time increments
-            pad_times = np.arange(
-                time_ma.max(),
-                time_ma.max() + params["pad_time"] + 0.1,
-                1.0,
-            )
-            # Only add time padding points that are older than the oldest point in the
-            # thermal history, using the temperature of that oldest point
-            for pad_time in pad_times[pad_times > time_ma[0]]:
-                writer.writerow([pad_time, temp_history[0]])
+        for time_point, temp_point in zip(time_path, temp_path):
+            writer.writerow([time_point, temp_point])
 
 
 def save_ttdp_history(
@@ -780,6 +833,17 @@ def save_ttdp_history(
                     temp_history[i],
                     depth_history[i],
                     pressure_history[i] * micro2base(1),
+                ]
+            )
+        # Write any time padding points using the values of the oldest point in the
+        # time-temperature-depth-pressure history
+        for pad_time in get_pad_times(params, time_ma):
+            writer.writerow(
+                [
+                    pad_time,
+                    temp_history[0],
+                    depth_history[0],
+                    pressure_history[0] * micro2base(1),
                 ]
             )
 
@@ -854,21 +918,13 @@ def calculate_ages_and_tcs(
     # Get time history in Ma
     time_ma = tt_hist_to_ma(time_history)
 
-    # Create time-temperature history for MadTrax (oldest point first)
-    if params["pad_time"] > 0.0:
-        pad_times = np.arange(
-            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
-        )
-        # Only add padding points older than the oldest point in the history,
-        # using the temperature of that oldest point
-        pad_times = np.flip(pad_times[pad_times > time_ma[0]])
-        madtrax_time = np.concatenate([pad_times, time_ma])
-        madtrax_temp = np.concatenate(
-            [np.full(len(pad_times), temp_history[0]), temp_history]
-        )
-    else:
-        madtrax_time = time_ma
-        madtrax_temp = temp_history
+    # Create time-temperature history for MadTrax (oldest point first), adding
+    # any time padding points with the temperature of the oldest point
+    pad_times = np.flip(get_pad_times(params, time_ma))
+    madtrax_time = np.concatenate([pad_times, time_ma])
+    madtrax_temp = np.concatenate(
+        [np.full(len(pad_times), temp_history[0]), temp_history]
+    )
 
     # Calculate AFT age using MadTrax
     if params["madtrax_aft"]:
@@ -895,23 +951,7 @@ def calculate_ages_and_tcs(
     )
 
     # Extract time-temperature path for age calculations (youngest point first)
-    time_ma = tt_hist_to_ma(time_history)
-    write_increment = get_write_increment(params, time_ma)
-    time_hist = []
-    temp_hist = []
-
-    for i in get_history_indices(len(time_ma), write_increment):
-        time_hist.append(time_ma[i])
-        temp_hist.append(temp_history[i])
-    if params["pad_time"] > 0.0:
-        pad_times = np.arange(
-            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
-        )
-        # Only add padding points older than the oldest point in the path, as
-        # repeated time points cause the RDAAM calculation to fail
-        for pad_time in pad_times[pad_times > time_hist[-1]]:
-            time_hist.append(pad_time)
-            temp_hist.append(temp_hist[-1])
+    time_hist, temp_hist = get_tt_path(params, time_ma, temp_history)
 
     ahe_age, corr_ahe_age, zhe_age, corr_zhe_age = he_ages(
         time_hist,
@@ -5855,21 +5895,9 @@ def run_model(params):
 
                     # Extract time-temperature path for this history (youngest point first)
                     time_ma = tt_hist_to_ma(time_hists[tt_hist_index])
-                    write_increment = get_write_increment(params, time_ma)
-                    time_path = []
-                    temp_path = []
-                    for j in get_history_indices(len(time_ma), write_increment):
-                        time_path.append(time_ma[j])
-                        temp_path.append(temp_hists[tt_hist_index][j])
-                    if params["pad_time"] > 0.0:
-                        pad_times = np.arange(
-                            time_ma.max(), time_ma.max() + params["pad_time"] + 0.1, 1.0
-                        )
-                        # Only add padding points older than the oldest point in the
-                        # path, using the temperature of that oldest point
-                        for pad_time in pad_times[pad_times > time_path[-1]]:
-                            time_path.append(pad_time)
-                            temp_path.append(temp_path[-1])
+                    time_path, temp_path = get_tt_path(
+                        params, time_ma, temp_hists[tt_hist_index]
+                    )
 
                     # Calculate time to be added to predicted age
                     extra_depo_time = depo_age_now

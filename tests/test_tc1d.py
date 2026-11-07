@@ -23,10 +23,13 @@ from tc1d.tc1d import (
     calculate_num_steps,
     check_run_type,
     get_history_indices,
+    get_pad_times,
+    get_tt_path,
     get_particle_temp_and_pressure,
     init_params,
     prep_model,
     run_model,
+    save_ttdp_history,
     set_aft_model,
     set_run_flags,
 )
@@ -1857,3 +1860,51 @@ class TestMadTraxPadTime:
         aft_age_pad, zft_age_pad = self._ages(temp_start=400.0, pad_time=50.0)
         assert aft_age_pad == pytest.approx(aft_age, abs=0.5)
         assert zft_age_pad == pytest.approx(zft_age, abs=0.5)
+
+
+class TestTimePadding:
+    """Time padding of thermal histories."""
+
+    def test_no_padding(self):
+        time_ma = np.array([10.0, 5.0, 0.0])
+        assert len(get_pad_times({"pad_time": 0.0}, time_ma)) == 0
+
+    def test_pad_times(self):
+        time_ma = np.array([10.0, 5.0, 0.0])
+        pad_times = get_pad_times({"pad_time": 3.0}, time_ma)
+        assert np.allclose(pad_times, [11.0, 12.0, 13.0])
+
+    def test_tt_path_with_padding(self):
+        params = init_params(pad_time=2.0)
+        time_ma = np.linspace(4.0, 0.0, 5)
+        temp_history = np.array([100.0, 80.0, 60.0, 40.0, 20.0])
+        time_path, temp_path = get_tt_path(params, time_ma, temp_history)
+        # Youngest point first, then the oldest point in the history and the
+        # padding points at the temperature of the oldest point
+        assert time_path[0] == 0.0
+        assert temp_path[0] == 20.0
+        assert np.allclose(time_path[-3:], [4.0, 5.0, 6.0])
+        assert np.allclose(temp_path[-3:], [100.0, 100.0, 100.0])
+
+    def test_ttdp_history_with_padding(self, tmp_path):
+        params = init_params(pad_time=2.0)
+        time_history = np.array([0.0, myr2sec(1.0), myr2sec(2.0)])
+        temp_history = np.array([100.0, 60.0, 20.0])
+        depth_history = np.array([3000.0, 2000.0, 1000.0])
+        pressure_history = np.array([80.0e6, 50.0e6, 30.0e6])
+        ttdp_file = tmp_path / "ttdp.csv"
+        save_ttdp_history(
+            params,
+            ttdp_file,
+            time_history,
+            temp_history,
+            depth_history,
+            pressure_history,
+        )
+        ttdp = np.genfromtxt(ttdp_file, delimiter=",", skip_header=1)
+        # Youngest point first, then the oldest point in the history and the
+        # padding points with the values of the oldest point
+        assert np.allclose(ttdp[0], [0.0, 20.0, 1000.0, 30.0])
+        assert np.allclose(ttdp[-3:, 0], [2.0, 3.0, 4.0])
+        for row in ttdp[-3:]:
+            assert np.allclose(row[1:], [100.0, 3000.0, 80.0])
