@@ -647,11 +647,20 @@ def he_ages(
     return result.ahe, result.ahe_corr, result.zhe, result.zhe_corr
 
 
-def write_ft_length_file(lengths, pdf):
-    """Writes an AFT track-length distribution to ft_length.csv."""
+def write_ft_length_file(filename, ftl_dist):
+    """Writes a fission-track track-length distribution to a file.
+
+    Parameters
+    ----------
+    filename : str or Path
+        Name of the file to write.
+    ftl_dist : numpy.ndarray
+        Track-length distribution with the track lengths (µm) in the first column
+        and the probability density (per µm) in the second column.
+    """
     np.savetxt(
-        "ft_length.csv",
-        np.column_stack([lengths, pdf]),
+        filename,
+        ftl_dist,
         delimiter=",",
         header="Track length (um),Probability",
         comments="",
@@ -659,19 +668,17 @@ def write_ft_length_file(lengths, pdf):
     )
 
 
-def ft_ages(time_ma, temp_history, write_track_lengths):
+def ft_ages(time_ma, temp_history):
     """Calculates AFT ages using tcages (ketch).
 
     Times are in Ma, starting with the present-day (youngest) point.
-    Returns the AFT age and mean track length, and optionally writes the
-    track-length distribution to ft_length.csv.
+    Returns the AFT age, mean track length and track-length distribution (track
+    lengths in µm and probability density per µm as columns).
     """
     result = tcages.aft_age(time_ma, temp_history, alo=16.3)
+    ftl_dist = np.column_stack([result.lengths, result.pdf])
 
-    if write_track_lengths:
-        write_ft_length_file(result.lengths, result.pdf)
-
-    return float(result.age), float(result.mean_length)
+    return float(result.age), float(result.mean_length), ftl_dist
 
 
 def calculate_closure_temp(
@@ -902,9 +909,12 @@ def calculate_ages_and_tcs(
     temp_history,
     depth_history,
     pressure_history,
-    write_track_lengths,
 ):
-    """Calculates thermochronometer ages and closure temperatures"""
+    """Calculates thermochronometer ages and closure temperatures.
+
+    Also returns the mean track length and track-length distribution for the
+    AFT age model used (see ft_ages()).
+    """
     if params["verbose"] >= 2:
         print("")
         print(
@@ -937,12 +947,11 @@ def calculate_ages_and_tcs(
         )
         # MadTrax returns the AFT age in years, so convert it to Ma
         aft_age = aft_age_yr / 1.0e6
-        if write_track_lengths:
-            # MadTrax track-length distribution is in percent for 1-µm bins,
-            # so the bin centres are 0.5-16.5 µm and the probability density
-            # (per µm) is the percentage divided by 100
-            ftl_bin_centres = np.arange(len(aft_ftld)) + 0.5
-            write_ft_length_file(ftl_bin_centres, aft_ftld / 100.0)
+        # MadTrax track-length distribution is in percent for 1-µm bins, so the
+        # bin centers are 0.5-16.5 µm and the probability density (per µm) is the
+        # percentage divided by 100
+        ftl_bin_centers = np.arange(len(aft_ftld)) + 0.5
+        aft_ftl_dist = np.column_stack([ftl_bin_centers, aft_ftld / 100.0])
 
     # Calculate ZFT age using MadTrax
     # FIXME: out_flag temporarily set to zero!
@@ -965,7 +974,7 @@ def calculate_ages_and_tcs(
     )
 
     if params["ketch_aft"]:
-        aft_age, aft_mean_ftl = ft_ages(time_hist, temp_hist, write_track_lengths)
+        aft_age, aft_mean_ftl, aft_ftl_dist = ft_ages(time_hist, temp_hist)
 
     # Find effective closure temperatures
     ahe_temp = calculate_closure_temp(
@@ -989,6 +998,7 @@ def calculate_ages_and_tcs(
         zhe_temp,
         zft_age,
         zft_temp,
+        aft_ftl_dist,
     )
 
 
@@ -5802,13 +5812,13 @@ def run_model(params):
                 zhe_temps[i],
                 zft_ages[i],
                 zft_temps[i],
+                aft_ftl_dist,
             ) = calculate_ages_and_tcs(
                 params,
                 time_hists[i],
                 temp_hists[i],
                 depth_hists[i],
                 pressure_hists[i],
-                write_track_lengths,
             )
 
             if params["verbose"] >= 2:
@@ -5823,16 +5833,13 @@ def run_model(params):
                 )
                 print(f"- ZFT age: {zft_ages[i]:.2f} Ma (Tc: {zft_temps[i]:.2f} °C)")
 
-            # Move track length file to csv directory
+            # Write track-length distribution to file
             if write_track_lengths:
-                ftl_orig = Path("ft_length.csv")
                 ftl_filename = "ft_length" + file_age_text + ".csv"
                 if params["batch_mode"]:
-                    # Rename and move files to batch output directory
-                    ftl_newfile = params["model_id"] + "-" + ftl_filename
-                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_newfile)
-                else:
-                    ftl_new = ftl_orig.rename(wd / "csv" / ftl_filename)
+                    # Add model ID to filename for batch runs
+                    ftl_filename = params["model_id"] + "-" + ftl_filename
+                write_ft_length_file(wd / "csv" / ftl_filename, aft_ftl_dist)
 
         # Print ages (verbose >= 0), with section heading for verbose >= 1
         if params["verbose"] >= 0 and params["echo_ages"]:
@@ -6863,9 +6870,9 @@ def run_model(params):
                 plt.close()
 
             if params["plot_ft_length_dist"]:
-                ft_lengths = np.genfromtxt(ftl_new, delimiter=",", skip_header=1)
-                length = ft_lengths[:, 0]
-                prob = ft_lengths[:, 1]
+                # Plot the present-day track-length distribution
+                length = aft_ftl_dist[:, 0]
+                prob = aft_ftl_dist[:, 1]
                 fig, ax = plt.subplots(1, 1)
                 ax.plot(length, prob)
                 ax.plot(

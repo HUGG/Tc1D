@@ -1648,7 +1648,7 @@ class TestMadTraxAft:
     """AFT ages and track lengths from MadTrax."""
 
     @staticmethod
-    def _aft_results(madtrax_aft, ketch_aft, write_track_lengths=False):
+    def _aft_results(madtrax_aft, ketch_aft):
         # Linear cooling from 200 to 10 °C over 50 Myr
         time_history = np.linspace(0.0, myr2sec(50.0), 501)
         temp_history = np.linspace(200.0, 10.0, 501)
@@ -1661,14 +1661,16 @@ class TestMadTraxAft:
             temp_history,
             depth_history,
             pressure_history,
-            write_track_lengths,
         )
-        # AFT age, mean track length and closure temperature
-        return results[3], results[4], results[5]
+        # AFT age, mean track length, closure temperature and track-length
+        # distribution
+        return results[3], results[4], results[5], results[11]
 
     def test_madtrax_aft_age_in_ma(self):
-        mt_age, mt_ftl, mt_temp = self._aft_results(madtrax_aft=True, ketch_aft=False)
-        ke_age, _, _ = self._aft_results(madtrax_aft=False, ketch_aft=True)
+        mt_age, mt_ftl, mt_temp, _ = self._aft_results(
+            madtrax_aft=True, ketch_aft=False
+        )
+        ke_age, _, _, _ = self._aft_results(madtrax_aft=False, ketch_aft=True)
         # Age should be in Ma and comparable to the Ketcham age
         assert 0.0 < mt_age < 50.0
         assert mt_age == pytest.approx(ke_age, rel=0.2)
@@ -1676,16 +1678,16 @@ class TestMadTraxAft:
         assert 0.0 < mt_ftl < 17.0
 
     @pytest.mark.parametrize("madtrax_aft", [True, False])
-    def test_track_length_file(self, monkeypatch, tmp_path, madtrax_aft):
+    def test_track_length_distribution(self, monkeypatch, tmp_path, madtrax_aft):
         monkeypatch.chdir(tmp_path)
-        _, mean_ftl, _ = self._aft_results(
+        _, mean_ftl, _, ftl_dist = self._aft_results(
             madtrax_aft=madtrax_aft,
             ketch_aft=not madtrax_aft,
-            write_track_lengths=True,
         )
-        ft_lengths = np.genfromtxt("ft_length.csv", delimiter=",", skip_header=1)
-        length = ft_lengths[:, 0]
-        prob = ft_lengths[:, 1]
+        # No track-length file should be written by the age calculation
+        assert not (tmp_path / "ft_length.csv").exists()
+        length = ftl_dist[:, 0]
+        prob = ftl_dist[:, 1]
         if madtrax_aft:
             # 1-µm bins from 0-1 µm to 16-17 µm
             assert len(length) == 17
@@ -1716,6 +1718,45 @@ class TestMadTraxAft:
         prep_model(params)
         assert (tmp_path / "csv" / "ft_length.csv").exists()
         assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
+
+    @pytest.mark.parametrize("madtrax_aft", [True, False])
+    def test_plot_without_track_length_file(self, monkeypatch, tmp_path, madtrax_aft):
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=10.0,
+            dt=20000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=5.0,
+            madtrax_aft=madtrax_aft,
+            write_ft_lengths=False,
+            plot_results=True,
+            plot_ft_length_dist=True,
+            save_plots=True,
+            display_plots=False,
+            verbose=0,
+        )
+        prep_model(params)
+        assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
+        assert not list(tmp_path.rglob("ft_length*.csv"))
+
+    def test_track_length_files_for_past_ages(self, monkeypatch, tmp_path):
+        monkeypatch.chdir(tmp_path)
+        params = init_params(
+            time=10.0,
+            dt=20000.0,
+            nx=21,
+            ero_type=1,
+            ero_option1=5.0,
+            past_age_increment=5.0,
+            write_ft_lengths=True,
+            plot_results=False,
+            verbose=0,
+        )
+        prep_model(params)
+        files = sorted(f.name for f in (tmp_path / "csv").glob("ft_length*.csv"))
+        assert files == ["ft_length_0.0Ma.csv", "ft_length_5.0Ma.csv"]
+        assert not (tmp_path / "ft_length.csv").exists()
 
 
 class TestAftModelSelection:
@@ -1839,7 +1880,6 @@ class TestMadTraxPadTime:
             temp_history,
             depth_history,
             pressure_history,
-            False,
         )
         # MadTrax AFT and ZFT ages
         return results[3], results[9]

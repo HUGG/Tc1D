@@ -4,7 +4,14 @@ import numpy as np
 import pytest
 import tcages
 
-from tc1d.tc1d import calculate_ages_and_tcs, ft_ages, he_ages, init_params, myr2sec
+from tc1d.tc1d import (
+    calculate_ages_and_tcs,
+    ft_ages,
+    he_ages,
+    init_params,
+    myr2sec,
+    write_ft_length_file,
+)
 
 # Linear cooling from 250 °C to 5 °C over 10 Myr with 2001 model time steps
 N_STEPS = 2001
@@ -12,7 +19,8 @@ TIME_HISTORY = np.linspace(0.0, myr2sec(10.0), N_STEPS)  # Seconds since model s
 TEMP_HISTORY = np.linspace(250.0, 5.0, N_STEPS)
 ZEROS = np.zeros(N_STEPS)
 
-# Order of values returned by calculate_ages_and_tcs()
+# Order of values returned by calculate_ages_and_tcs(), apart from the
+# track-length distribution returned last
 OUTPUT_NAMES = [
     "corr_ahe_age",
     "ahe_age",
@@ -45,8 +53,11 @@ REFERENCE = {
 }
 
 
-def run_age_calculation(write_track_lengths=False, **param_updates):
-    """Calculates ages for the test history and returns them as a dict."""
+def run_age_calculation(**param_updates):
+    """Calculates ages for the test history and returns them as a dict.
+
+    The track-length distribution is included as "aft_ftl_dist".
+    """
     params = init_params(
         echo_inputs=False, echo_info=False, echo_thermal_info=False, echo_ages=False
     )
@@ -58,9 +69,10 @@ def run_age_calculation(write_track_lengths=False, **param_updates):
         TEMP_HISTORY,
         ZEROS,
         ZEROS,
-        write_track_lengths,
     )
-    return dict(zip(OUTPUT_NAMES, (float(r) for r in results)))
+    ages = dict(zip(OUTPUT_NAMES, (float(r) for r in results[:-1])))
+    ages["aft_ftl_dist"] = results[-1]
+    return ages
 
 
 @pytest.fixture(autouse=True)
@@ -100,7 +112,8 @@ def test_padding_succeeds_and_only_affects_zhe():
 
 
 def test_track_length_file(tmp_path):
-    results = run_age_calculation(write_track_lengths=True)
+    results = run_age_calculation()
+    write_ft_length_file(tmp_path / "ft_length.csv", results["aft_ftl_dist"])
     lines = (tmp_path / "ft_length.csv").read_text().splitlines()
     assert lines[0] == "Track length (um),Probability"
     data = np.loadtxt(tmp_path / "ft_length.csv", delimiter=",", skiprows=1)
@@ -137,10 +150,10 @@ def test_wrappers_match_tcages():
     )
     assert he_ages(times, temps, **grains) == (he.ahe, he.ahe_corr, he.zhe, he.zhe_corr)
     aft = tcages.aft_age(times, temps)
-    assert ft_ages(times, temps, write_track_lengths=False) == (
-        aft.age,
-        aft.mean_length,
-    )
+    aft_age, aft_mean_length, aft_ftl_dist = ft_ages(times, temps)
+    assert (aft_age, aft_mean_length) == (aft.age, aft.mean_length)
+    assert np.array_equal(aft_ftl_dist[:, 0], aft.lengths)
+    assert np.array_equal(aft_ftl_dist[:, 1], aft.pdf)
 
 
 def test_failed_age_calculation_raises():
