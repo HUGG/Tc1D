@@ -136,6 +136,108 @@ age calculations are in test_ages.py.
 """
 
 
+def run_forward(monkeypatch, tmp_path, **kwargs):
+    """Runs a short forward model in tmp_path and returns its parameters.
+
+    By default, the model runs for 1 Myr with 2 km of erosion at a constant rate.
+    Any of the default values can be changed using keyword arguments.
+    """
+    monkeypatch.chdir(tmp_path)
+    model = dict(
+        time=1.0,
+        dt=20000.0,
+        nx=21,
+        ero_type=1,
+        ero_option1=2.0,
+        plot_results=False,
+        verbose=0,
+    )
+    model.update(kwargs)
+    params = init_params(**model)
+    prep_model(params)
+    return params
+
+
+def cli_config(run_type, erosion_model, general=None, **sections):
+    """Returns the contents of a tc1d-cli YAML input file as a dictionary.
+
+    Additional values for the general section can be given in `general`, and
+    other sections can be given as keyword arguments.
+    """
+    config = {
+        "general": {"run_type": run_type, **(general or {})},
+        "erosion_model": erosion_model,
+    }
+    config.update(sections)
+    return config
+
+
+def run_cli(monkeypatch, tmp_path, config, run_drivers=False):
+    """Runs tc1d-cli in tmp_path using a YAML input file with the given contents.
+
+    Unless run_drivers is True, run_model() and the batch, NA, and MCMC drivers
+    are not run, and the parameters passed to them are returned.
+    """
+    import yaml
+    import tc1d.tc1d as tc1d_module
+
+    input_file = tmp_path / "input.yaml"
+    input_file.write_text(yaml.safe_dump(config))
+
+    captured = {}
+
+    def fake_driver(params, batch_params=None):
+        captured["params"] = params
+
+    if not run_drivers:
+        for driver in ["run_model", "batch_run", "batch_run_na", "batch_run_mcmc"]:
+            monkeypatch.setattr(tc1d_module, driver, fake_driver)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+    tc1d_cli.main()
+    return captured.get("params")
+
+
+# Names of the values returned by calculate_ages_and_tcs()
+AGE_RESULT_NAMES = [
+    "corr_ahe_age",
+    "ahe_age",
+    "ahe_temp",
+    "aft_age",
+    "aft_mean_ftl",
+    "aft_temp",
+    "corr_zhe_age",
+    "zhe_age",
+    "zhe_temp",
+    "zft_age",
+    "zft_temp",
+    "aft_ftl_dist",
+]
+
+
+def linear_cooling_ages(temp_start, duration, n_points, depth_start, **param_updates):
+    """Returns the ages for linear cooling from temp_start to 10 °C.
+
+    Cooling occurs over `duration` Myr with `n_points` points in the thermal
+    history, and the depth decreases linearly from `depth_start` (m) to zero. The
+    values returned by calculate_ages_and_tcs() are returned in a dictionary
+    using the names in AGE_RESULT_NAMES.
+    """
+    time_history = np.linspace(0.0, myr2sec(duration), n_points)
+    temp_history = np.linspace(temp_start, 10.0, n_points)
+    depth_history = np.linspace(depth_start, 0.0, n_points)
+    pressure_history = depth_history * 2700.0 * 9.81
+    params = init_params(verbose=0, **param_updates)
+    results = calculate_ages_and_tcs(
+        params,
+        time_history,
+        temp_history,
+        depth_history,
+        pressure_history,
+    )
+    return dict(zip(AGE_RESULT_NAMES, results))
+
+
 class TestConversions:
     def test_yr2sec(self):
         year_in_seconds = 31557600.0
@@ -865,42 +967,6 @@ class TestConfigurationConsistency:
 class TestRunModeFlags:
     """Check the run flags set by prep_model() for each run type."""
 
-    @staticmethod
-    def _run_cli(
-        monkeypatch, tmp_path, run_type, erosion_model, general=None, output=None
-    ):
-        """Runs tc1d-cli with a minimal YAML file and returns the params passed
-        to run_model() or the batch, NA, or MCMC driver (none of which are run).
-        Additional values for the YAML general and output sections can be given
-        in `general` and `output`.
-        """
-        import yaml
-        import tc1d.tc1d as tc1d_module
-
-        config = {
-            "general": {
-                "run_type": run_type,
-                **(general or {}),
-            },
-            "erosion_model": erosion_model,
-        }
-        if output is not None:
-            config["output"] = output
-        input_file = tmp_path / "input.yaml"
-        input_file.write_text(yaml.safe_dump(config))
-
-        captured = {}
-
-        def fake_driver(params, batch_params=None):
-            captured["params"] = params
-
-        for driver in ["run_model", "batch_run", "batch_run_na", "batch_run_mcmc"]:
-            monkeypatch.setattr(tc1d_module, driver, fake_driver)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
-        tc1d_cli.main()
-        return captured["params"]
-
     @pytest.mark.parametrize("run_type", ["na", "mcmc"])
     def test_inverse_mode_with_stage_ranges_only(self, monkeypatch, tmp_path, run_type):
         """Inverse mode should be set for NA/MCMC runs even when the only
@@ -916,7 +982,7 @@ class TestRunModeFlags:
                 }
             ],
         }
-        params = self._run_cli(monkeypatch, tmp_path, run_type, erosion_model)
+        params = run_cli(monkeypatch, tmp_path, cli_config(run_type, erosion_model))
 
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is True
@@ -1005,8 +1071,8 @@ class TestDeprecatedModeFlags:
     def test_matching_values_are_accepted_silently(
         self, monkeypatch, tmp_path, capsys, run_type, general
     ):
-        params = TestRunModeFlags._run_cli(
-            monkeypatch, tmp_path, run_type, self.RANGES, general
+        params = run_cli(
+            monkeypatch, tmp_path, cli_config(run_type, self.RANGES, general)
         )
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
@@ -1023,8 +1089,8 @@ class TestDeprecatedModeFlags:
     def test_mismatched_values_are_ignored_with_warning(
         self, monkeypatch, tmp_path, capsys, run_type, general, flag
     ):
-        params = TestRunModeFlags._run_cli(
-            monkeypatch, tmp_path, run_type, self.RANGES, general
+        params = run_cli(
+            monkeypatch, tmp_path, cli_config(run_type, self.RANGES, general)
         )
         assert params["run_type"] == run_type
         assert params["inverse_mode"] is (run_type in ["na", "mcmc"])
@@ -1058,8 +1124,10 @@ class TestSetRunFlags:
         assert params["inverse_mode"] is inverse_mode
 
     def test_forward_run_from_cli(self, monkeypatch, tmp_path):
-        params = TestRunModeFlags._run_cli(
-            monkeypatch, tmp_path, "forward", {"ero_type": 1, "ero_option1": 5.0}
+        params = run_cli(
+            monkeypatch,
+            tmp_path,
+            cli_config("forward", {"ero_type": 1, "ero_option1": 5.0}),
         )
         assert params["run_type"] == "forward"
         assert params["batch_mode"] is False
@@ -1079,18 +1147,7 @@ class TestTimeSteps:
     @staticmethod
     def _run_forward(monkeypatch, tmp_path, **kwargs):
         """Runs a short forward model and returns its tTdp history."""
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
-            time=1.0,
-            nx=21,
-            ero_type=1,
-            ero_option1=2.0,
-            plot_results=False,
-            verbose=0,
-            write_ttdp_history=True,
-            **kwargs,
-        )
-        prep_model(params)
+        run_forward(monkeypatch, tmp_path, write_ttdp_history=True, **kwargs)
         # With past ages, the history for 0 Ma has the surface age in its filename
         history_file = sorted((tmp_path / "csv").glob("time_temp_depth_pressure*.csv"))
         return np.loadtxt(history_file[0], delimiter=",", skiprows=1)
@@ -1222,19 +1279,16 @@ class TestCrustalUplift:
 
     @staticmethod
     def _final_moho_depth(monkeypatch, tmp_path, capsys, **kwargs):
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
-            time=1.0,
+        run_forward(
+            monkeypatch,
+            tmp_path,
             dt=5000.0,
             init_moho_depth=50.0,
-            ero_type=1,
-            ero_option1=2.0,
             calc_ages=False,
-            plot_results=False,
             echo_info=False,
+            verbose=1,
             **kwargs,
         )
-        prep_model(params)
         for line in capsys.readouterr().out.splitlines():
             if line.startswith("- Final Moho depth:"):
                 return float(line.split()[-2])
@@ -1267,19 +1321,14 @@ class TestPastAgeSurfaceTimes:
     @staticmethod
     def _surface_times(monkeypatch, tmp_path, time, past_age_increment):
         """Returns the surface times (Ma) written to past_ages.csv."""
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
+        run_forward(
+            monkeypatch,
+            tmp_path,
             time=time,
             dt=5000.0,
-            nx=21,
-            ero_type=1,
-            ero_option1=2.0,
             past_age_increment=past_age_increment,
             write_past_ages=True,
-            plot_results=False,
-            verbose=0,
         )
-        prep_model(params)
         past_ages = np.loadtxt(tmp_path / "csv" / "past_ages.csv", delimiter=",")
         return np.atleast_2d(past_ages)[:, 0]
 
@@ -1307,25 +1356,8 @@ class TestPastAgeSurfaceTimes:
 class TestCrashFixes:
     """Input combinations that previously crashed."""
 
-    @staticmethod
-    def _run(monkeypatch, tmp_path, **kwargs):
-        monkeypatch.chdir(tmp_path)
-        model = dict(
-            time=1.0,
-            dt=20000.0,
-            nx=21,
-            ero_type=1,
-            ero_option1=2.0,
-            plot_results=False,
-            verbose=0,
-        )
-        model.update(kwargs)
-        params = init_params(**model)
-        prep_model(params)
-        return params
-
     def test_ero_type2_integer_time(self, monkeypatch, tmp_path):
-        self._run(
+        run_forward(
             monkeypatch,
             tmp_path,
             time=1,
@@ -1336,18 +1368,18 @@ class TestCrashFixes:
         )
 
     def test_single_value_lists(self, monkeypatch, tmp_path):
-        params = self._run(monkeypatch, tmp_path, ero_option1=[2.0])
+        params = run_forward(monkeypatch, tmp_path, ero_option1=[2.0])
         assert params["ero_option1"] == 2.0
 
     def test_tuples_for_batch_runs(self, monkeypatch, tmp_path):
-        self._run(monkeypatch, tmp_path, run_type="batch", ero_option1=(1.0, 2.0))
+        run_forward(monkeypatch, tmp_path, run_type="batch", ero_option1=(1.0, 2.0))
         log = (tmp_path / "csv" / "tc1d_batch_log.csv").read_text().splitlines()
         assert len(log) == 3  # header and two models
 
     @pytest.mark.parametrize("run_type", ["forward", "batch"])
     def test_log_output_without_ages(self, monkeypatch, tmp_path, run_type):
         ero_option2 = [0.0, 1.0] if run_type == "batch" else 0.0
-        params = self._run(
+        params = run_forward(
             monkeypatch,
             tmp_path,
             run_type=run_type,
@@ -1374,7 +1406,7 @@ class TestCrashFixes:
         with pytest.raises(
             ValueError, match="must be younger than the model starting time"
         ):
-            self._run(monkeypatch, tmp_path, obs_age_file=str(age_file))
+            run_forward(monkeypatch, tmp_path, obs_age_file=str(age_file))
 
     def test_age_file_with_blank_lines(self, monkeypatch, tmp_path):
         # Blank lines between samples and at the end of the file
@@ -1388,7 +1420,7 @@ class TestCrashFixes:
             "\n"
             "   \n"
         )
-        self._run(
+        run_forward(
             monkeypatch, tmp_path, obs_age_file=str(age_file), write_age_output=True
         )
         summary = (tmp_path / "csv" / "age_summary.csv").read_text().splitlines()
@@ -1399,7 +1431,6 @@ class TestCrashFixes:
         the inversion. The search and appraisal are replaced by simple stand-ins
         so that only the objective function is tested."""
         import matplotlib
-        import yaml
         import tc1d.tc1d as tc1d_module
 
         matplotlib.use("Agg")
@@ -1437,21 +1468,14 @@ class TestCrashFixes:
         monkeypatch.setattr(tc1d_module, "run_model", fake_run_model)
         monkeypatch.setattr(tc1d_module, "NASearcher", FakeSearcher)
         monkeypatch.setattr(tc1d_module, "NAAppraiser", FakeAppraiser)
-        monkeypatch.chdir(tmp_path)
 
-        config = {
-            "general": {"run_type": "na", "verbose": 0},
-            "erosion_model": {
-                "ero_type": 1,
-                "ero_option1": [1.0, 10.0],
-                "ero_option2": [0.0, 5.0],
-            },
-            "plotting": {"no_display_plots": True},
-        }
-        input_file = tmp_path / "input.yaml"
-        input_file.write_text(yaml.safe_dump(config))
-        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
-        tc1d_cli.main()
+        config = cli_config(
+            "na",
+            {"ero_type": 1, "ero_option1": [1.0, 10.0], "ero_option2": [0.0, 5.0]},
+            general={"verbose": 0},
+            plotting={"no_display_plots": True},
+        )
+        run_cli(monkeypatch, tmp_path, config, run_drivers=True)
 
         # Failed models (ero_option1 = 8 and 9) get a large misfit
         results = np.loadtxt(
@@ -1492,7 +1516,7 @@ class TestLogFile:
         return header, data
 
     def test_forward_log(self, monkeypatch, tmp_path):
-        params = TestCrashFixes._run(
+        params = run_forward(
             monkeypatch,
             tmp_path,
             temp_surf=5.0,
@@ -1509,7 +1533,7 @@ class TestLogFile:
     def test_batch_log_with_failed_model(self, monkeypatch, tmp_path):
         # The explicit solution (type 1) is unstable for these grid and time steps,
         # but the batch run should continue and log both models
-        TestCrashFixes._run(
+        run_forward(
             monkeypatch,
             tmp_path,
             run_type="batch",
@@ -1523,21 +1547,21 @@ class TestLogFile:
     @pytest.mark.parametrize("run_type", ["na", "mcmc"])
     def test_inversion_log(self, monkeypatch, tmp_path, run_type):
         import matplotlib
-        import yaml
 
         matplotlib.use("Agg")
-        config = {
-            "general": {"run_type": run_type, "verbose": 0},
-            "geometry_time": {"time": 1.0, "dt": 20000.0, "nx": 21},
-            "erosion_model": {
+        config = cli_config(
+            run_type,
+            {
                 "ero_type": 2,
                 "ero_option1": [0.5, 2.0],
                 "ero_option2": 0.5,
                 "ero_option3": [0.5, 2.0],
             },
-            "observations": {"obs_age_file": self.OBS_AGE_FILE},
-            "plotting": {"no_plot_results": True, "no_display_plots": True},
-            "inversion": {
+            general={"verbose": 0},
+            geometry_time={"time": 1.0, "dt": 20000.0, "nx": 21},
+            observations={"obs_age_file": self.OBS_AGE_FILE},
+            plotting={"no_plot_results": True, "no_display_plots": True},
+            inversion={
                 "neighbourhood_algorithm": {
                     "na_ns": 2,
                     "na_nr": 1,
@@ -1553,12 +1577,8 @@ class TestLogFile:
                     "mcmc_thin": 1,
                 },
             },
-        }
-        input_file = tmp_path / "input.yaml"
-        input_file.write_text(yaml.safe_dump(config))
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
-        tc1d_cli.main()
+        )
+        run_cli(monkeypatch, tmp_path, config, run_drivers=True)
 
         _, data = self._read_log(tmp_path / "csv" / "tc1d_batch_log.csv")
         # Models run during inversions are not given model IDs
@@ -1578,7 +1598,7 @@ class TestLogFile:
             "Grain radius (um), Sample ID, Depositional age (Ma)\n"
             + "".join(ages[age_type] for age_type in age_types)
         )
-        params = TestCrashFixes._run(
+        params = run_forward(
             monkeypatch, tmp_path, obs_age_file=str(age_file), log_output=True
         )
         header, data = self._read_log(tmp_path / "csv" / params["log_file"])
@@ -1615,14 +1635,14 @@ class TestCliWarning:
 class TestScreenOutput:
     def test_no_pass_number_for_single_pass(self, monkeypatch, tmp_path, capsys):
         # The pass number is only shown when the model uses more than one pass
-        TestCrashFixes._run(monkeypatch, tmp_path, verbose=1, echo_info=False)
+        run_forward(monkeypatch, tmp_path, verbose=1, echo_info=False)
         output = capsys.readouterr().out
         assert "--- Calculating transient thermal model ---" in output
         assert "(Pass" not in output
 
     @pytest.mark.parametrize("echo_inputs, verbose", [(True, 1), (True, 0), (False, 1)])
     def test_echo_inputs(self, monkeypatch, tmp_path, capsys, echo_inputs, verbose):
-        TestCrashFixes._run(
+        run_forward(
             monkeypatch,
             tmp_path,
             echo_inputs=echo_inputs,
@@ -1643,34 +1663,25 @@ class TestMadTraxAft:
     """AFT ages and track lengths from MadTrax."""
 
     @staticmethod
-    def _aft_results(madtrax_aft, ketch_aft):
+    def _aft_results(madtrax_aft):
         # Linear cooling from 200 to 10 °C over 50 Myr
-        time_history = np.linspace(0.0, myr2sec(50.0), 501)
-        temp_history = np.linspace(200.0, 10.0, 501)
-        depth_history = np.linspace(8000.0, 0.0, 501)
-        pressure_history = depth_history * 2700.0 * 9.81
-        params = init_params(madtrax_aft=madtrax_aft, ketch_aft=ketch_aft, verbose=0)
-        results = calculate_ages_and_tcs(
-            params,
-            time_history,
-            temp_history,
-            depth_history,
-            pressure_history,
+        return linear_cooling_ages(
+            200.0,
+            50.0,
+            501,
+            8000.0,
+            madtrax_aft=madtrax_aft,
+            ketch_aft=not madtrax_aft,
         )
-        # AFT age, mean track length, closure temperature and track-length
-        # distribution
-        return results[3], results[4], results[5], results[11]
 
     def test_madtrax_aft_age_in_ma(self):
-        mt_age, mt_ftl, mt_temp, _ = self._aft_results(
-            madtrax_aft=True, ketch_aft=False
-        )
-        ke_age, _, _, _ = self._aft_results(madtrax_aft=False, ketch_aft=True)
+        madtrax = self._aft_results(madtrax_aft=True)
+        ketcham = self._aft_results(madtrax_aft=False)
         # Age should be in Ma and comparable to the Ketcham age
-        assert 0.0 < mt_age < 50.0
-        assert mt_age == pytest.approx(ke_age, rel=0.2)
-        assert 60.0 < mt_temp < 150.0
-        assert 0.0 < mt_ftl < 17.0
+        assert 0.0 < madtrax["aft_age"] < 50.0
+        assert madtrax["aft_age"] == pytest.approx(ketcham["aft_age"], rel=0.2)
+        assert 60.0 < madtrax["aft_temp"] < 150.0
+        assert 0.0 < madtrax["aft_mean_ftl"] < 17.0
 
 
 class TestAftTrackLengths:
@@ -1678,12 +1689,10 @@ class TestAftTrackLengths:
 
     @pytest.mark.parametrize("madtrax_aft", [True, False])
     def test_track_length_distribution(self, madtrax_aft):
-        _, mean_ftl, _, ftl_dist = TestMadTraxAft._aft_results(
-            madtrax_aft=madtrax_aft,
-            ketch_aft=not madtrax_aft,
-        )
-        length = ftl_dist[:, 0]
-        prob = ftl_dist[:, 1]
+        results = TestMadTraxAft._aft_results(madtrax_aft)
+        mean_ftl = results["aft_mean_ftl"]
+        length = results["aft_ftl_dist"][:, 0]
+        prob = results["aft_ftl_dist"][:, 1]
         if madtrax_aft:
             # 1-µm bins from 0-1 µm to 16-17 µm
             assert len(length) == 17
@@ -1702,12 +1711,10 @@ class TestAftTrackLengths:
         self, monkeypatch, tmp_path, madtrax_aft, write_ft_lengths
     ):
         # The plot should not depend on writing the track lengths to file
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
+        run_forward(
+            monkeypatch,
+            tmp_path,
             time=10.0,
-            dt=20000.0,
-            nx=21,
-            ero_type=1,
             ero_option1=5.0,
             madtrax_aft=madtrax_aft,
             write_ft_lengths=write_ft_lengths,
@@ -1715,9 +1722,7 @@ class TestAftTrackLengths:
             plot_ft_length_dist=True,
             save_plots=True,
             display_plots=False,
-            verbose=0,
         )
-        prep_model(params)
         assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
         ftl_files = [f.name for f in tmp_path.rglob("ft_length*.csv")]
         if write_ft_lengths:
@@ -1726,19 +1731,14 @@ class TestAftTrackLengths:
             assert ftl_files == []
 
     def test_track_length_files_for_past_ages(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
+        run_forward(
+            monkeypatch,
+            tmp_path,
             time=10.0,
-            dt=20000.0,
-            nx=21,
-            ero_type=1,
             ero_option1=5.0,
             past_age_increment=5.0,
             write_ft_lengths=True,
-            plot_results=False,
-            verbose=0,
         )
-        prep_model(params)
         files = sorted(f.name for f in tmp_path.rglob("ft_length*.csv"))
         assert files == ["ft_length_0.0Ma.csv", "ft_length_5.0Ma.csv"]
 
@@ -1775,18 +1775,7 @@ class TestAftModelSelection:
 
     @staticmethod
     def _aft_output(monkeypatch, tmp_path, capsys, **kwargs):
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
-            time=10.0,
-            dt=20000.0,
-            nx=21,
-            ero_type=1,
-            ero_option1=5.0,
-            plot_results=False,
-            verbose=0,
-            **kwargs,
-        )
-        prep_model(params)
+        run_forward(monkeypatch, tmp_path, time=10.0, ero_option1=5.0, **kwargs)
         output = capsys.readouterr().out
         return [line for line in output.splitlines() if "AFT age" in line]
 
@@ -1810,43 +1799,23 @@ class TestAftModelSelection:
     def test_cli_yaml_options(
         self, monkeypatch, tmp_path, age_prediction, ketch_aft, madtrax_aft
     ):
-        import yaml
-        import tc1d.tc1d as tc1d_module
-
-        config = {
-            "general": {"run_type": "forward"},
-            "erosion_model": {"ero_type": 1, "ero_option1": 1.0},
-            "age_prediction": age_prediction,
-        }
-        input_file = tmp_path / "input.yaml"
-        input_file.write_text(yaml.safe_dump(config))
-
-        captured = {}
-
-        def fake_run_model(params):
-            captured["params"] = params
-
-        monkeypatch.setattr(tc1d_module, "run_model", fake_run_model)
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
-        tc1d_cli.main()
-        assert captured["params"]["ketch_aft"] is ketch_aft
-        assert captured["params"]["madtrax_aft"] is madtrax_aft
+        config = cli_config(
+            "forward",
+            {"ero_type": 1, "ero_option1": 1.0},
+            age_prediction=age_prediction,
+        )
+        params = run_cli(monkeypatch, tmp_path, config)
+        assert params["ketch_aft"] is ketch_aft
+        assert params["madtrax_aft"] is madtrax_aft
 
     def test_cli_no_aft_model(self, monkeypatch, tmp_path):
-        import yaml
-
-        config = {
-            "general": {"run_type": "forward"},
-            "erosion_model": {"ero_type": 1, "ero_option1": 1.0},
-            "age_prediction": {"ketch_aft": False},
-        }
-        input_file = tmp_path / "input.yaml"
-        input_file.write_text(yaml.safe_dump(config))
-        monkeypatch.chdir(tmp_path)
-        monkeypatch.setattr("sys.argv", ["tc1d-cli", "--input-file", str(input_file)])
+        config = cli_config(
+            "forward",
+            {"ero_type": 1, "ero_option1": 1.0},
+            age_prediction={"ketch_aft": False},
+        )
         with pytest.raises(ValueError, match="No AFT age model selected"):
-            tc1d_cli.main()
+            run_cli(monkeypatch, tmp_path, config)
 
 
 class TestMadTraxPadTime:
@@ -1855,22 +1824,17 @@ class TestMadTraxPadTime:
     @staticmethod
     def _ages(temp_start, pad_time):
         # Linear cooling from temp_start to 10 °C over 20 Myr
-        time_history = np.linspace(0.0, myr2sec(20.0), 201)
-        temp_history = np.linspace(temp_start, 10.0, 201)
-        depth_history = np.linspace(5000.0, 0.0, 201)
-        pressure_history = depth_history * 2700.0 * 9.81
-        params = init_params(
-            madtrax_aft=True, ketch_aft=False, pad_time=pad_time, verbose=0
-        )
-        results = calculate_ages_and_tcs(
-            params,
-            time_history,
-            temp_history,
-            depth_history,
-            pressure_history,
+        results = linear_cooling_ages(
+            temp_start,
+            20.0,
+            201,
+            5000.0,
+            madtrax_aft=True,
+            ketch_aft=False,
+            pad_time=pad_time,
         )
         # MadTrax AFT and ZFT ages
-        return results[3], results[9]
+        return results["aft_age"], results["zft_age"]
 
     def test_padding_makes_unreset_ages_older(self):
         # Neither age is reset when cooling from 40 °C, so the padding time
@@ -1966,12 +1930,12 @@ class TestInverseOutput:
 
     def test_cli_inversion_disables_output(self, monkeypatch, tmp_path):
         with pytest.warns(UserWarning, match="not written for NA or MCMC"):
-            params = TestRunModeFlags._run_cli(
+            params = run_cli(
                 monkeypatch,
                 tmp_path,
-                "na",
-                {"ero_type": 1, "ero_option1": [1.0, 5.0]},
-                output=self.OUTPUT,
+                cli_config(
+                    "na", {"ero_type": 1, "ero_option1": [1.0, 5.0]}, output=self.OUTPUT
+                ),
             )
         for key in self.OUTPUT:
             assert params[key] is False
