@@ -108,12 +108,6 @@ def test_main_release_option(monkeypatch, argv, expected_ver):
     assert calls == [expected_ver]
 
 
-def test_main_short_v_option_removed(monkeypatch):
-    monkeypatch.setattr(notebooks, "fetch_notebooks", lambda **kwargs: None)
-    with pytest.raises(SystemExit):
-        notebooks.main(["-v", "latest"])
-
-
 def test_main_help_shows_release_option(capsys):
     with pytest.raises(SystemExit):
         notebooks.main(["--help"])

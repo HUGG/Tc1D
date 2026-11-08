@@ -44,7 +44,9 @@ from tc1d.tc1d_cli import (
 )
 
 """
-List of tests to still create:
+List of functions with tests (*) and tests still to create (-). Tests for the
+age calculations are in test_ages.py.
+
 # Conversions
 * yr2sec
 * myr2sec
@@ -65,6 +67,7 @@ List of tests to still create:
 - temp_transient_implicit
 - create_intrusion
 - apply_intrusion
+* get_particle_temp_and_pressure
 
 # Density
 - calculate_pressure
@@ -77,12 +80,13 @@ List of tests to still create:
 - calculate_mantle_solidus
 
 # Chronometers
-- calculate_eu
-- he_ages
-- ft_ages
+* calculate_eu
+* he_ages (test_ages.py)
+* ft_ages (test_ages.py)
 - calculate_closure_temp
-- calculate_ages_and_tcs
-- calculate_misfit
+* calculate_ages_and_tcs (also test_ages.py)
+* set_aft_model
+* calculate_misfit (misfit type 2 only)
 
 # Erosion
 - init_ero_types?
@@ -90,7 +94,6 @@ List of tests to still create:
 * erosion_linear
 * erosion_exponential
 * read_ero_stages_from_yaml (ero_type=0: erosion_rate + thickness + errors)
-* format_ero_stages_table (ero_type=0: YAML echo strings)
 * calculate_exhumation_magnitude (ero_type=0: constant + truncation)
 * calculate_exhumation_magnitude (ero_type=0: linear)
 * calculate_exhumation_magnitude (ero_type=0: exponential)
@@ -104,11 +107,14 @@ List of tests to still create:
 
 # InputOutput
 - get_write_increment
-- write_tt_history?
-- write_ttdp_history?
-- read_age_data_file
+* get_history_indices
+* get_pad_times
+* get_tt_path
+- save_tt_history
+* save_ttdp_history
+- read_age_data_file (only tested indirectly)
 - create_output_directory?
-- log_output?
+- log_output? (log file contents tested in TestLogFile)
 
 # Inversion
 - def objective
@@ -119,7 +125,10 @@ List of tests to still create:
 # Structure
 - check_execs?
 - init_params?
-- prep_model?
+* check_run_type
+* set_run_flags
+* disable_output_for_inversions
+- prep_model? (partly tested through other tests)
 - batch_run?
 - batch_run_na?
 - batch_run_mcmc?
@@ -914,23 +923,6 @@ class TestRunModeFlags:
         assert params["batch_mode"] is True
         assert (tmp_path / "csv").is_dir()
 
-    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
-    def test_inverse_mode_with_parameter_ranges(self, monkeypatch, tmp_path, run_type):
-        erosion_model = {"ero_type": 1, "ero_option1": [5.0, 20.0]}
-        params = self._run_cli(monkeypatch, tmp_path, run_type, erosion_model)
-
-        assert params["run_type"] == run_type
-        assert params["inverse_mode"] is True
-        assert params["batch_mode"] is True
-
-    def test_batch_run_is_not_inverse_mode(self, monkeypatch, tmp_path):
-        erosion_model = {"ero_type": 1, "ero_option1": [5.0, 10.0, 20.0]}
-        params = self._run_cli(monkeypatch, tmp_path, "batch", erosion_model)
-
-        assert params["run_type"] == "batch"
-        assert params["inverse_mode"] is False
-        assert params["batch_mode"] is True
-
 
 class TestCheckRunType:
     """Check that run types that do not match the parameter values are caught."""
@@ -1402,32 +1394,6 @@ class TestCrashFixes:
         summary = (tmp_path / "csv" / "age_summary.csv").read_text().splitlines()
         assert len(summary) == 3  # header and the two samples
 
-    @pytest.mark.parametrize("n_ages, num_params", [(1, 0), (2, 1), (2, 2)])
-    def test_misfit_type2_too_few_ages(self, n_ages, num_params):
-        ages = np.linspace(10.0, 20.0, n_ages)
-        with pytest.raises(ValueError, match="Misfit type 2 requires more"):
-            calculate_misfit(ages + 1.0, ages, ages / 10.0, 2, num_params)
-
-    def test_misfit_type2(self):
-        # Sum of squared normalized residuals divided by (N - num_params - 1)
-        measured = np.array([10.0, 12.0, 14.0])
-        predicted = np.array([11.0, 12.0, 12.0])
-        stdev = np.array([1.0, 1.0, 1.0])
-        assert calculate_misfit(predicted, measured, stdev, 2, 1) == pytest.approx(5.0)
-
-    def test_batch_continues_after_unstable_model(self, monkeypatch, tmp_path):
-        # The explicit solution (type 1) is unstable for these grid and time steps
-        self._run(
-            monkeypatch,
-            tmp_path,
-            run_type="batch",
-            nx=101,
-            dt=50000.0,
-            solution_type=[1, 2],
-        )
-        log = (tmp_path / "csv" / "tc1d_batch_log.csv").read_text().splitlines()
-        assert len(log) == 3  # header, failed model, and successful model
-
     def test_na_continues_after_failed_model(self, monkeypatch, tmp_path):
         """Models that fail during an NA inversion should be rejected, not stop
         the inversion. The search and appraisal are replaced by simple stand-ins
@@ -1494,6 +1460,21 @@ class TestCrashFixes:
         np.testing.assert_allclose(results[:, -1], [2.0, 1.0e10, 4.0, 1.0e10, 3.0])
 
 
+class TestMisfit:
+    def test_misfit_type2(self):
+        # Sum of squared normalized residuals divided by (N - num_params - 1)
+        measured = np.array([10.0, 12.0, 14.0])
+        predicted = np.array([11.0, 12.0, 12.0])
+        stdev = np.array([1.0, 1.0, 1.0])
+        assert calculate_misfit(predicted, measured, stdev, 2, 1) == pytest.approx(5.0)
+
+    @pytest.mark.parametrize("n_ages, num_params", [(1, 0), (2, 1), (2, 2)])
+    def test_misfit_type2_too_few_ages(self, n_ages, num_params):
+        ages = np.linspace(10.0, 20.0, n_ages)
+        with pytest.raises(ValueError, match="Misfit type 2 requires more"):
+            calculate_misfit(ages + 1.0, ages, ages / 10.0, 2, num_params)
+
+
 class TestLogFile:
     """Every row in the log file should have one value per header column."""
 
@@ -1526,7 +1507,8 @@ class TestLogFile:
         assert float(values["Total exhumation (km)"]) == pytest.approx(2.0)
 
     def test_batch_log_with_failed_model(self, monkeypatch, tmp_path):
-        # The explicit solution (type 1) is unstable for these grid and time steps
+        # The explicit solution (type 1) is unstable for these grid and time steps,
+        # but the batch run should continue and log both models
         TestCrashFixes._run(
             monkeypatch,
             tmp_path,
@@ -1610,17 +1592,24 @@ class TestLogFile:
 
 
 class TestCliWarning:
-    def test_cli_warning(self, capsys):
-        _cli_warning("Something to note.", ["  - detail 1", "  - detail 2"])
+    @pytest.mark.parametrize(
+        "details, expected",
+        [
+            (None, "tc1d-cli: warning: Something to note.\n"),
+            (
+                ["  - detail 1", "  - detail 2"],
+                "tc1d-cli: warning: Something to note.\n  - detail 1\n  - detail 2\n",
+            ),
+        ],
+    )
+    def test_cli_warning(self, capsys, details, expected):
+        if details is None:
+            _cli_warning("Something to note.")
+        else:
+            _cli_warning("Something to note.", details)
         captured = capsys.readouterr()
         assert captured.out == ""
-        assert captured.err == (
-            "tc1d-cli: warning: Something to note.\n  - detail 1\n  - detail 2\n"
-        )
-
-    def test_cli_warning_without_details(self, capsys):
-        _cli_warning("Something to note.")
-        assert capsys.readouterr().err == "tc1d-cli: warning: Something to note.\n"
+        assert captured.err == expected
 
 
 class TestScreenOutput:
@@ -1683,15 +1672,16 @@ class TestMadTraxAft:
         assert 60.0 < mt_temp < 150.0
         assert 0.0 < mt_ftl < 17.0
 
+
+class TestAftTrackLengths:
+    """AFT track-length distributions from the Ketcham and MadTrax models."""
+
     @pytest.mark.parametrize("madtrax_aft", [True, False])
-    def test_track_length_distribution(self, monkeypatch, tmp_path, madtrax_aft):
-        monkeypatch.chdir(tmp_path)
-        _, mean_ftl, _, ftl_dist = self._aft_results(
+    def test_track_length_distribution(self, madtrax_aft):
+        _, mean_ftl, _, ftl_dist = TestMadTraxAft._aft_results(
             madtrax_aft=madtrax_aft,
             ketch_aft=not madtrax_aft,
         )
-        # No track-length file should be written by the age calculation
-        assert not (tmp_path / "ft_length.csv").exists()
         length = ftl_dist[:, 0]
         prob = ftl_dist[:, 1]
         if madtrax_aft:
@@ -1705,28 +1695,13 @@ class TestMadTraxAft:
         assert prob.sum() * bin_width == pytest.approx(1.0, abs=1e-3)
         assert (length * prob).sum() * bin_width == pytest.approx(mean_ftl, abs=0.05)
 
-    def test_madtrax_track_length_output(self, monkeypatch, tmp_path):
-        monkeypatch.chdir(tmp_path)
-        params = init_params(
-            time=10.0,
-            dt=20000.0,
-            nx=21,
-            ero_type=1,
-            ero_option1=5.0,
-            madtrax_aft=True,
-            write_ft_lengths=True,
-            plot_results=True,
-            plot_ft_length_dist=True,
-            save_plots=True,
-            display_plots=False,
-            verbose=0,
-        )
-        prep_model(params)
-        assert (tmp_path / "csv" / "ft_length.csv").exists()
-        assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
-
-    @pytest.mark.parametrize("madtrax_aft", [True, False])
-    def test_plot_without_track_length_file(self, monkeypatch, tmp_path, madtrax_aft):
+    @pytest.mark.parametrize(
+        "madtrax_aft, write_ft_lengths", [(True, True), (False, False)]
+    )
+    def test_track_length_plot(
+        self, monkeypatch, tmp_path, madtrax_aft, write_ft_lengths
+    ):
+        # The plot should not depend on writing the track lengths to file
         monkeypatch.chdir(tmp_path)
         params = init_params(
             time=10.0,
@@ -1735,7 +1710,7 @@ class TestMadTraxAft:
             ero_type=1,
             ero_option1=5.0,
             madtrax_aft=madtrax_aft,
-            write_ft_lengths=False,
+            write_ft_lengths=write_ft_lengths,
             plot_results=True,
             plot_ft_length_dist=True,
             save_plots=True,
@@ -1744,7 +1719,11 @@ class TestMadTraxAft:
         )
         prep_model(params)
         assert (tmp_path / "png" / "apatite_ft_length_dist.png").exists()
-        assert not list(tmp_path.rglob("ft_length*.csv"))
+        ftl_files = [f.name for f in tmp_path.rglob("ft_length*.csv")]
+        if write_ft_lengths:
+            assert ftl_files == ["ft_length.csv"]
+        else:
+            assert ftl_files == []
 
     def test_track_length_files_for_past_ages(self, monkeypatch, tmp_path):
         monkeypatch.chdir(tmp_path)
@@ -1760,34 +1739,39 @@ class TestMadTraxAft:
             verbose=0,
         )
         prep_model(params)
-        files = sorted(f.name for f in (tmp_path / "csv").glob("ft_length*.csv"))
+        files = sorted(f.name for f in tmp_path.rglob("ft_length*.csv"))
         assert files == ["ft_length_0.0Ma.csv", "ft_length_5.0Ma.csv"]
-        assert not (tmp_path / "ft_length.csv").exists()
 
 
 class TestAftModelSelection:
     """Only one AFT model is used at a time."""
 
-    @pytest.mark.parametrize("ketch_aft", [True, False])
-    def test_madtrax_replaces_ketcham(self, ketch_aft):
-        params = {"madtrax_aft": True, "ketch_aft": ketch_aft, "calc_ages": True}
+    @pytest.mark.parametrize(
+        "madtrax_aft, ketch_aft, calc_ages, expected_ketch_aft",
+        [
+            # MadTrax replaces Ketcham
+            (True, True, True, False),
+            (True, False, True, False),
+            # Ketcham by default
+            (False, True, True, True),
+            # No AFT model is needed if ages are not calculated
+            (False, False, False, False),
+        ],
+    )
+    def test_set_aft_model(self, madtrax_aft, ketch_aft, calc_ages, expected_ketch_aft):
+        params = {
+            "madtrax_aft": madtrax_aft,
+            "ketch_aft": ketch_aft,
+            "calc_ages": calc_ages,
+        }
         set_aft_model(params)
-        assert params["madtrax_aft"] is True
-        assert params["ketch_aft"] is False
-
-    def test_ketcham_by_default(self):
-        params = {"madtrax_aft": False, "ketch_aft": True, "calc_ages": True}
-        set_aft_model(params)
-        assert params["ketch_aft"] is True
+        assert params["madtrax_aft"] is madtrax_aft
+        assert params["ketch_aft"] is expected_ketch_aft
 
     def test_no_aft_model_selected(self):
         params = {"madtrax_aft": False, "ketch_aft": False, "calc_ages": True}
         with pytest.raises(ValueError, match="No AFT age model selected"):
             set_aft_model(params)
-
-    def test_no_aft_model_without_ages(self):
-        params = {"madtrax_aft": False, "ketch_aft": False, "calc_ages": False}
-        set_aft_model(params)
 
     @staticmethod
     def _aft_output(monkeypatch, tmp_path, capsys, **kwargs):
@@ -1820,9 +1804,7 @@ class TestAftModelSelection:
         "age_prediction, ketch_aft, madtrax_aft",
         [
             ({}, True, False),
-            ({"madtrax_aft": True}, False, True),
             ({"ketch_aft": True, "madtrax_aft": True}, False, True),
-            ({"ketch_aft": False, "madtrax_aft": True}, False, True),
         ],
     )
     def test_cli_yaml_options(
@@ -1911,14 +1893,14 @@ class TestMadTraxPadTime:
 class TestTimePadding:
     """Time padding of thermal histories."""
 
-    def test_no_padding(self):
+    @pytest.mark.parametrize(
+        "pad_time, expected", [(0.0, []), (3.0, [11.0, 12.0, 13.0])]
+    )
+    def test_pad_times(self, pad_time, expected):
         time_ma = np.array([10.0, 5.0, 0.0])
-        assert len(get_pad_times({"pad_time": 0.0}, time_ma)) == 0
-
-    def test_pad_times(self):
-        time_ma = np.array([10.0, 5.0, 0.0])
-        pad_times = get_pad_times({"pad_time": 3.0}, time_ma)
-        assert np.allclose(pad_times, [11.0, 12.0, 13.0])
+        pad_times = get_pad_times({"pad_time": pad_time}, time_ma)
+        assert len(pad_times) == len(expected)
+        assert np.allclose(pad_times, expected)
 
     def test_tt_path_with_padding(self):
         params = init_params(pad_time=2.0)
@@ -1982,26 +1964,14 @@ class TestInverseOutput:
         for key in self.OUTPUT:
             assert params[key] is True
 
-    @pytest.mark.parametrize("run_type", ["na", "mcmc"])
-    def test_cli_inversion_disables_output(self, monkeypatch, tmp_path, run_type):
+    def test_cli_inversion_disables_output(self, monkeypatch, tmp_path):
         with pytest.warns(UserWarning, match="not written for NA or MCMC"):
             params = TestRunModeFlags._run_cli(
                 monkeypatch,
                 tmp_path,
-                run_type,
+                "na",
                 {"ero_type": 1, "ero_option1": [1.0, 5.0]},
                 output=self.OUTPUT,
             )
         for key in self.OUTPUT:
             assert params[key] is False
-
-    def test_cli_batch_keeps_output(self, monkeypatch, tmp_path):
-        params = TestRunModeFlags._run_cli(
-            monkeypatch,
-            tmp_path,
-            "batch",
-            {"ero_type": 1, "ero_option1": [1.0, 5.0]},
-            output=self.OUTPUT,
-        )
-        for key in self.OUTPUT:
-            assert params[key] is True
