@@ -860,6 +860,19 @@ def save_ttdp_history(
             )
 
 
+def get_file_prefix(params: dict) -> str:
+    """Returns the prefix for output filenames.
+
+    Output filenames start with the model ID for batch runs so that the files
+    for each model are not overwritten by the next model.
+    """
+    if params["batch_mode"]:
+        file_prefix = params["model_id"] + "-"
+    else:
+        file_prefix = ""
+    return file_prefix
+
+
 def write_thermal_histories(
     params: dict,
     output_dir: Path,
@@ -875,11 +888,7 @@ def write_thermal_histories(
     if not (write_tt_history or write_ttdp_history):
         return
 
-    # Prefix filenames with the model ID in batch mode
-    if params["batch_mode"]:
-        file_prefix = params["model_id"] + "-"
-    else:
-        file_prefix = ""
+    file_prefix = get_file_prefix(params)
 
     for i in range(len(surface_times_ma)):
         # Add the surface time to filenames when tracking more than one particle
@@ -5894,10 +5903,9 @@ def run_model(params):
 
             # Write track-length distribution to file
             if write_track_lengths:
-                ftl_filename = "ft_length" + file_age_text + ".csv"
-                if params["batch_mode"]:
-                    # Add model ID to filename for batch runs
-                    ftl_filename = params["model_id"] + "-" + ftl_filename
+                ftl_filename = (
+                    get_file_prefix(params) + "ft_length" + file_age_text + ".csv"
+                )
                 write_ft_length_file(wd / "csv" / ftl_filename, aft_ftl_dist)
 
         # Print ages (verbose >= 0), with section heading for verbose >= 1
@@ -6162,7 +6170,8 @@ def run_model(params):
         past_ages_out[:, 2] = aft_ages + surface_times_ma
         past_ages_out[:, 3] = corr_zhe_ages + surface_times_ma
         past_ages_out[:, 4] = zft_ages + surface_times_ma
-        savefile = wd / "csv" / "past_ages.csv"
+        past_age_filename = get_file_prefix(params) + "past_ages.csv"
+        savefile = wd / "csv" / past_age_filename
         np.savetxt(
             savefile,
             past_ages_out,
@@ -7189,7 +7198,8 @@ def run_model(params):
         temp_x_out[:, 0] = x
         temp_x_out[:, 1] = temp_new
         temp_x_out[:, 2] = temp_init
-        savefile = wd / "csv" / "output_temps.csv"
+        temperature_filename = get_file_prefix(params) + "output_temps.csv"
+        savefile = wd / "csv" / temperature_filename
         np.savetxt(
             savefile,
             temp_x_out,
@@ -7197,7 +7207,7 @@ def run_model(params):
             header="Depth (m),Temperature (deg. C),Initial temperature (deg. C)",
             comments="",
         )
-        vprint(params, 1, f"- Temperature output writen to {savefile}")
+        vprint(params, 1, f"- Temperature output written to {savefile}")
 
     # Write header in log file if needed
     if params["log_output"]:
@@ -7324,7 +7334,8 @@ def run_model(params):
 
     # Write summary age output to file
     if write_age_summary:
-        savefile = wd / "csv" / "age_summary.csv"
+        age_summary_filename = get_file_prefix(params) + "age_summary.csv"
+        savefile = wd / "csv" / age_summary_filename
         # Use sample IDs from data file, or None otherwise
         if ages_from_data_file:
             # Fill in age types

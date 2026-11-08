@@ -67,6 +67,7 @@ A summary of measured and predicted ages can be written to a file if either (1) 
 The output file will contain all of the information passed to T<sub>c</sub>1D (observed ages, uncertainties, eU/radius, sample ID) as well as the predicted age(s) and eU/radius values used for age prediction ((U-Th)/He ages only).
 This can be handy to have in case you want to tweak plotting of the age data or further explore your results.
 The file will be written to `csv/age_summary.csv`.
+For batch runs, the filename starts with the model ID (e.g., `csv/M0001-age_summary.csv`).
 
 An example of the output that is written to the age data file can be found below:
 

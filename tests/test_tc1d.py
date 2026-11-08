@@ -2030,3 +2030,37 @@ class TestUpdateMaterials:
         assert np.all(k == np.where(xstag > moho_depth, 3.5, 2.5))
         assert np.all(heat_prod == np.where(mantle, 0.0, 1.0e-6))
         assert np.all(alphav == np.where(mantle, 4.0e-5, 2.0e-5))
+
+
+class TestBatchOutputFiles:
+    def test_output_files_for_each_model(self, monkeypatch, tmp_path):
+        """Each model in a batch run should write its own output files."""
+        obs_age_file = tmp_path / "ages.csv"
+        obs_age_file.write_text(
+            "Age type, Age (Ma), Standard deviation (Ma), eU concentration (ppm), "
+            "Grain radius (um), Sample ID, Depositional age (Ma)\n"
+            "AHe, 0.8, 0.1, 40.0, 60.0, S1,\n"
+        )
+        run_forward(
+            monkeypatch,
+            tmp_path,
+            run_type="batch",
+            ero_option1=[1.0, 2.0],
+            past_age_increment=0.5,
+            obs_age_file=str(obs_age_file),
+            write_temps=True,
+            write_past_ages=True,
+            write_age_output=True,
+        )
+        csv_files = {f.name for f in (tmp_path / "csv").glob("*.csv")}
+        for name in ["output_temps.csv", "past_ages.csv", "age_summary.csv"]:
+            assert name not in csv_files
+            assert f"M0001-{name}" in csv_files
+            assert f"M0002-{name}" in csv_files
+        # The models have different amounts of erosion, so their final
+        # temperatures should differ
+        temps = [
+            np.loadtxt(tmp_path / "csv" / f, delimiter=",", skiprows=1)[:, 1]
+            for f in ["M0001-output_temps.csv", "M0002-output_temps.csv"]
+        ]
+        assert not np.allclose(temps[0], temps[1])
