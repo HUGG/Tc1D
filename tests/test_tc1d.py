@@ -1939,3 +1939,39 @@ class TestInverseOutput:
             )
         for key in self.OUTPUT:
             assert params[key] is False
+
+
+class TestBasalHeatFlux:
+    """Basal heat flux boundary condition (bc_type 2)."""
+
+    @staticmethod
+    def _basal_temperature(monkeypatch, tmp_path, solution_type):
+        # Mantle removal makes the base of the model reach the mantle adiabat,
+        # which changes the conductivity at the base to k_a
+        run_forward(
+            monkeypatch,
+            tmp_path,
+            time=2.0,
+            dt=5000.0,
+            nx=51,
+            ero_option1=0.001,
+            bc_type=2,
+            flux_base=20.0,
+            removal_fraction=0.5,
+            removal_start_time=0.0,
+            solution_type=solution_type,
+            calc_ages=False,
+            write_temps=True,
+        )
+        temps = np.loadtxt(
+            tmp_path / "csv" / "output_temps.csv", delimiter=",", skiprows=1
+        )
+        return temps[-1, 1]
+
+    @pytest.mark.parametrize("solution_type", [2, 3])
+    def test_solutions_match_explicit(self, monkeypatch, tmp_path, solution_type):
+        # The implicit and Crank-Nicolson solutions should use the current
+        # conductivity at the base of the model, like the explicit solution
+        explicit = self._basal_temperature(monkeypatch, tmp_path, 1)
+        other = self._basal_temperature(monkeypatch, tmp_path, solution_type)
+        assert other == pytest.approx(explicit, abs=1.0)

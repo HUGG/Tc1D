@@ -5107,9 +5107,9 @@ def run_model(params):
     # Calculate model times when particles reach surface
     surface_times = myr2sec(params["t_total"] - surface_times_ma)
 
-    # Assign basal boundary condition for implicit and Crank-Nicolson solutions
-    # NOTE: This assumes the boundary conditions do NOT change with time
-    # FIXME: Should handle cases where b/cs change somehow...
+    # Assign boundary conditions for implicit and Crank-Nicolson solutions
+    # NOTE: The basal heat flux boundary condition depends on the conductivity at
+    # the base of the model, so it is also updated at each time step
     # Constant surface temperature
     a_matrix[0, 0] = 1
     b_vector[0] = params["temp_surf"]
@@ -5493,6 +5493,11 @@ def run_model(params):
                 delaminated,
                 params["removal_fraction"],
             )
+
+            # Update the basal heat flux boundary condition for the implicit and
+            # Crank-Nicolson solutions using the current conductivity at the base
+            if params["bc_type"] == 2:
+                b_vector[-1] = 2 * milli2base(params["flux_base"]) * dx / k[-1]
 
             # Calculate updated temperatures
             if params["solution_type"] == 1:
