@@ -378,12 +378,15 @@ def update_materials(
     heat_prod_decay_depth: float,
     heat_prod_mantle: float,
     heat_prod: np.ndarray,
+    alphav_crust: float,
+    alphav_mantle: float,
+    alphav: np.ndarray,
     temp_adiabat: np.ndarray,
     temp_prev: np.ndarray,
     k_a: float,
     delaminated: bool,
     removal_fraction: float,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """Updates arrays of material properties."""
     rho[:] = rho_crust
     rho[x > moho_depth] = rho_mantle
@@ -405,7 +408,9 @@ def update_materials(
     if heat_prod_decay_depth > 0.0:
         heat_prod *= np.exp(-x / heat_prod_decay_depth)
     heat_prod[x > moho_depth] = heat_prod_mantle
-    return rho, cp, k, heat_prod, lab_depth
+    alphav[:] = alphav_crust
+    alphav[x > moho_depth] = alphav_mantle
+    return rho, cp, k, heat_prod, alphav, lab_depth
 
 
 def init_ero_types(
@@ -5167,7 +5172,7 @@ def run_model(params):
         )
 
         # Calculate initial densities
-        rho, cp, k, heat_prod, lab_depth = update_materials(
+        rho, cp, k, heat_prod, alphav, lab_depth = update_materials(
             x,
             xstag,
             moho_depth,
@@ -5184,6 +5189,9 @@ def run_model(params):
             kilo2base(params["heat_prod_decay_depth"]),
             micro2base(params["heat_prod_mantle"]),
             heat_prod,
+            params["alphav_crust"],
+            params["alphav_mantle"],
+            alphav,
             temp_adiabat,
             temp_prev,
             params["k_a"],
@@ -5470,7 +5478,7 @@ def run_model(params):
                 )
 
             # Update material properties
-            rho, cp, k, heat_prod, lab_depth = update_materials(
+            rho, cp, k, heat_prod, alphav, lab_depth = update_materials(
                 x,
                 xstag,
                 moho_depth,
@@ -5487,6 +5495,9 @@ def run_model(params):
                 kilo2base(params["heat_prod_decay_depth"]),
                 micro2base(params["heat_prod_mantle"]),
                 heat_prod,
+                params["alphav_crust"],
+                params["alphav_mantle"],
+                alphav,
                 temp_adiabat,
                 temp_prev,
                 params["k_a"],

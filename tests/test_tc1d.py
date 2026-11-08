@@ -33,6 +33,7 @@ from tc1d.tc1d import (
     save_ttdp_history,
     set_aft_model,
     set_run_flags,
+    update_materials,
 )
 from tc1d.tc1d_cli import (
     _apply_yaml_to_args,
@@ -1975,3 +1976,57 @@ class TestBasalHeatFlux:
         explicit = self._basal_temperature(monkeypatch, tmp_path, 1)
         other = self._basal_temperature(monkeypatch, tmp_path, solution_type)
         assert other == pytest.approx(explicit, abs=1.0)
+
+
+class TestUpdateMaterials:
+    def test_material_properties_follow_moho(self):
+        """All material properties, including thermal expansion, should change
+        at the current Moho depth."""
+        x = np.linspace(0.0, 100.0e3, 11)
+        xstag = x[:-1] + 5.0e3
+        temp_prev = np.linspace(0.0, 1000.0, 11)
+        temp_adiabat = np.full(len(xstag), 2000.0)
+        # Material property arrays for a Moho at 55 km
+        arrays = {}
+        for name, crust, mantle, points in [
+            ("rho", 2800.0, 3300.0, x),
+            ("cp", 800.0, 1000.0, x),
+            ("k", 2.5, 3.5, xstag),
+            ("heat_prod", 1.0e-6, 0.0, x),
+            ("alphav", 2.0e-5, 4.0e-5, x),
+        ]:
+            arrays[name] = np.where(points > 55.0e3, mantle, crust)
+        # Update the properties for a Moho at 35 km
+        moho_depth = 35.0e3
+        rho, cp, k, heat_prod, alphav, _ = update_materials(
+            x,
+            xstag,
+            moho_depth,
+            2800.0,
+            3300.0,
+            arrays["rho"],
+            800.0,
+            1000.0,
+            arrays["cp"],
+            2.5,
+            3.5,
+            arrays["k"],
+            1.0e-6,
+            -1.0,
+            0.0,
+            arrays["heat_prod"],
+            2.0e-5,
+            4.0e-5,
+            arrays["alphav"],
+            temp_adiabat,
+            temp_prev,
+            20.0,
+            False,
+            0.0,
+        )
+        mantle = x > moho_depth
+        assert np.all(rho == np.where(mantle, 3300.0, 2800.0))
+        assert np.all(cp == np.where(mantle, 1000.0, 800.0))
+        assert np.all(k == np.where(xstag > moho_depth, 3.5, 2.5))
+        assert np.all(heat_prod == np.where(mantle, 0.0, 1.0e-6))
+        assert np.all(alphav == np.where(mantle, 4.0e-5, 2.0e-5))
