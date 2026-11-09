@@ -33,6 +33,7 @@ from tc1d.tc1d import (
     save_ttdp_history,
     set_aft_model,
     set_run_flags,
+    temp_transient_explicit,
     update_materials,
 )
 from tc1d.tc1d_cli import (
@@ -1944,6 +1945,43 @@ class TestInverseOutput:
 
 class TestBasalHeatFlux:
     """Basal heat flux boundary condition (bc_type 2)."""
+
+    @pytest.mark.parametrize(
+        "heat_prod, vx",
+        [(0.0, 0.0), (1.0e-6, 0.0), (0.0, mmyr2ms(1.0)), (0.0, -mmyr2ms(1.0))],
+        ids=["conduction", "heat production", "exhumation", "burial"],
+    )
+    def test_explicit_basal_node(self, heat_prod, vx):
+        """For a temperature gradient matching the basal heat flux, the base of
+        the model should change temperature at the same rate as the nodes above
+        it, including heat production and advection."""
+        nx = 6
+        dx = 1000.0
+        dt = yr2sec(1000.0)
+        k = np.full(nx - 1, 2.5)
+        rho = np.full(nx, 3000.0)
+        cp = np.full(nx, 1000.0)
+        flux_base = 0.025
+        # Linear temperature profile with the gradient set by the basal heat flux
+        temp_prev = 500.0 + np.arange(nx) * dx * flux_base / k[0]
+        temp_new = temp_transient_explicit(
+            nx,
+            dx,
+            dt,
+            temp_prev,
+            np.zeros(nx),
+            2,
+            temp_prev[0],
+            0.0,
+            flux_base,
+            np.full(nx, vx),
+            rho,
+            cp,
+            k,
+            np.full(nx, heat_prod),
+        )
+        temp_change = temp_new - temp_prev
+        assert temp_change[-1] == pytest.approx(temp_change[-2], abs=1.0e-10)
 
     @staticmethod
     def _basal_temperature(monkeypatch, tmp_path, solution_type):
