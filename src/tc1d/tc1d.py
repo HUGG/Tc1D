@@ -465,7 +465,6 @@ def init_ero_types(
     return temp_prev, moho_depth, rho, cp, k, heat_prod, alphav
 
 
-# TODO: Add support for basal flux boundary condition
 def temp_transient_explicit(
     nx: int,
     dx: float,
@@ -489,9 +488,23 @@ def temp_transient_explicit(
         # Assign constant basal temperature
         temp_new[nx - 1] = temp_base
     elif bc_type == 2:
-        temp_new[nx - 1] = temp_prev[-1] + (2 * k[-1] * dt) / (
-            rho[-1] * cp[-1] * dx**2
-        ) * (temp_prev[-2] - temp_prev[-1] + (flux_base * dx) / k[-1])
+        # Assign constant basal heat flux using a ghost node below the base of the
+        # model with its temperature set using the basal heat flux
+        temp_ghost = temp_prev[-2] + 2 * flux_base * dx / k[-1]
+        # Use upwinding
+        if vx[-1] > 0:
+            advection = vx[-1] * (temp_prev[-1] - temp_prev[-2]) / dx
+        else:
+            advection = vx[-1] * (temp_ghost - temp_prev[-1]) / dx
+        # TODO: Confirm this is correct manually, seems to be OK
+        temp_new[nx - 1] = (
+            (1 / (rho[-1] * cp[-1]))
+            * k[-1]
+            * (temp_ghost - 2 * temp_prev[-1] + temp_prev[-2])
+            / dx**2
+            + heat_prod[-1] / (rho[-1] * cp[-1])
+            + advection
+        ) * dt + temp_prev[-1]
     else:
         raise ValueError(f"Bad boundary condition type: {bc_type}. Must be 1 or 2.")
 
