@@ -386,8 +386,18 @@ def update_materials(
     k_a: float,
     delaminated: bool,
     removal_fraction: float,
+    bc_type: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
-    """Updates arrays of material properties."""
+    """Updates arrays of material properties and finds the lithosphere-asthenosphere
+    (LAB) depth.
+
+    The LAB depth is the shallowest depth where the temperature reaches the
+    asthenospheric adiabat after mantle lithosphere removal or when using a basal heat
+    flux boundary condition, as the temperatures at the base of the model can change
+    for that boundary condition. If the temperature does not reach the mantle adiabat
+    or the temperature at the base of the model is set to the LAB temperature, the LAB
+    depth is set to the base of the model.
+    """
     rho[:] = rho_crust
     rho[x > moho_depth] = rho_mantle
     cp[:] = cp_crust
@@ -397,9 +407,13 @@ def update_materials(
 
     interp_temp_prev = interp1d(x, temp_prev)
     temp_stag = interp_temp_prev(xstag)
-    k[temp_stag >= temp_adiabat] = k_a
-    if removal_fraction > 0.0 and delaminated:
-        lab_depth = xstag[temp_stag >= temp_adiabat].min()
+    above_adiabat = temp_stag >= temp_adiabat
+    k[above_adiabat] = k_a
+    if (removal_fraction > 0.0 and delaminated) or (bc_type == 2):
+        if above_adiabat.any():
+            lab_depth = xstag[above_adiabat].min()
+        else:
+            lab_depth = x.max()
     else:
         lab_depth = x.max()
 
@@ -5219,6 +5233,7 @@ def run_model(params):
             params["k_a"],
             delaminated,
             params["removal_fraction"],
+            params["bc_type"],
         )
         elev_init = calculate_isostatic_elevation(
             density_init, x, dx, moho_depth, params["rho_a"], max_depth
@@ -5525,6 +5540,7 @@ def run_model(params):
                 params["k_a"],
                 delaminated,
                 params["removal_fraction"],
+                params["bc_type"],
             )
 
             # Update the basal heat flux boundary condition for the implicit and

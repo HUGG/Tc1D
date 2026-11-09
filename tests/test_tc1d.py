@@ -2061,6 +2061,7 @@ class TestUpdateMaterials:
             20.0,
             False,
             0.0,
+            1,
         )
         mantle = x > moho_depth
         assert np.all(rho == np.where(mantle, 3300.0, 2800.0))
@@ -2068,6 +2069,79 @@ class TestUpdateMaterials:
         assert np.all(k == np.where(xstag > moho_depth, 3.5, 2.5))
         assert np.all(heat_prod == np.where(mantle, 0.0, 1.0e-6))
         assert np.all(alphav == np.where(mantle, 4.0e-5, 2.0e-5))
+
+    @staticmethod
+    def _lab_depth(temp_base, bc_type, delaminated, removal_fraction):
+        """Returns the LAB depth for a linear geotherm from 0 °C at the surface
+        to temp_base at 100 km, with a constant mantle adiabat of 1000 °C."""
+        x = np.linspace(0.0, 100.0e3, 11)
+        xstag = x[:-1] + 5.0e3
+        temp_prev = np.linspace(0.0, temp_base, 11)
+        temp_adiabat = np.full(len(xstag), 1000.0)
+        props = {
+            "rho": np.zeros(len(x)),
+            "cp": np.zeros(len(x)),
+            "k": np.zeros(len(xstag)),
+            "heat_prod": np.zeros(len(x)),
+            "alphav": np.zeros(len(x)),
+        }
+        *_, lab_depth = update_materials(
+            x,
+            xstag,
+            35.0e3,
+            2800.0,
+            3300.0,
+            props["rho"],
+            800.0,
+            1000.0,
+            props["cp"],
+            2.5,
+            3.5,
+            props["k"],
+            1.0e-6,
+            -1.0,
+            0.0,
+            props["heat_prod"],
+            2.0e-5,
+            4.0e-5,
+            props["alphav"],
+            temp_adiabat,
+            temp_prev,
+            20.0,
+            delaminated,
+            removal_fraction,
+            bc_type,
+        )
+        return lab_depth
+
+    @pytest.mark.parametrize(
+        "bc_type, delaminated, removal_fraction, expected",
+        [
+            # Basal heat flux: shallowest point at or above the adiabat (85 km)
+            (2, False, 0.0, 85.0e3),
+            # Mantle lithosphere removal
+            (1, True, 0.5, 85.0e3),
+            # Both
+            (2, True, 0.5, 85.0e3),
+            # Fixed basal temperature without removal: base of the model
+            (1, False, 0.0, 100.0e3),
+            # Removal has not happened yet
+            (1, False, 0.5, 100.0e3),
+        ],
+        ids=["flux", "removal", "flux and removal", "fixed", "before removal"],
+    )
+    def test_lab_depth(self, bc_type, delaminated, removal_fraction, expected):
+        # The temperature reaches 1000 °C at 80 km (staggered points are at
+        # 5, 15, ..., 95 km, so the first one at or above the adiabat is at 85 km)
+        lab_depth = self._lab_depth(1250.0, bc_type, delaminated, removal_fraction)
+        assert lab_depth == pytest.approx(expected)
+
+    @pytest.mark.parametrize("bc_type, delaminated", [(2, False), (1, True)])
+    def test_lab_depth_below_adiabat(self, bc_type, delaminated):
+        # If the temperature does not reach the adiabat, the LAB is at the base
+        # of the model
+        lab_depth = self._lab_depth(900.0, bc_type, delaminated, 0.5)
+        assert lab_depth == pytest.approx(100.0e3)
 
 
 class TestBatchOutputFiles:
