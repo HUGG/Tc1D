@@ -2218,3 +2218,36 @@ class TestFindLabDepth:
         temp_adiabat_nodes = np.full(len(self.x), 1000.0)
         lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
         assert lab_depth == pytest.approx(35.0e3)
+
+
+class TestMantleRemoval:
+    @pytest.mark.parametrize("removal_start_time", [0.0, 0.01])
+    def test_removed_mantle_follows_adiabat(
+        self, monkeypatch, tmp_path, removal_start_time
+    ):
+        """Removed mantle lithosphere should be replaced by mantle at the
+        temperature of the mantle adiabat (temp_adiabat_ref), which can differ
+        from the basal temperature."""
+        run_forward(
+            monkeypatch,
+            tmp_path,
+            time=0.02,
+            dt=5000.0,
+            nx=51,
+            ero_option1=0.0,
+            temp_base=1200.0,
+            temp_adiabat_ref=1300.0,
+            mantle_adiabat=False,
+            removal_fraction=0.5,
+            removal_start_time=removal_start_time,
+            calc_ages=False,
+            write_temps=True,
+        )
+        temps = np.loadtxt(
+            tmp_path / "csv" / "output_temps.csv", delimiter=",", skiprows=1
+        )
+        # The removed mantle (below 87.5 km) should be close to the adiabat away
+        # from the base of the model, where the temperature is fixed at 1200 °C
+        depth = temps[:, 0]
+        removed = (depth > 95.0e3) & (depth < 115.0e3)
+        assert temps[removed, 1] == pytest.approx(1300.0, abs=5.0)

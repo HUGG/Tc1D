@@ -5182,7 +5182,9 @@ def run_model(params):
     if (params["removal_fraction"] > 0.0) and (params["removal_start_time"] < 1e-6):
         for ix in range(params["nx"]):
             if x[ix] > (max_depth - removal_thickness):
-                temp_prev[ix] = params["temp_base"] + (x[ix] - max_depth) * adiabat_m
+                temp_prev[ix] = (
+                    params["temp_adiabat_ref"] + (x[ix] - max_depth) * adiabat_m
+                )
         delaminated = True
 
     # Calculate model times when particles reach surface
@@ -5228,7 +5230,7 @@ def run_model(params):
             for ix in range(params["nx"]):
                 if x[ix] > (max_depth - removal_thickness):
                     temp_prev[ix] = (
-                        params["temp_base"] + (x[ix] - max_depth) * adiabat_m
+                        params["temp_adiabat_ref"] + (x[ix] - max_depth) * adiabat_m
                     )
                 else:
                     temp_prev[ix] = temp_init[ix]
@@ -5543,7 +5545,8 @@ def run_model(params):
                     for ix in range(params["nx"]):
                         if x[ix] > (max_depth - removal_thickness):
                             temp_prev[ix] = (
-                                params["temp_base"] + (x[ix] - max_depth) * adiabat_m
+                                params["temp_adiabat_ref"]
+                                + (x[ix] - max_depth) * adiabat_m
                             )
                     if curtime / myr2sec(1) > params["removal_end_time"]:
                         delaminated = True
