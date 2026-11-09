@@ -361,6 +361,47 @@ def temp_ss_implicit(
     return temp
 
 
+def find_lab_depth(
+    x: np.ndarray, temp: np.ndarray, temp_adiabat_nodes: np.ndarray
+) -> float:
+    """Finds the depth of the lithosphere-asthenosphere boundary (LAB).
+
+    The LAB depth is the shallowest depth where the temperature reaches the mantle
+    adiabat and found using linear interpolation between the nodes. If the
+    model temperature does not reach the adiabat, the LAB depth is set to the
+    depth of the base of the model.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Depths of the nodes from the surface (m).
+    temp : numpy.ndarray
+        Temperatures at the nodes (°C).
+    temp_adiabat_nodes : numpy.ndarray
+        Mantle adiabat temperatures at the nodes (°C).
+
+    Returns
+    -------
+    lab_depth : float
+        Depth of the LAB (m).
+    """
+    temp_diff = temp - temp_adiabat_nodes
+    above_adiabat = temp_diff >= 0.0
+    if not above_adiabat.any():
+        lab_depth = x.max()
+    else:
+        # Index of the shallowest node at or above the adiabat
+        i = int(np.argmax(above_adiabat))
+        if i == 0:
+            lab_depth = x[0]
+        else:
+            # Interpolate the depth where the temperature crosses the adiabat
+            lab_depth = x[i - 1] + (x[i] - x[i - 1]) * temp_diff[i - 1] / (
+                temp_diff[i - 1] - temp_diff[i]
+            )
+    return lab_depth
+
+
 def update_materials(
     x: np.ndarray,
     xstag: np.ndarray,
@@ -382,6 +423,7 @@ def update_materials(
     alphav_mantle: float,
     alphav: np.ndarray,
     temp_adiabat: np.ndarray,
+    temp_adiabat_nodes: np.ndarray,
     temp_prev: np.ndarray,
     k_a: float,
     delaminated: bool,
@@ -394,9 +436,9 @@ def update_materials(
     The LAB depth is the shallowest depth where the temperature reaches the
     asthenospheric adiabat after mantle lithosphere removal or when using a basal heat
     flux boundary condition, as the temperatures at the base of the model can change
-    for that boundary condition. If the temperature does not reach the mantle adiabat
-    or the temperature at the base of the model is set to the LAB temperature, the LAB
-    depth is set to the base of the model.
+    for that boundary condition (see find_lab_depth()). If the temperature does not
+    reach the mantle adiabat or the temperature at the base of the model is set to the
+    LAB temperature, the LAB depth is set to the base of the model.
     """
     rho[:] = rho_crust
     rho[x > moho_depth] = rho_mantle
@@ -407,13 +449,9 @@ def update_materials(
 
     interp_temp_prev = interp1d(x, temp_prev)
     temp_stag = interp_temp_prev(xstag)
-    above_adiabat = temp_stag >= temp_adiabat
-    k[above_adiabat] = k_a
+    k[temp_stag >= temp_adiabat] = k_a
     if (removal_fraction > 0.0 and delaminated) or (bc_type == 2):
-        if above_adiabat.any():
-            lab_depth = xstag[above_adiabat].min()
-        else:
-            lab_depth = x.max()
+        lab_depth = find_lab_depth(x, temp_prev, temp_adiabat_nodes)
     else:
         lab_depth = x.max()
 
@@ -5020,6 +5058,8 @@ def run_model(params):
     else:
         adiabat_m = 0.0
         temp_adiabat = params["temp_adiabat_ref"]
+    # Mantle adiabat at the nodes, used to find the LAB depth
+    temp_adiabat_nodes = params["temp_adiabat_ref"] + (x - max_depth) * adiabat_m
 
     # Create material property arrays
     rho = np.ones(len(x)) * params["rho_crust"]
@@ -5229,6 +5269,7 @@ def run_model(params):
             params["alphav_mantle"],
             alphav,
             temp_adiabat,
+            temp_adiabat_nodes,
             temp_prev,
             params["k_a"],
             delaminated,
@@ -5536,6 +5577,7 @@ def run_model(params):
                 params["alphav_mantle"],
                 alphav,
                 temp_adiabat,
+                temp_adiabat_nodes,
                 temp_prev,
                 params["k_a"],
                 delaminated,

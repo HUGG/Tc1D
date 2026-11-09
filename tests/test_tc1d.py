@@ -23,6 +23,7 @@ from tc1d.tc1d import (
     calculate_num_steps,
     check_run_type,
     disable_output_for_inversions,
+    find_lab_depth,
     get_history_indices,
     get_pad_times,
     get_tt_path,
@@ -2057,6 +2058,7 @@ class TestUpdateMaterials:
             4.0e-5,
             arrays["alphav"],
             temp_adiabat,
+            np.full(len(x), 2000.0),
             temp_prev,
             20.0,
             False,
@@ -2078,6 +2080,7 @@ class TestUpdateMaterials:
         xstag = x[:-1] + 5.0e3
         temp_prev = np.linspace(0.0, temp_base, 11)
         temp_adiabat = np.full(len(xstag), 1000.0)
+        temp_adiabat_nodes = np.full(len(x), 1000.0)
         props = {
             "rho": np.zeros(len(x)),
             "cp": np.zeros(len(x)),
@@ -2106,6 +2109,7 @@ class TestUpdateMaterials:
             4.0e-5,
             props["alphav"],
             temp_adiabat,
+            temp_adiabat_nodes,
             temp_prev,
             20.0,
             delaminated,
@@ -2117,12 +2121,12 @@ class TestUpdateMaterials:
     @pytest.mark.parametrize(
         "bc_type, delaminated, removal_fraction, expected",
         [
-            # Basal heat flux: shallowest point at or above the adiabat (85 km)
-            (2, False, 0.0, 85.0e3),
+            # Basal heat flux: depth where the temperature reaches the adiabat
+            (2, False, 0.0, 80.0e3),
             # Mantle lithosphere removal
-            (1, True, 0.5, 85.0e3),
+            (1, True, 0.5, 80.0e3),
             # Both
-            (2, True, 0.5, 85.0e3),
+            (2, True, 0.5, 80.0e3),
             # Fixed basal temperature without removal: base of the model
             (1, False, 0.0, 100.0e3),
             # Removal has not happened yet
@@ -2131,8 +2135,7 @@ class TestUpdateMaterials:
         ids=["flux", "removal", "flux and removal", "fixed", "before removal"],
     )
     def test_lab_depth(self, bc_type, delaminated, removal_fraction, expected):
-        # The temperature reaches 1000 °C at 80 km (staggered points are at
-        # 5, 15, ..., 95 km, so the first one at or above the adiabat is at 85 km)
+        # The temperature reaches 1000 °C at 80 km
         lab_depth = self._lab_depth(1250.0, bc_type, delaminated, removal_fraction)
         assert lab_depth == pytest.approx(expected)
 
@@ -2176,3 +2179,42 @@ class TestBatchOutputFiles:
             for f in ["M0001-output_temps.csv", "M0002-output_temps.csv"]
         ]
         assert not np.allclose(temps[0], temps[1])
+
+
+class TestFindLabDepth:
+    x = np.linspace(0.0, 100.0e3, 11)
+
+    @pytest.mark.parametrize(
+        "temp_base, expected",
+        [
+            # Crosses the adiabat between nodes (at 1000 / 1200 * 100 km)
+            (1200.0, 1000.0 / 1200.0 * 100.0e3),
+            # Reaches the adiabat at a node (80 km)
+            (1250.0, 80.0e3),
+            # Reaches the adiabat at the base of the model
+            (1000.0, 100.0e3),
+            # Does not reach the adiabat: base of the model
+            (900.0, 100.0e3),
+        ],
+    )
+    def test_constant_adiabat(self, temp_base, expected):
+        temp = np.linspace(0.0, temp_base, len(self.x))
+        temp_adiabat_nodes = np.full(len(self.x), 1000.0)
+        lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
+        assert lab_depth == pytest.approx(expected)
+
+    def test_sloping_adiabat(self):
+        # A geotherm of 50 °C at the surface increasing by 15 °C/km and an adiabat
+        # of 1000 °C at the surface increasing by 5 °C/km cross at 95 km
+        temp = 50.0 + 15.0e-3 * self.x
+        temp_adiabat_nodes = 1000.0 + 5.0e-3 * self.x
+        lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
+        assert lab_depth == pytest.approx(95.0e3)
+
+    def test_shallowest_crossing(self):
+        # Temperatures above the adiabat at 40-50 km and below 80 km: the LAB is
+        # the shallowest crossing (35 km, halfway between 30 and 40 km)
+        temp = np.array([0, 300, 600, 900, 1100, 1100, 900, 900, 1100, 1100, 1100.0])
+        temp_adiabat_nodes = np.full(len(self.x), 1000.0)
+        lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
+        assert lab_depth == pytest.approx(35.0e3)
