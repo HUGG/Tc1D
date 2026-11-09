@@ -24,6 +24,7 @@ from tc1d.tc1d import (
     check_run_type,
     disable_output_for_inversions,
     find_lab_depth,
+    format_lab_depth,
     get_history_indices,
     get_pad_times,
     get_tt_path,
@@ -2061,9 +2062,6 @@ class TestUpdateMaterials:
             np.full(len(x), 2000.0),
             temp_prev,
             20.0,
-            False,
-            0.0,
-            1,
         )
         mantle = x > moho_depth
         assert np.all(rho == np.where(mantle, 3300.0, 2800.0))
@@ -2072,15 +2070,23 @@ class TestUpdateMaterials:
         assert np.all(heat_prod == np.where(mantle, 0.0, 1.0e-6))
         assert np.all(alphav == np.where(mantle, 4.0e-5, 2.0e-5))
 
-    @staticmethod
-    def _lab_depth(temp_base, bc_type, delaminated, removal_fraction):
-        """Returns the LAB depth for a linear geotherm from 0 °C at the surface
-        to temp_base at 100 km, with a constant mantle adiabat of 1000 °C."""
+    @pytest.mark.parametrize(
+        "temp_base, expected",
+        [
+            # Base hotter than the adiabat: LAB where the temperature reaches the
+            # adiabat (80 km)
+            (1250.0, 80.0e3),
+            # Base at the adiabat: LAB at the base of the model
+            (1000.0, 100.0e3),
+            # Base colder than the adiabat: LAB below the base of the model
+            (900.0, np.nan),
+        ],
+    )
+    def test_lab_depth(self, temp_base, expected):
+        """LAB depths for a linear geotherm from 0 °C at the surface to temp_base
+        at 100 km, with a constant mantle adiabat of 1000 °C."""
         x = np.linspace(0.0, 100.0e3, 11)
         xstag = x[:-1] + 5.0e3
-        temp_prev = np.linspace(0.0, temp_base, 11)
-        temp_adiabat = np.full(len(xstag), 1000.0)
-        temp_adiabat_nodes = np.full(len(x), 1000.0)
         props = {
             "rho": np.zeros(len(x)),
             "cp": np.zeros(len(x)),
@@ -2108,43 +2114,12 @@ class TestUpdateMaterials:
             2.0e-5,
             4.0e-5,
             props["alphav"],
-            temp_adiabat,
-            temp_adiabat_nodes,
-            temp_prev,
+            np.full(len(xstag), 1000.0),
+            np.full(len(x), 1000.0),
+            np.linspace(0.0, temp_base, len(x)),
             20.0,
-            delaminated,
-            removal_fraction,
-            bc_type,
         )
-        return lab_depth
-
-    @pytest.mark.parametrize(
-        "bc_type, delaminated, removal_fraction, expected",
-        [
-            # Basal heat flux: depth where the temperature reaches the adiabat
-            (2, False, 0.0, 80.0e3),
-            # Mantle lithosphere removal
-            (1, True, 0.5, 80.0e3),
-            # Both
-            (2, True, 0.5, 80.0e3),
-            # Fixed basal temperature without removal: base of the model
-            (1, False, 0.0, 100.0e3),
-            # Removal has not happened yet
-            (1, False, 0.5, 100.0e3),
-        ],
-        ids=["flux", "removal", "flux and removal", "fixed", "before removal"],
-    )
-    def test_lab_depth(self, bc_type, delaminated, removal_fraction, expected):
-        # The temperature reaches 1000 °C at 80 km
-        lab_depth = self._lab_depth(1250.0, bc_type, delaminated, removal_fraction)
-        assert lab_depth == pytest.approx(expected)
-
-    @pytest.mark.parametrize("bc_type, delaminated", [(2, False), (1, True)])
-    def test_lab_depth_below_adiabat(self, bc_type, delaminated):
-        # If the temperature does not reach the adiabat, the LAB is at the base
-        # of the model
-        lab_depth = self._lab_depth(900.0, bc_type, delaminated, 0.5)
-        assert lab_depth == pytest.approx(100.0e3)
+        assert lab_depth == pytest.approx(expected, nan_ok=True)
 
 
 class TestBatchOutputFiles:
@@ -2193,15 +2168,15 @@ class TestFindLabDepth:
             (1250.0, 80.0e3),
             # Reaches the adiabat at the base of the model
             (1000.0, 100.0e3),
-            # Does not reach the adiabat: base of the model
-            (900.0, 100.0e3),
+            # Does not reach the adiabat: LAB below the base of the model
+            (900.0, np.nan),
         ],
     )
     def test_constant_adiabat(self, temp_base, expected):
         temp = np.linspace(0.0, temp_base, len(self.x))
         temp_adiabat_nodes = np.full(len(self.x), 1000.0)
         lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
-        assert lab_depth == pytest.approx(expected)
+        assert lab_depth == pytest.approx(expected, nan_ok=True)
 
     def test_sloping_adiabat(self):
         # A geotherm of 50 °C at the surface increasing by 15 °C/km and an adiabat
@@ -2218,6 +2193,50 @@ class TestFindLabDepth:
         temp_adiabat_nodes = np.full(len(self.x), 1000.0)
         lab_depth = find_lab_depth(self.x, temp, temp_adiabat_nodes)
         assert lab_depth == pytest.approx(35.0e3)
+
+    @pytest.mark.parametrize(
+        "lab_depth, expected",
+        [
+            (80.0e3, "80.0 km"),
+            (np.nan, "below the base of the model (> 100.0 km)"),
+        ],
+    )
+    def test_format_lab_depth(self, lab_depth, expected):
+        assert format_lab_depth(lab_depth, 100.0e3) == expected
+
+    @pytest.mark.parametrize(
+        "kwargs, initial, final",
+        [
+            # Base at the adiabat (default): LAB at the base of the model
+            ({}, "125.0 km", "125.0 km"),
+            # Base colder than the adiabat: LAB below the base of the model
+            (
+                {"temp_base": 1200.0},
+                "below the base of the model (> 125.0 km)",
+                "below the base of the model (> 125.0 km)",
+            ),
+            # Mantle lithosphere removal at the start of the model
+            (
+                {"removal_fraction": 0.5, "removal_start_time": 0.0},
+                "87.5 km",
+                None,
+            ),
+        ],
+    )
+    def test_screen_output(self, monkeypatch, tmp_path, capsys, kwargs, initial, final):
+        run_forward(
+            monkeypatch,
+            tmp_path,
+            nx=51,
+            dt=5000.0,
+            calc_ages=False,
+            verbose=1,
+            **kwargs,
+        )
+        output = capsys.readouterr().out
+        assert f"- Initial LAB depth: {initial}" in output
+        if final is not None:
+            assert f"- Final LAB depth: {final}" in output
 
 
 class TestMantleRemoval:

@@ -368,8 +368,8 @@ def find_lab_depth(
 
     The LAB depth is the shallowest depth where the temperature reaches the mantle
     adiabat and found using linear interpolation between the nodes. If the
-    model temperature does not reach the adiabat, the LAB depth is set to the
-    depth of the base of the model.
+    model temperature does not reach the adiabat, the LAB is below the base of the
+    model and NaN is returned.
 
     Parameters
     ----------
@@ -383,12 +383,12 @@ def find_lab_depth(
     Returns
     -------
     lab_depth : float
-        Depth of the LAB (m).
+        Depth of the LAB (m), or NaN if the LAB is below the base of the model.
     """
     temp_diff = temp - temp_adiabat_nodes
     above_adiabat = temp_diff >= 0.0
     if not above_adiabat.any():
-        lab_depth = x.max()
+        lab_depth = np.nan
     else:
         # Index of the shallowest node at or above the adiabat
         i = int(np.argmax(above_adiabat))
@@ -400,6 +400,28 @@ def find_lab_depth(
                 temp_diff[i - 1] - temp_diff[i]
             )
     return lab_depth
+
+
+def format_lab_depth(lab_depth: float, max_depth: float) -> str:
+    """Returns the LAB depth as text for screen output.
+
+    Parameters
+    ----------
+    lab_depth : float
+        Depth of the LAB (m), or NaN if the LAB is below the base of the model.
+    max_depth : float
+        Depth of the base of the model (m).
+
+    Returns
+    -------
+    lab_text : str
+        LAB depth as text.
+    """
+    if np.isnan(lab_depth):
+        lab_text = f"below the base of the model (> {max_depth / kilo2base(1):.1f} km)"
+    else:
+        lab_text = f"{lab_depth / kilo2base(1):.1f} km"
+    return lab_text
 
 
 def update_materials(
@@ -426,19 +448,15 @@ def update_materials(
     temp_adiabat_nodes: np.ndarray,
     temp_prev: np.ndarray,
     k_a: float,
-    delaminated: bool,
-    removal_fraction: float,
-    bc_type: int,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
     """Updates arrays of material properties and finds the lithosphere-asthenosphere
     (LAB) depth.
 
     The LAB depth is the shallowest depth where the temperature reaches the
-    asthenospheric adiabat after mantle lithosphere removal or when using a basal heat
-    flux boundary condition, as the temperatures at the base of the model can change
-    for that boundary condition (see find_lab_depth()). If the temperature does not
-    reach the mantle adiabat or the temperature at the base of the model is set to the
-    LAB temperature, the LAB depth is set to the base of the model.
+    asthenospheric adiabat (see find_lab_depth()). If the temperature at the base of
+    the model is the adiabat temperature, the LAB depth is the depth of the base of
+    the model. If the temperature does not reach the adiabat, the LAB is below the
+    base of the model and the LAB depth is NaN.
     """
     rho[:] = rho_crust
     rho[x > moho_depth] = rho_mantle
@@ -450,10 +468,7 @@ def update_materials(
     interp_temp_prev = interp1d(x, temp_prev)
     temp_stag = interp_temp_prev(xstag)
     k[temp_stag >= temp_adiabat] = k_a
-    if (removal_fraction > 0.0 and delaminated) or (bc_type == 2):
-        lab_depth = find_lab_depth(x, temp_prev, temp_adiabat_nodes)
-    else:
-        lab_depth = x.max()
+    lab_depth = find_lab_depth(x, temp_prev, temp_adiabat_nodes)
 
     heat_prod[:] = heat_prod_crust
     # Make exponential decay in heat production in crust, if enabled
@@ -5137,14 +5152,19 @@ def run_model(params):
         max_depth,
     )
 
+    # Find initial LAB depth. Mantle lithosphere removal at the start of the model
+    # replaces the removed mantle lithosphere with asthenosphere.
+    if removal_thickness > 0.0:
+        init_lab_depth = max_depth - removal_thickness
+    else:
+        init_lab_depth = find_lab_depth(x, temp_init, temp_adiabat_nodes)
+
     # Echo thermal model values
     if params["verbose"] >= 1 and params["echo_thermal_info"]:
         print(f"- Initial surface heat flow: {init_heat_flow:.1f} mW/m^2")
         print(f"- Initial Moho temperature: {init_moho_temp:.1f}°C")
         print(f"- Initial Moho depth: {params['init_moho_depth']:.1f} km")
-        print(
-            f"- Initial LAB depth: {(max_depth - removal_thickness) / kilo2base(1):.1f} km"
-        )
+        print(f"- Initial LAB depth: {format_lab_depth(init_lab_depth, max_depth)}")
         print(f"- Initial Peclet number: {init_peclet:.2f}")
         print(f"- Initial dimensionless heat production: {init_nd_hp:.2f}")
 
@@ -5274,9 +5294,6 @@ def run_model(params):
             temp_adiabat_nodes,
             temp_prev,
             params["k_a"],
-            delaminated,
-            params["removal_fraction"],
-            params["bc_type"],
         )
         elev_init = calculate_isostatic_elevation(
             density_init, x, dx, moho_depth, params["rho_a"], max_depth
@@ -5585,9 +5602,6 @@ def run_model(params):
                 temp_adiabat_nodes,
                 temp_prev,
                 params["k_a"],
-                delaminated,
-                params["removal_fraction"],
-                params["bc_type"],
             )
 
             # Update the basal heat flux boundary condition for the implicit and
@@ -5901,7 +5915,7 @@ def run_model(params):
         print(f"- Final surface heat flow: {final_heat_flow:.1f} mW/m^2")
         print(f"- Final Moho temperature: {final_moho_temp:.1f}°C")
         print(f"- Final Moho depth: {moho_depth / kilo2base(1):.1f} km")
-        print(f"- Final LAB depth: {lab_depth / kilo2base(1):.1f} km")
+        print(f"- Final LAB depth: {format_lab_depth(lab_depth, max_depth)}")
         print(f"- Final Peclet number: {peclet[-1]:.2f}")
         print(f"  - Average for all steps: {peclet.mean():.2f}")
         print(f"  - Range for all steps: {peclet.min():.2f}-{peclet.max():.2f}")
