@@ -5154,7 +5154,7 @@ def run_model(params):
     elev_list.append(0.0)
     time_list.append(0.0)
 
-    # Create list to store LAB depths
+    # Create list to store LAB depths (at the same times as the elevations)
     lab_depths = []
 
     # Calculate initial densities
@@ -5280,7 +5280,9 @@ def run_model(params):
             density_init, x, dx, moho_depth, params["rho_a"], max_depth
         )
 
-        lab_depths.append(lab_depth)
+        # Store initial LAB depth
+        if j == 0:
+            lab_depths.append(lab_depth)
 
         # Find starting depth if using only a one-pass erosion type
         if num_pass == 1:
@@ -5651,7 +5653,8 @@ def run_model(params):
             density_new = update_density(rho, alphav, temp_new)
 
             # Store current LAB depth
-            lab_depths.append(lab_depth - moho_depth)
+            if j == 0:
+                lab_depths.append(lab_depth)
 
             # Calculate model mass for isostasy
             elev = calculate_isostatic_elevation(
@@ -7156,7 +7159,10 @@ def run_model(params):
         """
         fig, ax = plt.subplots(1, 1, figsize=(12, 8))
 
-        ax.plot(time_hists[-1] / myr2sec(1), lab_depths[1:], "o-")
+        ax.plot(time_list, np.array(lab_depths) / kilo2base(1), "-")
+        ax.set_xlabel("Time since model start (Myr)")
+        ax.set_ylabel("LAB depth (km)")
+        ax.invert_yaxis()
 
         plt.tight_layout()
         plt.show()
