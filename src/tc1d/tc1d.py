@@ -339,14 +339,43 @@ def _define_interior_matrix_coefficients(
     return rhocp_coeff, adv_coeff, leftk_coeff, rightk_coeff
 
 
+def define_bc_rows(bc_type: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Defines the matrix coefficients for the boundary condition rows.
+
+    Parameters
+    ----------
+    bc_type : int
+        Basal boundary condition type (1 = constant temperature, 2 = constant heat flux).
+
+    Returns
+    -------
+    surface_row : numpy.ndarray
+        Coefficients for columns 0 and 1 of the first (surface) row.
+    basal_row : numpy.ndarray
+        Coefficients for columns nx-3, nx-2 and nx-1 of the last (basal) row.
+    """
+    # Constant surface temperature
+    surface_row = np.array([1.0, 0.0])
+    if bc_type == 1:
+        # Constant basal temperature
+        basal_row = np.array([0.0, 0.0, 1.0])
+    elif bc_type == 2:
+        # Constant basal heat flux (2nd-order one-sided difference)
+        basal_row = np.array([1.0, -4.0, 3.0])
+    else:
+        raise ValueError(f"Bad boundary condition type: {bc_type}. Must be 1 or 2.")
+    return surface_row, basal_row
+
+
 def _build_banded_array_with_bcs(
     nx: int,
-    a_matrix: np.ndarray,
+    surface_row: np.ndarray,
+    basal_row: np.ndarray,
     lower: np.ndarray,
     diag: np.ndarray,
     upper: np.ndarray,
 ):
-    """Build the (4, nx) banded array, copying the boundary condition rows from the dense matrix."""
+    """Build the (4, nx) banded array, including the boundary condition rows."""
     # Banded storage used by scipy.linalg.solve_banded:
     # a[i, j] is stored in banded_array[_upper_band + i - j, j]
     banded_array = np.zeros((_lower_band + _upper_band + 1, nx))
@@ -354,13 +383,13 @@ def _build_banded_array_with_bcs(
     banded_array[_upper_band, i] = diag  # a[i, i]
     banded_array[_upper_band - 1, i + 1] = upper  # a[i, i+1]
     banded_array[_upper_band + 1, i - 1] = lower  # a[i, i-1]
-    # Surface row (row 0)
-    banded_array[_upper_band, 0] = a_matrix[0, 0]
-    banded_array[_upper_band - 1, 1] = a_matrix[0, 1]
+    # Surface row (row 0): a[0, 0], a[0, 1]
+    banded_array[_upper_band, 0] = surface_row[0]
+    banded_array[_upper_band - 1, 1] = surface_row[1]
     # Basal row (row nx-1): a[nx-1, nx-3], a[nx-1, nx-2], a[nx-1, nx-1]
-    banded_array[_upper_band + _lower_band, nx - 3] = a_matrix[nx - 1, nx - 3]
-    banded_array[_upper_band + 1, nx - 2] = a_matrix[nx - 1, nx - 2]
-    banded_array[_upper_band, nx - 1] = a_matrix[nx - 1, nx - 1]
+    banded_array[_upper_band + _lower_band, nx - 3] = basal_row[0]
+    banded_array[_upper_band + 1, nx - 2] = basal_row[1]
+    banded_array[_upper_band, nx - 1] = basal_row[2]
     return banded_array
 
 
@@ -368,7 +397,6 @@ def _build_banded_array_with_bcs(
 def temp_ss_implicit(
     nx: int,
     dx: float,
-    a_matrix: np.ndarray,
     b_vector: np.ndarray,
     temp_surf: float,
     temp_base: float,
@@ -379,10 +407,9 @@ def temp_ss_implicit(
     heat_prod: np.ndarray,
 ) -> np.ndarray:
     """Calculates a steady-state thermal solution."""
-    # Set B.C. values in the coefficient array and in the r.h.s. array
-    a_matrix[0, 0] = 1
+    # Set B.C. coefficients (constant surface and basal temperatures) and values
+    surface_row, basal_row = define_bc_rows(bc_type=1)
     b_vector[0] = temp_surf
-    a_matrix[nx - 1, nx - 1] = 1
     b_vector[nx - 1] = temp_base
 
     # Assemble interior rows with array operations into banded storage
@@ -391,7 +418,8 @@ def temp_ss_implicit(
     )
     banded_array = _build_banded_array_with_bcs(
         nx,
-        a_matrix,
+        surface_row,
+        basal_row,
         -adv_coeff - leftk_coeff,
         rightk_coeff + leftk_coeff,
         adv_coeff - rightk_coeff,
@@ -642,7 +670,8 @@ def temp_transient_implicit(
     nx: int,
     dx: float,
     dt: float,
-    a_matrix: np.ndarray,
+    surface_row: np.ndarray,
+    basal_row: np.ndarray,
     b_vector: np.ndarray,
     temp_prev: np.ndarray,
     vx: np.ndarray,
@@ -658,7 +687,8 @@ def temp_transient_implicit(
     )
     banded_array = _build_banded_array_with_bcs(
         nx,
-        a_matrix,
+        surface_row,
+        basal_row,
         -adv_coeff - leftk_coeff,
         rhocp_coeff / dt + rightk_coeff + leftk_coeff,
         adv_coeff - rightk_coeff,
@@ -678,7 +708,8 @@ def temp_transient_crank_nicolson(
     nx: int,
     dx: float,
     dt: float,
-    a_matrix: np.ndarray,
+    surface_row: np.ndarray,
+    basal_row: np.ndarray,
     b_vector: np.ndarray,
     temp_prev: np.ndarray,
     vx: np.ndarray,
@@ -694,7 +725,8 @@ def temp_transient_crank_nicolson(
     )
     banded_array = _build_banded_array_with_bcs(
         nx,
-        a_matrix,
+        surface_row,
+        basal_row,
         -leftk_coeff - adv_coeff,
         rightk_coeff + leftk_coeff + 2 * rhocp_coeff / dt,
         -rightk_coeff + adv_coeff,
@@ -5165,16 +5197,12 @@ def run_model(params):
         print("--- Calculating initial thermal model ---")
         print("")
 
-    # Create the empty (zero) coefficient and right hand side arrays for temperature calculations
-    a_matrix = np.zeros(
-        (params["nx"], params["nx"])
-    )  # 2-dimensional array, ny rows, ny columns
+    # Create the empty (zero) right hand side array for temperature calculations
     b_vector = np.zeros(params["nx"])
 
     temp_init = temp_ss_implicit(
         params["nx"],
         dx,
-        a_matrix,
         b_vector,
         params["temp_surf"],
         params["temp_base"],
@@ -5286,24 +5314,17 @@ def run_model(params):
     # Assign boundary conditions for implicit and Crank-Nicolson solutions
     # NOTE: The basal heat flux boundary condition depends on the conductivity at
     # the base of the model, so it is also updated at each time step
+    surface_row, basal_row = define_bc_rows(params["bc_type"])
+
     # Constant surface temperature
-    a_matrix[0, 0] = 1
     b_vector[0] = params["temp_surf"]
 
     if params["bc_type"] == 1:
         # Assign constant basal temperature
-        a_matrix[-1, -1] = 1
         b_vector[-1] = params["temp_base"]
     elif params["bc_type"] == 2:
         # Assign constant basal heat flux
-        a_matrix[-1, -3] = 1.0
-        a_matrix[-1, -2] = -4.0
-        a_matrix[-1, -1] = 3.0
         b_vector[-1] = 2 * milli2base(params["flux_base"]) * dx / k[-1]
-    else:
-        raise ValueError(
-            f"Bad boundary condition type: {params['bc_type']}. Must be 1 or 2."
-        )
 
     # Loop over number of required passes
     for j in range(num_pass):
@@ -5714,7 +5735,8 @@ def run_model(params):
                     params["nx"],
                     dx,
                     dt,
-                    a_matrix,
+                    surface_row,
+                    basal_row,
                     b_vector,
                     temp_prev,
                     vx_array,
@@ -5728,7 +5750,8 @@ def run_model(params):
                     params["nx"],
                     dx,
                     dt,
-                    a_matrix,
+                    surface_row,
+                    basal_row,
                     b_vector,
                     temp_prev,
                     vx_array,

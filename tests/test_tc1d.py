@@ -22,6 +22,7 @@ from tc1d.tc1d import (
     calculate_misfit,
     calculate_num_steps,
     check_run_type,
+    define_bc_rows,
     disable_output_for_inversions,
     find_lab_depth,
     format_lab_depth,
@@ -36,7 +37,10 @@ from tc1d.tc1d import (
     save_ttdp_history,
     set_aft_model,
     set_run_flags,
+    temp_ss_implicit,
+    temp_transient_crank_nicolson,
     temp_transient_explicit,
+    temp_transient_implicit,
     update_materials,
 )
 from tc1d.tc1d_cli import (
@@ -68,9 +72,11 @@ age calculations are in test_ages.py.
 - calculate_heat_flow
 - calculate_explicit_stability
 - adiabat
-- temp_ss_implicit
+* temp_ss_implicit
+* define_bc_rows
 - temp_transient_explicit
-- temp_transient_implicit
+* temp_transient_implicit
+* temp_transient_crank_nicolson
 - create_intrusion
 - apply_intrusion
 * get_particle_temp_and_pressure
@@ -2417,3 +2423,135 @@ class TestLinearInterpolator:
         interpolate = linear_interpolator(self.x, y)
         y[:] = 0.0
         assert float(interpolate(self.x[-1])) == pytest.approx(self.y[-1])
+
+
+class TestDefineBcRows:
+    def test_constant_basal_temperature(self):
+        surface_row, basal_row = define_bc_rows(1)
+        np.testing.assert_array_equal(surface_row, [1.0, 0.0])
+        np.testing.assert_array_equal(basal_row, [0.0, 0.0, 1.0])
+
+    def test_constant_basal_heat_flux(self):
+        surface_row, basal_row = define_bc_rows(2)
+        np.testing.assert_array_equal(surface_row, [1.0, 0.0])
+        np.testing.assert_array_equal(basal_row, [1.0, -4.0, 3.0])
+
+    def test_bad_bc_type_raises(self):
+        with pytest.raises(ValueError, match="Bad boundary condition type"):
+            define_bc_rows(3)
+
+
+class TestImplicitSolvers:
+    """Checks the implicit solvers against analytical steady-state geotherms.
+
+    With uniform conductivity and heat production and no advection, the
+    steady-state geotherm is quadratic in depth, which the finite-difference
+    scheme (including the one-sided basal heat flux condition) reproduces exactly.
+    """
+
+    nx = 51
+    length = 100.0e3
+    x = np.linspace(0.0, length, nx)
+    dx = x[1] - x[0]
+    temp_surf = 0.0
+    temp_base = 1300.0
+    flux_base = 0.02
+    k_value = 2.5
+    heat_prod_value = 1.0e-6
+    rho = np.full(nx, 3000.0)
+    cp = np.full(nx, 1000.0)
+    k = np.full(nx - 1, k_value)
+    heat_prod = np.full(nx, heat_prod_value)
+    vx = np.zeros(nx)
+    dt = yr2sec(1.0e5)
+
+    def geotherm_fixed_base(self):
+        h_k = self.heat_prod_value / self.k_value
+        return (
+            self.temp_surf
+            + (self.temp_base - self.temp_surf) * self.x / self.length
+            + 0.5 * h_k * self.x * (self.length - self.x)
+        )
+
+    def geotherm_flux_base(self):
+        return (
+            self.temp_surf
+            + (self.flux_base + self.heat_prod_value * self.length)
+            / self.k_value
+            * self.x
+            - 0.5 * self.heat_prod_value / self.k_value * self.x**2
+        )
+
+    def bc_setup(self, bc_type):
+        surface_row, basal_row = define_bc_rows(bc_type)
+        b_vector = np.zeros(self.nx)
+        b_vector[0] = self.temp_surf
+        if bc_type == 1:
+            b_vector[-1] = self.temp_base
+            expected = self.geotherm_fixed_base()
+        else:
+            b_vector[-1] = 2 * self.flux_base * self.dx / self.k[-1]
+            expected = self.geotherm_flux_base()
+        return surface_row, basal_row, b_vector, expected
+
+    def test_steady_state(self):
+        temp = temp_ss_implicit(
+            self.nx,
+            self.dx,
+            np.zeros(self.nx),
+            self.temp_surf,
+            self.temp_base,
+            self.vx,
+            self.rho,
+            self.cp,
+            self.k,
+            self.heat_prod,
+        )
+        np.testing.assert_allclose(temp, self.geotherm_fixed_base(), atol=1e-8)
+
+    @pytest.mark.parametrize("bc_type", [1, 2])
+    @pytest.mark.parametrize(
+        "solver", [temp_transient_implicit, temp_transient_crank_nicolson]
+    )
+    def test_transient_steady_state_unchanged(self, solver, bc_type):
+        surface_row, basal_row, b_vector, expected = self.bc_setup(bc_type)
+        temp = solver(
+            self.nx,
+            self.dx,
+            self.dt,
+            surface_row,
+            basal_row,
+            b_vector,
+            expected.copy(),
+            self.vx,
+            self.rho,
+            self.cp,
+            self.k,
+            self.heat_prod,
+        )
+        np.testing.assert_allclose(temp, expected, atol=1e-8)
+
+    @pytest.mark.parametrize("bc_type", [1, 2])
+    @pytest.mark.parametrize(
+        "solver", [temp_transient_implicit, temp_transient_crank_nicolson]
+    )
+    def test_transient_approaches_steady_state(self, solver, bc_type):
+        surface_row, basal_row, b_vector, expected = self.bc_setup(bc_type)
+        temp = np.full(self.nx, self.temp_surf)
+        # Run for ~10 diffusion times (L**2 / kappa ~ 380 Myr)
+        for _ in range(4000):
+            temp = solver(
+                self.nx,
+                self.dx,
+                yr2sec(1.0e6),
+                surface_row,
+                basal_row,
+                b_vector,
+                temp,
+                self.vx,
+                self.rho,
+                self.cp,
+                self.k,
+                self.heat_prod,
+            )
+        np.testing.assert_allclose(temp, expected, atol=1e-3)
