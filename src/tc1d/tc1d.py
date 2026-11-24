@@ -629,7 +629,8 @@ def temp_transient_explicit(
         # Assign constant basal heat flux using a ghost node below the base of the
         # model with its temperature set using the basal heat flux
         temp_ghost = temp_prev[-2] + 2 * flux_base * dx / k[-1]
-        # Use upwinding: for vx > 0 (upward motion)
+        # Use upwinding: for vx > 0 (upward motion) heat is advected from the ghost
+        # node below. Otherwise from the node above.
         if vx[-1] > 0:
             advection = vx[-1] * (temp_ghost - temp_prev[-1]) / dx
         else:
