@@ -1017,6 +1017,20 @@ def get_file_prefix(params: dict) -> str:
     return file_prefix
 
 
+def get_file_suffix(surface_times_ma: np.ndarray, index: int) -> str:
+    """Returns the surface time suffix for past or depositional age output filenames.
+
+    When more than one particle is tracked (past ages or depositional ages),
+    filenames end with the time the particle reaches the surface (e.g., "_10.0Ma")
+    so that the files for each particle are not overwritten.
+    """
+    if len(surface_times_ma) == 1:
+        file_suffix = ""
+    else:
+        file_suffix = f"_{surface_times_ma[index]}Ma"
+    return file_suffix
+
+
 def write_thermal_histories(
     params: dict,
     output_dir: Path,
@@ -1036,10 +1050,7 @@ def write_thermal_histories(
 
     for i in range(len(surface_times_ma)):
         # Add the surface time to filenames when tracking more than one particle
-        if len(surface_times_ma) == 1:
-            file_age_text = ""
-        else:
-            file_age_text = f"_{surface_times_ma[i]}Ma"
+        file_age_text = get_file_suffix(surface_times_ma, i)
 
         if write_tt_history:
             tt_filename = file_prefix + "time_temp_hist" + file_age_text + ".csv"
@@ -6073,13 +6084,10 @@ def run_model(params):
         zft_ages = np.zeros(surf_age_array_size)
         zft_temps = np.zeros(surf_age_array_size)
 
-        # Define string for time-temperature and time-temperature-depth ages
+        # Calculate ages for each tracked particle
         for i in range(surf_age_array_size):
             # Define surface time text for track length filenames
-            if len(surface_times_ma) == 1:
-                file_age_text = ""
-            else:
-                file_age_text = f"_{surface_times_ma[i]}Ma"
+            file_age_text = get_file_suffix(surface_times_ma, i)
 
             # Calculate ages
             (

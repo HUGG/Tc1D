@@ -26,6 +26,7 @@ from tc1d.tc1d import (
     disable_output_for_inversions,
     find_lab_depth,
     format_lab_depth,
+    get_file_suffix,
     get_history_indices,
     get_pad_times,
     get_tt_path,
@@ -119,6 +120,7 @@ age calculations are in test_ages.py.
 
 # InputOutput
 - get_write_increment
+* get_file_suffix
 * get_history_indices
 * get_pad_times
 * get_tt_path
@@ -2555,3 +2557,13 @@ class TestImplicitSolvers:
                 self.heat_prod,
             )
         np.testing.assert_allclose(temp, expected, atol=1e-3)
+
+
+class TestGetFileSuffix:
+    def test_single_particle_has_no_suffix(self):
+        assert get_file_suffix(np.array([0.0]), 0) == ""
+
+    def test_multiple_particles_use_surface_time(self):
+        surface_times_ma = np.array([20.0, 10.0, 0.0])
+        suffixes = [get_file_suffix(surface_times_ma, i) for i in range(3)]
+        assert suffixes == ["_20.0Ma", "_10.0Ma", "_0.0Ma"]
