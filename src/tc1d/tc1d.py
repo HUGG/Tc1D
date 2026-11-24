@@ -347,6 +347,8 @@ def _build_banded_array_with_bcs(
     upper: np.ndarray,
 ):
     """Build the (4, nx) banded array, copying the boundary condition rows from the dense matrix."""
+    # Banded storage used by scipy.linalg.solve_banded:
+    # a[i, j] is stored in banded_array[_upper_band + i - j, j]
     banded_array = np.zeros((_lower_band + _upper_band + 1, nx))
     i = np.arange(1, nx - 1)
     banded_array[_upper_band, i] = diag  # a[i, i]
@@ -356,7 +358,7 @@ def _build_banded_array_with_bcs(
     banded_array[_upper_band, 0] = a_matrix[0, 0]
     banded_array[_upper_band - 1, 1] = a_matrix[0, 1]
     # Basal row (row nx-1): a[nx-1, nx-3], a[nx-1, nx-2], a[nx-1, nx-1]
-    banded_array[_upper_band + 2, nx - 3] = a_matrix[nx - 1, nx - 3]
+    banded_array[_upper_band + _lower_band, nx - 3] = a_matrix[nx - 1, nx - 3]
     banded_array[_upper_band + 1, nx - 2] = a_matrix[nx - 1, nx - 2]
     banded_array[_upper_band, nx - 1] = a_matrix[nx - 1, nx - 1]
     return banded_array
