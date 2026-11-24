@@ -2567,3 +2567,118 @@ class TestGetFileSuffix:
         surface_times_ma = np.array([20.0, 10.0, 0.0])
         suffixes = [get_file_suffix(surface_times_ma, i) for i in range(3)]
         assert suffixes == ["_20.0Ma", "_10.0Ma", "_0.0Ma"]
+
+
+class TestExplicitUpwinding:
+    """Upwinding of the advection term in temp_transient_explicit.
+
+    vx > 0 is upward motion (decreasing depth), so heat is advected from the
+    node below; for vx < 0 it is advected from the node above.
+    """
+
+    nx = 8
+    dx = 1000.0
+    dt = yr2sec(1000.0)
+    rho = np.full(nx, 3000.0)
+    cp = np.full(nx, 1000.0)
+    heat_prod = np.zeros(nx)
+
+    def test_direction_per_node(self):
+        # No conduction, curved profile so the differences above and below differ
+        k = np.zeros(self.nx - 1)
+        temp_prev = 10.0 * np.arange(self.nx) ** 2
+        v = mmyr2ms(1.0)
+        # Velocity changes sign with depth: upward above, downward below
+        vx = np.array([v, v, v, v, -v, -v, -v, -v])
+        temp_new = temp_transient_explicit(
+            self.nx,
+            self.dx,
+            self.dt,
+            temp_prev,
+            np.zeros(self.nx),
+            1,
+            temp_prev[0],
+            temp_prev[-1],
+            0.0,
+            vx,
+            self.rho,
+            self.cp,
+            k,
+            self.heat_prod,
+        )
+        expected = temp_prev.copy()
+        for i in range(1, self.nx - 1):
+            if vx[i] > 0:
+                gradient = (temp_prev[i + 1] - temp_prev[i]) / self.dx
+            else:
+                gradient = (temp_prev[i] - temp_prev[i - 1]) / self.dx
+            expected[i] = temp_prev[i] + vx[i] * gradient * self.dt
+        np.testing.assert_allclose(temp_new, expected, rtol=1e-12)
+
+    @pytest.mark.parametrize("v_mmyr", [10.0, -10.0], ids=["exhumation", "burial"])
+    def test_pure_advection_is_stable(self, v_mmyr):
+        # Advect a temperature step with negligible conduction (Courant number 0.5)
+        nx = 201
+        x = np.linspace(0.0, 100.0e3, nx)
+        dx = x[1] - x[0]
+        v = mmyr2ms(v_mmyr)
+        dt = 0.5 * dx / abs(v)
+        temp = np.where(x > 50.0e3, 1000.0, 0.0)
+        nsteps = 100
+        for _ in range(nsteps):
+            temp = temp_transient_explicit(
+                nx,
+                dx,
+                dt,
+                temp,
+                np.zeros(nx),
+                1,
+                0.0,
+                1000.0,
+                0.0,
+                np.full(nx, v),
+                np.full(nx, 3000.0),
+                np.full(nx, 1000.0),
+                np.full(nx - 1, 1.0e-6),
+                np.zeros(nx),
+            )
+        assert temp.min() >= -1.0e-6
+        assert temp.max() <= 1000.0 + 1.0e-6
+        # The step moves up (exhumation) or down (burial) by v * dt * nsteps
+        step_depth = x[np.argmax(temp > 500.0)]
+        expected_depth = 50.0e3 - v * dt * nsteps
+        assert step_depth == pytest.approx(expected_depth, abs=2.0 * dx)
+
+    @pytest.mark.parametrize("v_mmyr", [1.0, -1.0], ids=["exhumation", "burial"])
+    def test_basal_node_direction(self, v_mmyr):
+        # Compare runs with and without advection to isolate the advection term
+        k = np.full(self.nx - 1, 2.5)
+        flux_base = 0.025
+        temp_prev = 10.0 * np.arange(self.nx) ** 2
+        v = mmyr2ms(v_mmyr)
+
+        def basal_temp(vx_value):
+            return temp_transient_explicit(
+                self.nx,
+                self.dx,
+                self.dt,
+                temp_prev,
+                np.zeros(self.nx),
+                2,
+                temp_prev[0],
+                0.0,
+                flux_base,
+                np.full(self.nx, vx_value),
+                self.rho,
+                self.cp,
+                k,
+                self.heat_prod,
+            )[-1]
+
+        advection_change = basal_temp(v) - basal_temp(0.0)
+        temp_ghost = temp_prev[-2] + 2 * flux_base * self.dx / k[-1]
+        if v > 0:
+            gradient = (temp_ghost - temp_prev[-1]) / self.dx
+        else:
+            gradient = (temp_prev[-1] - temp_prev[-2]) / self.dx
+        assert advection_change == pytest.approx(v * gradient * self.dt, rel=1e-9)

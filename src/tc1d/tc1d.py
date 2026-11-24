@@ -629,12 +629,11 @@ def temp_transient_explicit(
         # Assign constant basal heat flux using a ghost node below the base of the
         # model with its temperature set using the basal heat flux
         temp_ghost = temp_prev[-2] + 2 * flux_base * dx / k[-1]
-        # Use upwinding
+        # Use upwinding: for vx > 0 (upward motion)
         if vx[-1] > 0:
-            advection = vx[-1] * (temp_prev[-1] - temp_prev[-2]) / dx
-        else:
             advection = vx[-1] * (temp_ghost - temp_prev[-1]) / dx
-        # TODO: Confirm this is correct manually, seems to be OK
+        else:
+            advection = vx[-1] * (temp_prev[-1] - temp_prev[-2]) / dx
         temp_new[nx - 1] = (
             (1 / (rho[-1] * cp[-1]))
             * k[-1]
@@ -653,11 +652,14 @@ def temp_transient_explicit(
         k[1 : nx - 1] * (temp_prev[2:nx] - temp_mid)
         - k[0 : nx - 2] * (temp_mid - temp_prev[0 : nx - 2])
     ) / dx**2
-    # Use upwinding
-    if vx[0] > 0:
-        advection = vx[1 : nx - 1] * (temp_mid - temp_prev[0 : nx - 2]) / dx
-    else:
-        advection = vx[1 : nx - 1] * (temp_prev[2:nx] - temp_mid) / dx
+    # Use upwinding at each node: vx > 0 is upward motion so heat is advected from the
+    # node below; vx <= 0 uses the node above
+    vx_mid = vx[1 : nx - 1]
+    advection = np.where(
+        vx_mid > 0,
+        vx_mid * (temp_prev[2:nx] - temp_mid) / dx,
+        vx_mid * (temp_mid - temp_prev[0 : nx - 2]) / dx,
+    )
     temp_new[1 : nx - 1] = (
         conduction / rhocp + heat_prod[1 : nx - 1] / rhocp + advection
     ) * dt + temp_mid
