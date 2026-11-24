@@ -2249,7 +2249,7 @@ class TestMantleRemoval:
         temperature of the mantle adiabat (temp_adiabat_ref), which can differ
         from the basal temperature."""
         # The different basal temperature is intended here
-        with pytest.warns(UserWarning, match="below the mantle adiabat"):
+        with pytest.warns(UserWarning, match="below the reference mantle adiabat"):
             run_forward(
                 monkeypatch,
                 tmp_path,
@@ -2306,8 +2306,8 @@ class TestLabWarnings:
             (1200.0, 2, 0.0, ["is below"], ["Removed mantle"]),
             (1200.0, 1, 0.5, ["is below", "Removed mantle"], []),
             # Hot base, with advice for a fixed basal temperature (bc_type 1)
-            (1400.0, 1, 0.0, ["is above", "should normally"], []),
-            (1400.0, 2, 0.0, ["is above"], ["should normally"]),
+            (1400.0, 1, 0.0, ["exceeds", "Normally"], []),
+            (1400.0, 2, 0.0, ["exceeds"], ["Normally"]),
         ],
     )
     def test_temp_base_and_adiabat(
