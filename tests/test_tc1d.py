@@ -2223,6 +2223,7 @@ class TestFindLabDepth:
             ),
         ],
     )
+    @pytest.mark.filterwarnings("ignore:The basal temperature")
     def test_screen_output(self, monkeypatch, tmp_path, capsys, kwargs, initial, final):
         run_forward(
             monkeypatch,
@@ -2247,21 +2248,23 @@ class TestMantleRemoval:
         """Removed mantle lithosphere should be replaced by mantle at the
         temperature of the mantle adiabat (temp_adiabat_ref), which can differ
         from the basal temperature."""
-        run_forward(
-            monkeypatch,
-            tmp_path,
-            time=0.02,
-            dt=5000.0,
-            nx=51,
-            ero_option1=0.0,
-            temp_base=1200.0,
-            temp_adiabat_ref=1300.0,
-            mantle_adiabat=False,
-            removal_fraction=0.5,
-            removal_start_time=removal_start_time,
-            calc_ages=False,
-            write_temps=True,
-        )
+        # The different basal temperature is intended here
+        with pytest.warns(UserWarning, match="below the mantle adiabat"):
+            run_forward(
+                monkeypatch,
+                tmp_path,
+                time=0.02,
+                dt=5000.0,
+                nx=51,
+                ero_option1=0.0,
+                temp_base=1200.0,
+                temp_adiabat_ref=1300.0,
+                mantle_adiabat=False,
+                removal_fraction=0.5,
+                removal_start_time=removal_start_time,
+                calc_ages=False,
+                write_temps=True,
+            )
         temps = np.loadtxt(
             tmp_path / "csv" / "output_temps.csv", delimiter=",", skiprows=1
         )
@@ -2270,3 +2273,106 @@ class TestMantleRemoval:
         depth = temps[:, 0]
         removed = (depth > 95.0e3) & (depth < 115.0e3)
         assert temps[removed, 1] == pytest.approx(1300.0, abs=5.0)
+
+
+class TestLabWarnings:
+    """Warnings for basal temperatures that differ from the mantle adiabat."""
+
+    @staticmethod
+    def _warnings(monkeypatch, tmp_path, **kwargs):
+        import warnings
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            run_forward(
+                monkeypatch,
+                tmp_path,
+                time=1.0,
+                dt=5000.0,
+                nx=51,
+                ero_option1=0.5,
+                calc_ages=False,
+                **kwargs,
+            )
+        return [str(w.message) for w in caught]
+
+    @pytest.mark.parametrize(
+        "temp_base, bc_type, removal_fraction, expected, not_expected",
+        [
+            # Base at the adiabat: no warning
+            (1300.0, 1, 0.0, [], []),
+            # Cool base, for either boundary condition and with removal
+            (1200.0, 1, 0.0, ["is below"], ["Removed mantle"]),
+            (1200.0, 2, 0.0, ["is below"], ["Removed mantle"]),
+            (1200.0, 1, 0.5, ["is below", "Removed mantle"], []),
+            # Hot base, with advice for a fixed basal temperature (bc_type 1)
+            (1400.0, 1, 0.0, ["is above", "should normally"], []),
+            (1400.0, 2, 0.0, ["is above"], ["should normally"]),
+        ],
+    )
+    def test_temp_base_and_adiabat(
+        self,
+        monkeypatch,
+        tmp_path,
+        temp_base,
+        bc_type,
+        removal_fraction,
+        expected,
+        not_expected,
+    ):
+        messages = self._warnings(
+            monkeypatch,
+            tmp_path,
+            temp_base=temp_base,
+            temp_adiabat_ref=1300.0,
+            bc_type=bc_type,
+            flux_base=40.0,
+            removal_fraction=removal_fraction,
+            removal_start_time=0.5,
+        )
+        lab_messages = [m for m in messages if "(temp_adiabat_ref)" in m]
+        if expected:
+            assert len(lab_messages) == 1
+            for text in expected:
+                assert text in lab_messages[0]
+            for text in not_expected:
+                assert text not in lab_messages[0]
+        else:
+            assert lab_messages == []
+
+    @pytest.mark.parametrize(
+        "flux_base, temp_base, init_moho_depth, warned",
+        [
+            # Low basal heat flux: the base cools well below the adiabat
+            (5.0, 1300.0, 50.0, True),
+            # High basal heat flux: the base stays near or above the adiabat
+            (40.0, 1300.0, 50.0, False),
+            # The base starts below the adiabat (warned about at the start)
+            (5.0, 1200.0, 50.0, False),
+            # Crust-only model
+            (5.0, 1300.0, 125.0, False),
+        ],
+    )
+    def test_base_below_adiabat_during_run(
+        self, monkeypatch, tmp_path, flux_base, temp_base, init_moho_depth, warned
+    ):
+        messages = self._warnings(
+            monkeypatch,
+            tmp_path,
+            bc_type=2,
+            flux_base=flux_base,
+            temp_base=temp_base,
+            init_moho_depth=init_moho_depth,
+        )
+        found = any("fell up to" in m for m in messages)
+        assert found is warned
+
+    def test_no_warning_for_crust_only_models(self, monkeypatch, tmp_path):
+        messages = self._warnings(
+            monkeypatch,
+            tmp_path,
+            length=40.0,
+            init_moho_depth=40.0,
+            temp_base=600.0,
+        )
+        assert not any("(temp_adiabat_ref)" in m for m in messages)

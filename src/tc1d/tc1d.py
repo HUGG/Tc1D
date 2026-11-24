@@ -5076,6 +5076,42 @@ def run_model(params):
     # Mantle adiabat at the nodes, used to find the LAB depth
     temp_adiabat_nodes = params["temp_adiabat_ref"] + (x - max_depth) * adiabat_m
 
+    # Compare the basal and mantle adiabat reference temperatures for models that
+    # include mantle lithosphere
+    has_mantle_lithosphere = moho_depth_init < max_depth
+    base_at_adiabat = np.isclose(params["temp_base"], params["temp_adiabat_ref"])
+    cool_base = (not base_at_adiabat) and (
+        params["temp_base"] < params["temp_adiabat_ref"]
+    )
+    if has_mantle_lithosphere and not base_at_adiabat:
+        if cool_base:
+            message = (
+                "The basal temperature (temp_base) is below the reference mantle "
+                "adiabat temperature at the base of the model (temp_adiabat_ref). "
+                "This suggests the model does not include the full thickness of "
+                "the mantle lithosphere, so the lithosphere-asthenosphere boundary "
+                "will be below the base of the model."
+            )
+            if params["removal_fraction"] > 0.0:
+                message += (
+                    " Removed mantle lithosphere will be replaced by asthenosphere "
+                    "following the mantle adiabat temperature, although the model "
+                    "design does not include the lithosphere-asthenosphere boundary."
+                )
+        else:
+            message = (
+                "The basal temperature (temp_base) exceeds the reference mantle "
+                "adiabat temperature at the base of the model (temp_adiabat_ref). "
+                "This implies the lower part of the model is asthenosphere."
+            )
+            if params["bc_type"] == 1:
+                message += (
+                    " Normally, the basal temperature is set equal to the mantle "
+                    "adiabat temperature (temp_base = temp_adiabat_ref) when using a "
+                    "fixed basal temperature boundary condition."
+                )
+        warnings.warn(message, stacklevel=2)
+
     # Create material property arrays
     rho = np.ones(len(x)) * params["rho_crust"]
     rho[x > moho_depth] = params["rho_mantle"]
@@ -5176,6 +5212,11 @@ def run_model(params):
 
     # Create list to store LAB depths (at the same times as the elevations)
     lab_depths = []
+
+    # Initialize variable to store max difference between the mantle adiabat and the
+    # basal temperature when using a basal heat flux boundary condition
+    # (positive if below the adiabat temperature)
+    max_base_adiabat_diff = 0.0
 
     # Calculate initial densities
     density_init = update_density(rho, alphav, temp_init)
@@ -5604,6 +5645,13 @@ def run_model(params):
                 params["k_a"],
             )
 
+            # Check whether the basal temperature is below the mantle adiabat temperature
+            # for basal flux BC
+            if params["bc_type"] == 2:
+                max_base_adiabat_diff = max(
+                    max_base_adiabat_diff, temp_adiabat_nodes[-1] - temp_prev[-1]
+                )
+
             # Update the basal heat flux boundary condition for the implicit and
             # Crank-Nicolson solutions using the current conductivity at the base
             if params["bc_type"] == 2:
@@ -5888,6 +5936,24 @@ def run_model(params):
     if params["watch_it_exhume"]:
         plt.ioff()
         # plt.show()
+
+    # Warn if the basal temperature fell below the mantle adiabat with a basal heat
+    # flux in models where the base of the model started at or above the adiabat.
+    # Differences of 5 °C or less are ignored. Warnings are not given for inversions,
+    # where they would be repeated for each model.
+    base_threshold = 5.0
+    if (
+        has_mantle_lithosphere
+        and (not cool_base)
+        and (max_base_adiabat_diff > base_threshold)
+        and (not params["inverse_mode"])
+    ):
+        warnings.warn(
+            "The temperature at the base of the model fell up to "
+            f"{max_base_adiabat_diff:.1f} °C below the mantle adiabat, so the LAB "
+            "was below the base of the model at those times.",
+            stacklevel=2,
+        )
 
     # Calculate final densities
     density_new = update_density(rho, alphav, temp_new)
