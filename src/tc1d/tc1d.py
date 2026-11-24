@@ -575,32 +575,21 @@ def temp_transient_explicit(
     else:
         raise ValueError(f"Bad boundary condition type: {bc_type}. Must be 1 or 2.")
 
-    # Calculate internal grid point temperatures
+    # Calculate internal grid point temperatures using array operations
+    temp_mid = temp_prev[1 : nx - 1]
+    rhocp = rho[1 : nx - 1] * cp[1 : nx - 1]
+    conduction = (
+        k[1 : nx - 1] * (temp_prev[2:nx] - temp_mid)
+        - k[0 : nx - 2] * (temp_mid - temp_prev[0 : nx - 2])
+    ) / dx**2
     # Use upwinding
     if vx[0] > 0:
-        for ix in range(1, nx - 1):
-            temp_new[ix] = (
-                (1 / (rho[ix] * cp[ix]))
-                * (
-                    k[ix] * (temp_prev[ix + 1] - temp_prev[ix])
-                    - k[ix - 1] * (temp_prev[ix] - temp_prev[ix - 1])
-                )
-                / dx**2
-                + heat_prod[ix] / (rho[ix] * cp[ix])
-                + vx[ix] * (temp_prev[ix] - temp_prev[ix - 1]) / (dx)
-            ) * dt + temp_prev[ix]
+        advection = vx[1 : nx - 1] * (temp_mid - temp_prev[0 : nx - 2]) / dx
     else:
-        for ix in range(1, nx - 1):
-            temp_new[ix] = (
-                (1 / (rho[ix] * cp[ix]))
-                * (
-                    k[ix] * (temp_prev[ix + 1] - temp_prev[ix])
-                    - k[ix - 1] * (temp_prev[ix] - temp_prev[ix - 1])
-                )
-                / dx**2
-                + heat_prod[ix] / (rho[ix] * cp[ix])
-                + vx[ix] * (temp_prev[ix + 1] - temp_prev[ix]) / (dx)
-            ) * dt + temp_prev[ix]
+        advection = vx[1 : nx - 1] * (temp_prev[2:nx] - temp_mid) / dx
+    temp_new[1 : nx - 1] = (
+        conduction / rhocp + heat_prod[1 : nx - 1] / rhocp + advection
+    ) * dt + temp_mid
 
     return temp_new
 
