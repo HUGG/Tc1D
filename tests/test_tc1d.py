@@ -30,6 +30,7 @@ from tc1d.tc1d import (
     get_tt_path,
     get_particle_temp_and_pressure,
     init_params,
+    linear_interpolator,
     prep_model,
     run_model,
     save_ttdp_history,
@@ -60,6 +61,7 @@ age calculations are in test_ages.py.
 * mmyr2ms
 * deg2rad
 * round_to_base
+* linear_interpolator
 - tt_hist_to_ma
 
 # Thermal
@@ -2376,3 +2378,42 @@ class TestLabWarnings:
             temp_base=600.0,
         )
         assert not any("(temp_adiabat_ref)" in m for m in messages)
+
+
+class TestLinearInterpolator:
+    x = np.linspace(0.0, 100.0e3, 21)
+    y = 1300.0 * (x / x[-1]) ** 1.5
+
+    def test_matches_scipy_interp1d(self):
+        from scipy.interpolate import interp1d
+
+        x_new = np.random.default_rng(0).uniform(self.x[0], self.x[-1], 200)
+        expected = interp1d(self.x, self.y)(x_new)
+        result = linear_interpolator(self.x, self.y)(x_new)
+        np.testing.assert_allclose(result, expected, rtol=1e-12, atol=1e-12)
+
+    def test_scalar_input_and_endpoints(self):
+        interpolate = linear_interpolator(self.x, self.y)
+        assert float(interpolate(self.x[0])) == pytest.approx(self.y[0])
+        assert float(interpolate(self.x[-1])) == pytest.approx(self.y[-1])
+        assert float(interpolate(2.5e3)) == pytest.approx(0.5 * (self.y[0] + self.y[1]))
+
+    def test_below_range_raises(self):
+        interpolate = linear_interpolator(self.x, self.y)
+        with pytest.raises(ValueError, match="below the interpolation range"):
+            interpolate(-1.0)
+        with pytest.raises(ValueError, match="below the interpolation range"):
+            interpolate(np.array([10.0e3, -5.0e3]))
+
+    def test_above_range_raises(self):
+        interpolate = linear_interpolator(self.x, self.y)
+        with pytest.raises(ValueError, match="above the interpolation range"):
+            interpolate(100.0e3 + 1.0)
+        with pytest.raises(ValueError, match="above the interpolation range"):
+            interpolate(np.array([10.0e3, 200.0e3]))
+
+    def test_data_are_copied(self):
+        y = self.y.copy()
+        interpolate = linear_interpolator(self.x, y)
+        y[:] = 0.0
+        assert float(interpolate(self.x[-1])) == pytest.approx(self.y[-1])

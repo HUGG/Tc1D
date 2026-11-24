@@ -8,7 +8,7 @@ from matplotlib.gridspec import GridSpec
 import matplotlib.patches as patches
 import numpy as np
 from pathlib import Path
-from scipy.interpolate import interp1d, RectBivariateSpline
+from scipy.interpolate import RectBivariateSpline
 from scipy.linalg import solve_banded
 import time
 import math
@@ -113,6 +113,47 @@ def deg2rad(value: float) -> float:
 
 def round_to_base(x: float, base: int = 50) -> float:
     return base * round(x / base)
+
+
+def linear_interpolator(x: np.ndarray, y: np.ndarray):
+    """Creates a linear interpolation function for y(x).
+
+    A faster replacement for scipy.interpolate.interp1d using np.interp. As with
+    interp1d, the data are copied and a ValueError is raised for values outside
+    the range of x.
+
+    Parameters
+    ----------
+    x : numpy.ndarray
+        Coordinates of the data points. Must be increasing.
+    y : numpy.ndarray
+        Values at the data points.
+
+    Returns
+    -------
+    function
+        Function that returns linearly interpolated values of y at x_new.
+    """
+    x = np.array(x, dtype=float)
+    y = np.array(y, dtype=float)
+    x_min = x[0]
+    x_max = x[-1]
+
+    def interpolate(x_new):
+        x_new = np.asarray(x_new, dtype=float)
+        if np.any(x_new < x_min):
+            raise ValueError(
+                f"A value ({np.min(x_new)}) in x_new is below the interpolation "
+                f"range's minimum value ({x_min})."
+            )
+        if np.any(x_new > x_max):
+            raise ValueError(
+                f"A value ({np.max(x_new)}) in x_new is above the interpolation "
+                f"range's maximum value ({x_max})."
+            )
+        return np.interp(x_new, x, y)
+
+    return interpolate
 
 
 # Define function for calculating effective uranium concentration
@@ -465,7 +506,7 @@ def update_materials(
     k[:] = k_crust
     k[xstag > moho_depth] = k_mantle
 
-    interp_temp_prev = interp1d(x, temp_prev)
+    interp_temp_prev = linear_interpolator(x, temp_prev)
     temp_stag = interp_temp_prev(xstag)
     k[temp_stag >= temp_adiabat] = k_a
     lab_depth = find_lab_depth(x, temp_prev, temp_adiabat_nodes)
@@ -5144,7 +5185,7 @@ def run_model(params):
     # Apply intrusion to initial thermal field, if applicable
     if (intrusion.start_time <= 0.0) and (intrusion.duration > 0.0):
         apply_intrusion(intrusion=intrusion, x=x, model_temperatures=temp_init)
-    interp_temp_init = interp1d(x, temp_init)
+    interp_temp_init = linear_interpolator(x, temp_init)
     init_moho_temp = interp_temp_init(moho_depth)
 
     # Calculate initial heat flow
@@ -5494,9 +5535,11 @@ def run_model(params):
 
         # Store initial particle states (model time 0) as the first history points
         if j == num_pass - 1:
-            interp_temp_start = interp1d(x, temp_prev)
+            interp_temp_start = linear_interpolator(x, temp_prev)
             density_start = update_density(rho, alphav, temp_prev)
-            interp_pressure_start = interp1d(x, calculate_pressure(density_start, dx))
+            interp_pressure_start = linear_interpolator(
+                x, calculate_pressure(density_start, dx)
+            )
             for i in range(len(surface_times_ma)):
                 time_hists[i][0] = 0.0
                 depth_hists[i][0] = depths[i]
@@ -5746,10 +5789,10 @@ def run_model(params):
             # Save Temperature, depth, and pressure histories
             if j == num_pass - 1:
                 # Create temperature interpolation function
-                interp_temp_new = interp1d(x, temp_new)
+                interp_temp_new = linear_interpolator(x, temp_new)
                 # Calculate lithostatic pressure
                 pressure = calculate_pressure(density_new, dx)
-                interp_pressure = interp1d(x, pressure)
+                interp_pressure = linear_interpolator(x, pressure)
 
                 # Find particle velocities and move incrementally toward surface
                 # Note: This does NOT update the fault depth!
@@ -5948,7 +5991,7 @@ def run_model(params):
     density_new = update_density(rho, alphav, temp_new)
 
     # Calculate final Moho temperature and heat flow
-    interp_temp_new = interp1d(x, temp_new)
+    interp_temp_new = linear_interpolator(x, temp_new)
     final_moho_temp = interp_temp_new(moho_depth)
     final_heat_flow = calculate_heat_flow(temp_new, k, dx)
 
